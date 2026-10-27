@@ -65,6 +65,7 @@ impl SpaiApp {
                 _ => None,
             };
             let mut link: Option<String> = None;
+            let mut fit = false;
             let keep = Self::dialog_viewport(ctx, &format!("killmail_{kill_id}"), &title, [900.0, 760.0], |ui| match &snapshot {
                 KillState::Loading => {
                     ui.horizontal(|ui| {
@@ -77,10 +78,16 @@ impl SpaiApp {
                     ui.colored_label(crate::theme::standing::WARNING, trf!("Could not load kill {kill_id}: {e}", kill_id = kill_id, e = e));
                     ui.horizontal(|ui| kill_actions(ui, kill_id, None));
                 }
-                KillState::Done(d) => link = kill_body(ui, d, &names, sys.as_ref()),
+                KillState::Done(d) => link = kill_body(ui, d, &names, sys.as_ref(), &mut fit),
             });
             if let Some(url) = link {
                 let _ = crate::launch::that(url);
+            }
+            if let (true, KillState::Done(d)) = (fit, &snapshot) {
+                let who = d.name(d.victim.char_id).or(d.name(d.victim.corp_id)).unwrap_or("?");
+                let ship = names.get(&d.victim.ship).cloned().unwrap_or_default();
+                let items = d.items.iter().filter(|i| i.depth == 0).map(|i| (i.type_id, i.flag, i.dropped + i.destroyed));
+                self.open_in_fitting(loss_fitting(format!("{who}'s {ship}"), d.victim.ship, items));
             }
             if !keep {
                 closed.push(kill_id);
@@ -124,20 +131,21 @@ pub(crate) fn eve_image(ui: &mut egui::Ui, url: Option<String>, size: f32) {
     }
 }
 
-/// The whole kill. Returns a link clicked to open in the browser. Narrow, the window scrolls as one;
-/// wide, the fit and the attackers scroll side by side under a fixed head.
-fn kill_body(ui: &mut egui::Ui, d: &KillDetail, names: &HashMap<i64, String>, sys: Option<&(String, String, f64)>) -> Option<String> {
+/// The whole kill. Returns a link clicked to open in the browser; `fit` is set when the fit is
+/// to open in the Fitting tab. Narrow, the window scrolls as one; wide, the fit and the attackers
+/// scroll side by side under a fixed head.
+fn kill_body(ui: &mut egui::Ui, d: &KillDetail, names: &HashMap<i64, String>, sys: Option<&(String, String, f64)>, fit: &mut bool) -> Option<String> {
     if ui.available_width() >= SIDE_BY_SIDE_W {
-        return kill_content(ui, d, names, sys, true);
+        return kill_content(ui, d, names, sys, true, fit);
     }
     egui::ScrollArea::vertical()
         .id_salt(("kill_narrow", d.kill_id))
         .auto_shrink([false, false])
-        .show(ui, |ui| kill_content(ui, d, names, sys, false))
+        .show(ui, |ui| kill_content(ui, d, names, sys, false, fit))
         .inner
 }
 
-fn kill_content(ui: &mut egui::Ui, d: &KillDetail, names: &HashMap<i64, String>, sys: Option<&(String, String, f64)>, wide: bool) -> Option<String> {
+fn kill_content(ui: &mut egui::Ui, d: &KillDetail, names: &HashMap<i64, String>, sys: Option<&(String, String, f64)>, wide: bool, fit: &mut bool) -> Option<String> {
     let mut link = None;
     let type_name = |id: i64| names.get(&id).map(|n| crate::shipnames::shown(n)).unwrap_or_else(|| if id == 0 { String::new() } else { format!("Type {id}") });
     let red = crate::theme::standing::HOSTILE;
@@ -195,6 +203,9 @@ fn kill_content(ui: &mut egui::Ui, d: &KillDetail, names: &HashMap<i64, String>,
             }
             ui.add_space(8.0);
             kill_actions(ui, d.kill_id, Some(d.esi_url()));
+            if ui.button(egui_phosphor::regular::WRENCH).on_hover_text(tr!("Open this fit in the Fitting tab")).clicked() {
+                *fit = true;
+            }
         });
         ui.horizontal(|ui| {
             let item = |ui: &mut egui::Ui, t: egui::RichText| {

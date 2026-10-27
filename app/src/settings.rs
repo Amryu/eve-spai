@@ -93,8 +93,6 @@ pub struct Settings {
     #[serde(default)]
     pub verdict_explained: bool,
     #[serde(default)]
-    pub fit_site: String,
-    #[serde(default)]
     pub doctrine_url: String,
     #[serde(default)]
     pub fleet_ping_window: bool,
@@ -1603,7 +1601,6 @@ impl Default for Settings {
             route_avoid_gate: Vec::new(),
             route_avoid_jump: Vec::new(),
             verdict_explained: false,
-            fit_site: String::new(),
             doctrine_url: String::new(),
             fleet_ping_window: true,
             fleet_ping_on_top: OnTop::Smart,

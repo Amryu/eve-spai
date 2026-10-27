@@ -2054,21 +2054,6 @@ impl SpaiApp {
                     }
 
                     ui.add_space(6.0);
-                    ui.label(tr!("Fit preview site")).on_hover_text(tr!("Where the fit window's \"Open in\" button sends a loss"));
-                    ui.horizontal_wrapped(|ui| {
-                        for (id, label) in FIT_SITES {
-                            if selectable_chip(ui, self.settings.fit_site == *id, *label).clicked() {
-                                self.settings.fit_site = (*id).to_owned();
-                                changed = true;
-                            }
-                        }
-                        if selectable_chip(ui, self.settings.fit_site.is_empty(), tr!("Ask each time")).clicked() {
-                            self.settings.fit_site.clear();
-                            changed = true;
-                        }
-                    });
-
-                    ui.add_space(6.0);
                     let logs_hint = crate::logpaths::chat_logs_dir("")
                         .and_then(|p| p.parent().map(|p| p.display().to_string()))
                         .unwrap_or_else(|| tr!("auto-detect").to_owned());

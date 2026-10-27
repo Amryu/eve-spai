@@ -67,6 +67,20 @@ fn esi_json_round_trips_with_charges_in_cargo() {
 }
 
 #[test]
+fn esi_json_loads_a_charge_listed_at_its_module_flag() {
+    let d = dataset();
+    let item = |type_id, flag, quantity| esi_json::EsiItem { type_id, flag, quantity };
+    let doc = esi_json::EsiFitting {
+        ship_type_id: ids::SHIP,
+        items: vec![item(ids::AMMO, 27, 100), item(ids::GUN, 27, 1), item(ids::GUN, 28, 1), item(ids::AMMO_LONG, 28, 1)],
+        ..Default::default()
+    };
+    let f = esi_json::import(&d, &doc);
+    assert_eq!(f.rack(Slot::High).map(|m| (m.index, m.type_id, m.charge)).collect::<Vec<_>>(), vec![(0, ids::GUN, Some(ids::AMMO)), (1, ids::GUN, Some(ids::AMMO_LONG))]);
+    assert!(f.cargo.is_empty(), "a loaded charge is not also in cargo");
+}
+
+#[test]
 fn dna_strings_carry_counts_and_read_back() {
     let d = dataset();
     let f = eft::import(&d, TEXT).unwrap().fit;

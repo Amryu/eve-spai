@@ -48,6 +48,12 @@ impl SpaiApp {
         );
     }
 
+    pub(crate) fn open_in_fitting(&mut self, doc: spai_fit::formats::esi_json::EsiFitting) {
+        self.sim_pending_fit = Some(doc);
+        self.view = super::View::Imperium;
+        self.focus_window = Some(egui::ViewportId::ROOT);
+    }
+
     pub(crate) fn imperium_view(&mut self, ui: &mut egui::Ui) {
         if !self.sim_opened {
             self.sim_opened = true;
@@ -86,6 +92,11 @@ impl SpaiApp {
                 }
                 e => self.sim.handle(e),
             }
+        }
+        if let (Some(dogma), Some(doc)) = (self.sim.dogma.clone(), self.sim_pending_fit.as_ref()) {
+            let fit = spai_fit::formats::esi_json::import(&dogma, doc);
+            self.sim_pending_fit = None;
+            self.sim.open_fit(fit, (ui.input(|i| i.time) * 1000.0) as u64);
         }
         self.sim.show(ui);
         for r in self.sim.take_requests() {

@@ -71,10 +71,14 @@ pub fn export(fit: &Fit, description: &str) -> EsiFitting {
     EsiFitting { name: fit.name.clone(), description: description.to_owned(), ship_type_id: fit.ship, items }
 }
 
+/// A charge at a rack flag, as a killmail lists one, is loaded in the module there.
 pub fn import(dogma: &Dogma, doc: &EsiFitting) -> Fit {
     let mut fit = Fit::new(doc.ship_type_id, doc.name.clone());
+    let is_charge = |id: TypeId| dogma.type_(id).is_some_and(|t| super::place_of(dogma, t) == super::Place::Charge);
+    let mut loaded: Vec<(Slot, u8, TypeId)> = Vec::new();
     for it in &doc.items {
         match slot_of_flag(it.flag) {
+            Some((slot, index)) if is_charge(it.type_id) => loaded.push((slot, index, it.type_id)),
             Some((slot, index)) => {
                 let index = if fit.module(slot, index).is_none() { index } else { fit.add_module(it.type_id, slot) };
                 if fit.module(slot, index).is_none() {
@@ -91,6 +95,11 @@ pub fn import(dogma: &Dogma, doc: &EsiFitting) -> Fit {
             None => {
                 add_item(dogma, &mut fit, it.type_id, it.quantity);
             }
+        }
+    }
+    for (slot, index, charge) in loaded {
+        if let Some(m) = fit.module_mut(slot, index) {
+            m.charge = Some(charge);
         }
     }
     fit

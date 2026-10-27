@@ -3679,3 +3679,23 @@ mod real_jump_ahead_tests {
         }
     }
 }
+
+mod loss_fitting_tests {
+    use super::*;
+    use spai_fit::formats::esi_json::{EsiItem, FLAG_CARGO, FLAG_DRONE_BAY};
+
+    /// Racks, bays and implants keep their flags; every other hold is cargo, merged by type, so a
+    /// fleet hangar's refits land in cargo instead of being fitted.
+    #[test]
+    fn a_loss_keeps_its_racks_and_bays_and_the_rest_is_cargo() {
+        const FLEET_HANGAR: i64 = 155;
+        let doc = loss_fitting(
+            "Amryu's Rifter".into(),
+            587,
+            [(2881, 27, 1), (185, 27, 100), (2454, 87, 2), (2881, FLEET_HANGAR, 3), (2881, 5, 1), (9999, 89, 1)],
+        );
+        assert_eq!((doc.name.as_str(), doc.ship_type_id), ("Amryu's Rifter", 587));
+        let item = |type_id, flag, quantity| EsiItem { type_id, flag, quantity };
+        assert_eq!(doc.items, [item(2881, 27, 1), item(185, 27, 100), item(2454, FLAG_DRONE_BAY, 2), item(2881, FLAG_CARGO, 4), item(9999, 89, 1)]);
+    }
+}

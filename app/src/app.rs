@@ -1075,6 +1075,8 @@ pub struct SpaiApp {
     pub(crate) sim: spai_fit_ui::SimUi,
     pub(crate) sim_events: imperium_ui::SimEvents,
     pub(crate) sim_opened: bool,
+    /// A fit sent to the Fitting tab, opened there once the dogma data is loaded.
+    pub(crate) sim_pending_fit: Option<spai_fit::formats::esi_json::EsiFitting>,
     /// `(character, alliance, checked_at)` of the signed-in characters.
     pub(crate) char_alliances: Vec<(i64, Option<i64>, i64)>,
     char_alliances_requested: bool,
@@ -1939,6 +1941,7 @@ impl SpaiApp {
             sim: spai_fit_ui::SimUi::default(),
             sim_events: Default::default(),
             sim_opened: false,
+            sim_pending_fit: None,
             char_alliances: Vec::new(),
             char_alliances_requested: false,
             note_editor_pending: None,
@@ -7860,19 +7863,27 @@ fn eft_string(
     })
 }
 
-const FIT_SITES: &[(&str, &str)] =
-    &[("eveship", "EVEShip.fit"), ("workbench", "EVE Workbench"), ("zkillboard", "zKillboard")];
-
-fn site_label(site: &str) -> &str {
-    FIT_SITES.iter().find(|(id, _)| *id == site).map(|(_, l)| *l).unwrap_or(site)
-}
-
-fn fit_url(site: &str, loss: &crate::lookup::Loss) -> String {
-    match site {
-        "eveship" => format!("https://eveship.fit/?fit=killmail:{}/{}", loss.killmail_id, loss.hash),
-        "workbench" => "https://eveworkbench.com/fitting".to_owned(),
-        _ => format!("https://zkillboard.com/kill/{}/", loss.killmail_id),
+/// A lost ship's items, `(type, flag, quantity)`, as a fitting for the Fitting tab. Holds other than
+/// the drone and fighter bays become cargo, so a fleet hangar's refits are not fitted.
+pub(crate) fn loss_fitting(
+    name: String,
+    ship: i64,
+    items: impl IntoIterator<Item = (i64, i64, i64)>,
+) -> spai_fit::formats::esi_json::EsiFitting {
+    use spai_fit::formats::esi_json::{slot_of_flag, EsiItem, FLAG_CARGO, FLAG_DRONE_BAY, FLAG_FIGHTER_BAY};
+    const FLAG_IMPLANT: u32 = 89;
+    let mut out: Vec<EsiItem> = Vec::new();
+    for (type_id, flag, qty) in items {
+        let (Ok(type_id), Ok(flag), Ok(quantity)) = (u32::try_from(type_id), u32::try_from(flag), u32::try_from(qty.max(1))) else {
+            continue;
+        };
+        let flag = if slot_of_flag(flag).is_some() || [FLAG_DRONE_BAY, FLAG_FIGHTER_BAY, FLAG_IMPLANT].contains(&flag) { flag } else { FLAG_CARGO };
+        match out.iter_mut().find(|i| i.type_id == type_id && i.flag == flag && slot_of_flag(flag).is_none()) {
+            Some(i) => i.quantity += quantity,
+            None => out.push(EsiItem { type_id, flag, quantity }),
+        }
     }
+    spai_fit::formats::esi_json::EsiFitting { name, ship_type_id: u32::try_from(ship).unwrap_or(0), items: out, ..Default::default() }
 }
 
 enum UpgradeIcon {

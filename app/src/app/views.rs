@@ -1014,6 +1014,7 @@ impl SpaiApp {
         let ship_name = self.ship_details_cached(ship_id).map(|d| d.name).unwrap_or_default();
         let names = self.type_names.lock().unwrap().clone();
         let mut new_mode = mode;
+        let mut open_fit = None;
 
         let keep = Self::dialog_viewport(ctx, "fit_window", tr!("EVE Spai - Fit"), [460.0, 620.0], |ui| {
             ui.horizontal(|ui| {
@@ -1104,21 +1105,19 @@ impl SpaiApp {
                         );
                     }
                 });
-                let site = self.settings.fit_site.clone();
-                if site.is_empty() {
-                    ui.label(tr!("Open in:"));
-                    for (id, label) in FIT_SITES {
-                        if ui.button(*label).clicked() {
-                            self.settings.fit_site = (*id).to_owned();
-                            self.needs_save = true;
-                        }
-                    }
-                } else if ui.button(trf!("Open in {v}", v = site_label(&site))).clicked() {
-                    let _ = crate::launch::that(fit_url(&site, loss));
+                if ui.button(tr!("Open in Fitting")).on_hover_text(tr!("Open this fit in the Fitting tab")).clicked() {
+                    open_fit = Some(loss_fitting(
+                        ship_name.clone(),
+                        ship_id,
+                        loss.items.iter().map(|i| (i.type_id, i.flag, i.qty)),
+                    ));
                 }
             });
         });
 
+        if let Some(doc) = open_fit {
+            self.open_in_fitting(doc);
+        }
         if has_mode && new_mode != mode {
             self.fit_view = Some((ship_id, new_mode));
         } else if !keep {
