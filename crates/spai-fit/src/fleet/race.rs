@@ -320,365 +320,424 @@ pub fn holds_critical_mass(through: f64, reps: f64, volley: f64, full_ehp: f64) 
 
 /// The fight at `distance`, for at most `limit` seconds.
 pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64) -> Race {
-    let sides = [a, b];
-    let mut fleets = [ships(dogma, a, a.fleet.adc), ships(dogma, b, b.fleet.adc)];
-    let guns = [guns(dogma, a, b, distance), guns(dogma, b, a, distance)];
-    let logis = [logi(a), logi(b)];
-    let mut out = Race::default();
-    // Each side's fire groups: a slot's ships by turns, each group on its own primary. A side
-    // with a stack split onto two targets has a second primary per group, which that stack's
-    // second part shoots.
-    let split = [a.fleet.split_fire.max(1) as usize, b.fleet.split_fire.max(1) as usize];
-    let doubled = [0, 1].map(|side| guns[side].groups.iter().any(|g| g.4));
-    let groups = [0, 1].map(|side| split[side] * if doubled[side] { 2 } else { 1 });
-    // The group a ship's weapon group fires with: its turn, in the second set for a second part.
-    let aim = |side: usize, ship: usize, second: bool| ship % split[side] + if second { split[side] } else { 0 };
-    let mut primary: [Vec<Option<usize>>; 2] = [vec![None; groups[0]], vec![None; groups[1]]];
-    for side in 0..2 {
-        for g in 0..groups[side] {
-            let taken: Vec<usize> = primary[side].iter().flatten().copied().collect();
-            primary[side][g] = pick_except(&sides[side].fleet.target_order, &fleets[1 - side], &taken);
-        }
-    }
-    // Per side and group: when its primary was called, when it first took damage, when repairs
-    // first landed on it, and the ship whose verdict is still to come with when it was called.
-    let mut since: [Vec<f64>; 2] = [vec![0.0; groups[0]], vec![0.0; groups[1]]];
-    let mut first_hit: [Vec<Option<f64>>; 2] = [vec![None; groups[0]], vec![None; groups[1]]];
-    let mut reps_landed: [Vec<Option<f64>>; 2] = [vec![None; groups[0]], vec![None; groups[1]]];
-    let mut verdict_open: [Vec<Option<(usize, f64)>>; 2] = [primary[0].iter().map(|p| p.map(|p| (p, 0.0))).collect(), primary[1].iter().map(|p| p.map(|p| (p, 0.0))).collect()];
-    // Volleys on their way, per side: when they land, on which ship, by damage type. Missiles
-    // fly for distance over velocity; the rest land as they are fired.
-    let mut in_flight: [Vec<(f64, usize, [f64; 4])>; 2] = [Vec::new(), Vec::new()];
-    // Per side, by ships alive, how many more of them a vorton's arc strikes.
-    let mut arc_memo: [std::collections::HashMap<(usize, u32, u64, u64), f64>; 2] = Default::default();
-    // Per side, the slots of it that have been called primary.
-    let mut called: [Vec<bool>; 2] = [vec![false; a.stats.slots.len()], vec![false; b.stats.slots.len()]];
-    // Per side, per weapon group, each ship's next volley: after its reaction to the first call.
-    // With the volleys fired since the last reload.
-    let mut next_fire: [Vec<Vec<(f64, u32)>>; 2] = [0, 1].map(|side| {
-        guns[side].groups.iter().map(|(k, _, _, _, _)| {
-            let n = sides[side].stats.slots.get(*k).map_or(0, |s| s.count as usize);
-            (0..n).map(|i| (reaction(i, n), 0)).collect()
-        }).collect()
-    });
-    for side in 0..2 {
-        for p in primary[side].clone().into_iter().flatten() {
-            start_adc(&mut fleets[1 - side][p], 0.0, &mut out, 1 - side);
-        }
-    }
-    let mut t = 0.0;
-    while t < limit {
-        let mut landed = [0.0f64; 2];
-        // Both sides fire on the ships alive at the step's start: neither shoots first.
-        let alive_at: [Vec<usize>; 2] = [0, 1].map(|side| (0..sides[side].stats.slots.len()).map(|k| fleets[side].iter().filter(|s| s.alive && s.slot == k).count()).collect());
+    let mut run = RaceRun::new(dogma, a, b, distance, limit);
+    run.advance(a, b, f64::INFINITY);
+    run.finish(a, b)
+}
+
+/// A race worked out a slice of its time at a time: the web build has no threads and draws its
+/// page between slices.
+pub struct RaceRun {
+    fleets: [Vec<Ship>; 2],
+    guns: [Guns; 2],
+    logis: [Vec<(usize, [f64; 3], f64)>; 2],
+    out: Race,
+    split: [usize; 2],
+    groups: [usize; 2],
+    primary: [Vec<Option<usize>>; 2],
+    since: [Vec<f64>; 2],
+    first_hit: [Vec<Option<f64>>; 2],
+    reps_landed: [Vec<Option<f64>>; 2],
+    verdict_open: [Vec<Option<(usize, f64)>>; 2],
+    in_flight: [Vec<(f64, usize, [f64; 4])>; 2],
+    arc_memo: [std::collections::HashMap<(usize, u32, u64, u64), f64>; 2],
+    called: [Vec<bool>; 2],
+    next_fire: [Vec<Vec<(f64, u32)>>; 2],
+    t: f64,
+    limit: f64,
+    distance: f64,
+    done: bool,
+}
+
+impl RaceRun {
+    /// The fight at `distance`, for at most `limit` seconds, before its first step.
+    pub fn new(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64) -> Self {
+        let sides = [a, b];
+        let mut fleets = [ships(dogma, a, a.fleet.adc), ships(dogma, b, b.fleet.adc)];
+        let guns = [guns(dogma, a, b, distance), guns(dogma, b, a, distance)];
+        let logis = [logi(a), logi(b)];
+        let mut out = Race::default();
+        // Each side's fire groups: a slot's ships by turns, each group on its own primary. A side
+        // with a stack split onto two targets has a second primary per group, which that stack's
+        // second part shoots.
+        let split = [a.fleet.split_fire.max(1) as usize, b.fleet.split_fire.max(1) as usize];
+        let doubled = [0, 1].map(|side| guns[side].groups.iter().any(|g| g.4));
+        let groups = [0, 1].map(|side| split[side] * if doubled[side] { 2 } else { 1 });
+        let mut primary: [Vec<Option<usize>>; 2] = [vec![None; groups[0]], vec![None; groups[1]]];
         for side in 0..2 {
-            let gn = groups[side];
-            let eff = f64::from(sides[side].fleet.volley_efficiency.clamp(0.01, 1.0));
-            for g in 0..gn {
-                if let Some(p) = primary[side][g] {
-                    called[1 - side][fleets[1 - side][p].slot] = true;
-                }
+            for g in 0..groups[side] {
+                let taken: Vec<usize> = primary[side].iter().flatten().copied().collect();
+                primary[side][g] = pick_except(&sides[side].fleet.target_order, &fleets[1 - side], &taken);
             }
-            // What lands on each ship this step so far: the volleys due now, then each turret
-            // shot fired below.
-            let mut pending: std::collections::HashMap<usize, [f64; 4]> = std::collections::HashMap::new();
-            for (at, ship, d) in &in_flight[side] {
-                if *at <= t + 1e-9 {
-                    let x = pending.entry(*ship).or_insert([0.0; 4]);
-                    (0..4).for_each(|i| x[i] += d[i]);
-                }
+        }
+        // Per side and group: when its primary was called, when it first took damage, when repairs
+        // first landed on it, and the ship whose verdict is still to come with when it was called.
+        let since: [Vec<f64>; 2] = [vec![0.0; groups[0]], vec![0.0; groups[1]]];
+        let first_hit: [Vec<Option<f64>>; 2] = [vec![None; groups[0]], vec![None; groups[1]]];
+        let reps_landed: [Vec<Option<f64>>; 2] = [vec![None; groups[0]], vec![None; groups[1]]];
+        let verdict_open: [Vec<Option<(usize, f64)>>; 2] = [primary[0].iter().map(|p| p.map(|p| (p, 0.0))).collect(), primary[1].iter().map(|p| p.map(|p| (p, 0.0))).collect()];
+        // Volleys on their way, per side: when they land, on which ship, by damage type. Missiles
+        // fly for distance over velocity; the rest land as they are fired.
+        let in_flight: [Vec<(f64, usize, [f64; 4])>; 2] = [Vec::new(), Vec::new()];
+        // Per side, by ships alive, how many more of them a vorton's arc strikes.
+        let arc_memo: [std::collections::HashMap<(usize, u32, u64, u64), f64>; 2] = Default::default();
+        // Per side, the slots of it that have been called primary.
+        let called: [Vec<bool>; 2] = [vec![false; a.stats.slots.len()], vec![false; b.stats.slots.len()]];
+        // Per side, per weapon group, each ship's next volley: after its reaction to the first call.
+        // With the volleys fired since the last reload.
+        let next_fire: [Vec<Vec<(f64, u32)>>; 2] = [0, 1].map(|side| {
+            guns[side].groups.iter().map(|(k, _, _, _, _)| {
+                let n = sides[side].stats.slots.get(*k).map_or(0, |s| s.count as usize);
+                (0..n).map(|i| (reaction(i, n), 0)).collect()
+            }).collect()
+        });
+        for side in 0..2 {
+            for p in primary[side].clone().into_iter().flatten() {
+                start_adc(&mut fleets[1 - side][p], 0.0, &mut out, 1 - side);
             }
-            // Fire: each ship once its reaction is over and its guns have cycled since its last
-            // volley, on its group's primary.
-            for (wg, (k, w, plain, suppressed, second)) in guns[side].groups.iter().enumerate() {
-                let alive = alive_at[side].get(*k).copied().unwrap_or(0);
-                if alive == 0 || w.cycle_s <= 0.0 {
-                    continue;
+        }
+        RaceRun { fleets, guns, logis, out, split, groups, primary, since, first_hit, reps_landed, verdict_open, in_flight, arc_memo, called, next_fire, t: 0.0, limit, distance, done: false }
+    }
+
+    /// Seconds of fight time further, the same sides as at the start; true once it is over.
+    pub fn advance(&mut self, a: &Side, b: &Side, seconds: f64) -> bool {
+        let sides = [a, b];
+        let RaceRun { fleets, guns, logis, out, split, groups, primary, since, first_hit, reps_landed, verdict_open, in_flight, arc_memo, called, next_fire, t: at, limit, distance, done } = self;
+        let (split, groups, limit, distance) = (*split, *groups, *limit, *distance);
+        // The group a ship's weapon group fires with: its turn, in the second set for a second part.
+        let aim = |side: usize, ship: usize, second: bool| ship % split[side] + if second { split[side] } else { 0 };
+        let mut t = *at;
+        let until = t + seconds;
+        while !*done && t < limit && t < until {
+            let mut landed = [0.0f64; 2];
+            // Both sides fire on the ships alive at the step's start: neither shoots first.
+            let alive_at: [Vec<usize>; 2] = [0, 1].map(|side| (0..sides[side].stats.slots.len()).map(|k| fleets[side].iter().filter(|s| s.alive && s.slot == k).count()).collect());
+            for side in 0..2 {
+                let gn = groups[side];
+                let eff = f64::from(sides[side].fleet.volley_efficiency.clamp(0.01, 1.0));
+                for g in 0..gn {
+                    if let Some(p) = primary[side][g] {
+                        called[1 - side][fleets[1 - side][p].slot] = true;
+                    }
                 }
-                let next = &mut next_fire[side][wg];
-                next.truncate(alive);
-                let mut firing = vec![0.0f64; gn];
-                // A turret lands as it fires: one whose primary the shots already landing kill
-                // holds its volley for the next primary instead of spending it on a wreck. A
-                // missile in flight when its target dies is lost.
-                let hitscan = w.dot.is_none() && w.missile.as_ref().is_none_or(|m| m.velocity <= 0.0);
-                for (i, (at, fired)) in next.iter_mut().enumerate() {
-                    let g = aim(side, i, *second);
-                    let Some(p) = primary[side][g] else { continue };
-                    if *at > t {
+                // What lands on each ship this step so far: the volleys due now, then each turret
+                // shot fired below.
+                let mut pending: std::collections::HashMap<usize, [f64; 4]> = std::collections::HashMap::new();
+                for (at, ship, d) in &in_flight[side] {
+                    if *at <= t + 1e-9 {
+                        let x = pending.entry(*ship).or_insert([0.0; 4]);
+                        (0..4).for_each(|i| x[i] += d[i]);
+                    }
+                }
+                // Fire: each ship once its reaction is over and its guns have cycled since its last
+                // volley, on its group's primary.
+                for (wg, (k, w, plain, suppressed, second)) in guns[side].groups.iter().enumerate() {
+                    let alive = alive_at[side].get(*k).copied().unwrap_or(0);
+                    if alive == 0 || w.cycle_s <= 0.0 {
                         continue;
                     }
-                    if hitscan {
-                        let mut after = fleets[1 - side][p].clone();
-                        if let Some(d) = pending.get(&p) {
-                            hit(&mut after, *d, t);
+                    let next = &mut next_fire[side][wg];
+                    next.truncate(alive);
+                    let mut firing = vec![0.0f64; gn];
+                    // A turret lands as it fires: one whose primary the shots already landing kill
+                    // holds its volley for the next primary instead of spending it on a wreck. A
+                    // missile in flight when its target dies is lost.
+                    let hitscan = w.dot.is_none() && w.missile.as_ref().is_none_or(|m| m.velocity <= 0.0);
+                    for (i, (at, fired)) in next.iter_mut().enumerate() {
+                        let g = aim(side, i, *second);
+                        let Some(p) = primary[side][g] else { continue };
+                        if *at > t {
+                            continue;
                         }
-                        if !after.alive {
+                        if hitscan {
+                            let mut after = fleets[1 - side][p].clone();
+                            if let Some(d) = pending.get(&p) {
+                                hit(&mut after, *d, t);
+                            }
+                            if !after.alive {
+                                continue;
+                            }
+                            let target_slot = fleets[1 - side][p].slot;
+                            let shares = if fleets[1 - side][p].sup_until > t { suppressed } else { plain };
+                            let share = shares.get(target_slot).copied().unwrap_or(0.0);
+                            let spool = w.spool_at(t - since[side][g]) / (1.0 + w.spool_max * w.spool_frac);
+                            let scale = eff * share * spool;
+                            let v = &w.volley;
+                            let x = pending.entry(p).or_insert([0.0; 4]);
+                            for (n, d) in [v.em, v.thermal, v.kinetic, v.explosive].into_iter().enumerate() {
+                                x[n] += d * scale;
+                            }
+                        }
+                        firing[g] += 1.0;
+                        *at += w.cycle_s;
+                        *fired += 1;
+                        if w.shots.is_some_and(|n| n > 0 && *fired >= n) {
+                            *at += w.reload_s;
+                            *fired = 0;
+                        }
+                    }
+                    for g in 0..gn {
+                        let Some(p) = primary[side][g] else { continue };
+                        if firing[g] == 0.0 {
                             continue;
                         }
                         let target_slot = fleets[1 - side][p].slot;
                         let shares = if fleets[1 - side][p].sup_until > t { suppressed } else { plain };
                         let share = shares.get(target_slot).copied().unwrap_or(0.0);
                         let spool = w.spool_at(t - since[side][g]) / (1.0 + w.spool_max * w.spool_frac);
-                        let scale = eff * share * spool;
                         let v = &w.volley;
-                        let x = pending.entry(p).or_insert([0.0; 4]);
-                        for (n, d) in [v.em, v.thermal, v.kinetic, v.explosive].into_iter().enumerate() {
-                            x[n] += d * scale;
+                        let scale = firing[g] * eff * share * spool;
+                        let flight = w.missile.as_ref().filter(|m| m.velocity > 0.0).map_or(0.0, |m| distance / m.velocity);
+                        if let Some(d) = w.dot.filter(|_| share > 0.0) {
+                            // One pod's damage runs on a ship at a time: the strongest, renewed.
+                            let ship = &mut fleets[1 - side][p];
+                            let total: f64 = ship.max.iter().sum();
+                            ship.dot = if ship.dot_until > t { ship.dot.max(d.on(total)) } else { d.on(total) };
+                            ship.dot_until = t + flight + d.duration_s;
+                            // Its breach control goes on once, as the first pod lands.
+                            if let Some((cut, duration)) = ship.breach.filter(|b| b.1 > 0.0) {
+                                ship.breach_until = t + flight + duration;
+                                ship.breach = Some((cut, 0.0));
+                            }
+                            continue;
+                        }
+                        in_flight[side].push((t + flight, p, [v.em * scale, v.thermal * scale, v.kinetic * scale, v.explosive * scale]));
+                        out.fired[side] += v.total() * scale;
+                        // A vorton's arc, a bomb's blast or a doomsday's beam goes on to the ships near
+                        // the primary, as many as its formation puts within reach: whole strikes on the
+                        // first, a share on the last.
+                        if w.arc_targets > 0 || w.splash > 0.0 {
+                            let others: Vec<usize> = (0..fleets[1 - side].len()).filter(|j| *j != p && fleets[1 - side][*j].alive).collect();
+                            let n = others.len() + 1;
+                            let reach = extra_targets(&mut arc_memo[1 - side], sides[1 - side].fleet.formation, n, w);
+                            for (j, o) in others.iter().enumerate() {
+                                let part = (reach - j as f64).clamp(0.0, 1.0);
+                                if part <= 0.0 {
+                                    break;
+                                }
+                                let share = plain.get(fleets[1 - side][*o].slot).copied().unwrap_or(0.0);
+                                let scale = firing[g] * eff * share * spool * part;
+                                in_flight[side].push((t, *o, [v.em * scale, v.thermal * scale, v.kinetic * scale, v.explosive * scale]));
+                            }
                         }
                     }
-                    firing[g] += 1.0;
-                    *at += w.cycle_s;
-                    *fired += 1;
-                    if w.shots.is_some_and(|n| n > 0 && *fired >= n) {
-                        *at += w.reload_s;
-                        *fired = 0;
-                    }
                 }
+                // What lands now, per ship; on a ship already dead it is lost.
+                let mut arriving: Vec<(usize, [f64; 4])> = Vec::new();
+                in_flight[side].retain(|(at, ship, d)| {
+                    if *at > t + 1e-9 {
+                        return true;
+                    }
+                    if fleets[1 - side][*ship].alive {
+                        match arriving.iter_mut().find(|(s, _)| s == ship) {
+                            Some((_, x)) => (0..4).for_each(|i| x[i] += d[i]),
+                            None => arriving.push((*ship, *d)),
+                        }
+                    } else {
+                        out.wasted[side] += d.iter().sum::<f64>();
+                    }
+                    false
+                });
+                // The timeline carries what lands per second sustained, not one step's volley, a
+                // vorton's arc included.
+                let alive_other = fleets[1 - side].iter().filter(|s| s.alive).count();
+                let arcs: Vec<f64> = guns[side].groups.iter().map(|(_, w, _, _, _)| 1.0 + extra_targets(&mut arc_memo[1 - side], sides[1 - side].fleet.formation, alive_other, w)).collect();
                 for g in 0..gn {
                     let Some(p) = primary[side][g] else { continue };
-                    if firing[g] == 0.0 {
+                    let target_slot = fleets[1 - side][p].slot;
+                    let suppressing = fleets[1 - side][p].sup_until > t;
+                    landed[side] += guns[side].groups.iter().zip(&arcs).map(|((k, w, plain, suppressed, second), arc)| {
+                        if *second != (g >= split[side]) {
+                            return 0.0;
+                        }
+                        let shares = if suppressing { suppressed } else { plain };
+                        let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64 / split[side] as f64;
+                        let spool = w.spool_at(t - since[side][g]) / (1.0 + w.spool_max * w.spool_frac);
+                        if w.dot.is_some() {
+                            return 0.0;
+                        }
+                        w.dps * spool * alive * arc * shares.get(target_slot).copied().unwrap_or(0.0)
+                    }).sum::<f64>() * eff;
+                }
+                // Breacher pods tick on whatever they were put on, through no resistance.
+                for (i, ship) in fleets[1 - side].iter_mut().enumerate().filter(|(_, s)| s.alive && s.dot_until > t) {
+                    let cut = if t < ship.breach_until { ship.breach.map_or(1.0, |b| b.0) } else { 1.0 };
+                    let rate = ship.dot * cut;
+                    landed[side] += rate;
+                    hit_true(ship, rate * STEP);
+                    // A ship the pods finish counts as a kill like one a volley does.
+                    if !ship.alive && !arriving.iter().any(|(p, _)| *p == i) {
+                        arriving.push((i, [0.0; 4]));
+                    }
+                }
+                let full: Vec<bool> = arriving.iter().map(|(p, _)| fleets[1 - side][*p].hp == fleets[1 - side][*p].max).collect();
+                for (p, d) in &arriving {
+                    hit(&mut fleets[1 - side][*p], *d, t);
+                    for g in 0..gn {
+                        if primary[side][g] == Some(*p) && first_hit[side][g].is_none() && d.iter().sum::<f64>() > 0.0 {
+                            first_hit[side][g] = Some(t);
+                        }
+                    }
+                }
+                // Repairs from the target side's logi: none before a primary is hurt. They share out
+                // over the hurt primaries by turns; each logi ship after its own reaction, its lock
+                // on its ship and its first cycle, times the logistics efficiency, lessened as they
+                // pile up on one ship as the game does it (`rep_landing`), times what the ship takes
+                // in. Only damage present is healed, so what overreps is lost.
+                let hurt: Vec<usize> = (0..gn).filter(|g| first_hit[side][*g].is_some() && primary[side][*g].is_some_and(|p| fleets[1 - side][p].alive)).collect();
+                let mut reps_on = vec![0.0f64; gn];
+                let logi_eff = f64::from(sides[1 - side].fleet.logi_efficiency.clamp(0.0, 1.0));
+                for (turn, g) in hurt.iter().enumerate() {
+                    let (Some(p), Some(hit_at)) = (primary[side][*g], first_hit[side][*g]) else { continue };
+                    // Another group on the same ship shares its repairs, not doubles them.
+                    if hurt[..turn].iter().any(|x| primary[side][*x] == Some(p)) {
                         continue;
                     }
                     let target_slot = fleets[1 - side][p].slot;
-                    let shares = if fleets[1 - side][p].sup_until > t { suppressed } else { plain };
-                    let share = shares.get(target_slot).copied().unwrap_or(0.0);
-                    let spool = w.spool_at(t - since[side][g]) / (1.0 + w.spool_max * w.spool_frac);
-                    let v = &w.volley;
-                    let scale = firing[g] * eff * share * spool;
-                    let flight = w.missile.as_ref().filter(|m| m.velocity > 0.0).map_or(0.0, |m| distance / m.velocity);
-                    if let Some(d) = w.dot.filter(|_| share > 0.0) {
-                        // One pod's damage runs on a ship at a time: the strongest, renewed.
+                    let intake = sides[1 - side].stats.slots[target_slot].computed.rep_intake;
+                    let signature = sides[1 - side].stats.slots[target_slot].computed.mobility.signature;
+                    let active: Vec<u32> = sides[1 - side].stats.slots.iter().enumerate().map(|(k, _)| {
+                        let Some((_, _, land)) = logis[1 - side].iter().find(|(x, _, _)| *x == k) else { return 0 };
+                        let n = alive_at[1 - side].get(k).copied().unwrap_or(0);
+                        let lock = sides[1 - side].stats.slots[k].computed.sensors.lock_time_s(signature);
+                        let role = fleets[1 - side][p].role;
+                        (0..n).filter(|i| i % hurt.len() == turn && t >= hit_at + logi_start(*i, n, sides[1 - side].fleet, role, lock, *land)).count() as u32
+                    }).collect();
+                    if active.iter().any(|n| *n > 0) {
+                        let since = reps_landed[side][*g].map_or(0.0, |at| t - at);
+                        let landing = super::reps_on_one_at(sides[1 - side].stats, &|k, _| active[k], Some(since));
                         let ship = &mut fleets[1 - side][p];
-                        let total: f64 = ship.max.iter().sum();
-                        ship.dot = if ship.dot_until > t { ship.dot.max(d.on(total)) } else { d.on(total) };
-                        ship.dot_until = t + flight + d.duration_s;
-                        // Its breach control goes on once, as the first pod lands.
-                        if let Some((cut, duration)) = ship.breach.filter(|b| b.1 > 0.0) {
-                            ship.breach_until = t + flight + duration;
-                            ship.breach = Some((cut, 0.0));
+                        for layer in 0..3 {
+                            let rate = landing[layer] * logi_eff * intake;
+                            reps_on[*g] += rate;
+                            ship.hp[layer] = (ship.hp[layer] + rate * STEP).min(ship.max[layer]);
                         }
+                    }
+                }
+                for g in 0..gn {
+                    if reps_on[g] > 0.0 && reps_landed[side][g].is_none() {
+                        reps_landed[side][g] = Some(t);
+                    }
+                }
+                // Critical mass, on the first group's primary: the damage landing there no longer
+                // beats the repairs on it, and one volley of the side no longer kills it outright,
+                // which no repair answers.
+                if let (None, Some(p), Some(_)) = (out.critical_mass_lost[side], primary[side][0], reps_landed[side][0]) {
+                    let target_slot = fleets[1 - side][p].slot;
+                    let suppressing = fleets[1 - side][p].sup_until > t;
+                    let sustained: f64 = guns[side].groups.iter().filter(|g| !g.4).map(|(k, w, plain, suppressed, _)| {
+                        let shares = if suppressing { suppressed } else { plain };
+                        let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64 / split[side] as f64;
+                        w.dps * alive * shares.get(target_slot).copied().unwrap_or(0.0)
+                    }).sum::<f64>() * eff;
+                    // Through the layer now being worn down.
+                    let ship = &fleets[1 - side][p];
+                    let layer = ship.hp.iter().position(|h| *h > 0.0).unwrap_or(2);
+                    let avg_res = ship.resonance[layer].iter().sum::<f64>() / 4.0;
+                    let volley: f64 = guns[side].groups.iter().filter(|g| !g.4 && g.1.alpha()).map(|(k, w, plain, suppressed, _)| {
+                        let shares = if suppressing { suppressed } else { plain };
+                        let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64 / split[side] as f64;
+                        w.volley.total() * alive * shares.get(target_slot).copied().unwrap_or(0.0)
+                    }).sum::<f64>() * eff;
+                    let full: f64 = (0..3).map(|l| ship.max[l] / (ship.resonance[l].iter().sum::<f64>() / 4.0).max(1e-6)).sum();
+                    if !holds_critical_mass(sustained * avg_res, reps_on[0], volley, full) {
+                        out.critical_mass_lost[side] = Some(t);
+                        out.events.push((t, Event::CriticalMassLost { side }));
+                    }
+                }
+                // Kills: the verdict for a slot's first called ship, then a new call for every group
+                // that shot it.
+                for (n_arrived, (p, _)) in arriving.iter().enumerate() {
+                    if fleets[1 - side][*p].alive {
                         continue;
                     }
-                    in_flight[side].push((t + flight, p, [v.em * scale, v.thermal * scale, v.kinetic * scale, v.explosive * scale]));
-                    out.fired[side] += v.total() * scale;
-                    // A vorton's arc, a bomb's blast or a doomsday's beam goes on to the ships near
-                    // the primary, as many as its formation puts within reach: whole strikes on the
-                    // first, a share on the last.
-                    if w.arc_targets > 0 || w.splash > 0.0 {
-                        let others: Vec<usize> = (0..fleets[1 - side].len()).filter(|j| *j != p && fleets[1 - side][*j].alive).collect();
-                        let n = others.len() + 1;
-                        let reach = extra_targets(&mut arc_memo[1 - side], sides[1 - side].fleet.formation, n, w);
-                        for (j, o) in others.iter().enumerate() {
-                            let part = (reach - j as f64).clamp(0.0, 1.0);
-                            if part <= 0.0 {
-                                break;
+                    let target_slot = fleets[1 - side][*p].slot;
+                    out.events.push((t, Event::Kill { side: 1 - side, slot: target_slot }));
+                    for g in 0..gn {
+                        if primary[side][g] != Some(*p) {
+                            continue;
+                        }
+                        if let Some((open, at)) = verdict_open[side][g] {
+                            if open == *p && !out.verdicts[1 - side].iter().any(|(s, _)| *s == target_slot) {
+                                let seconds = t - at;
+                                let v = if full[n_arrived] && seconds < STEP * 2.0 {
+                                    Verdict::OneVolley
+                                } else if reps_landed[side][g].is_none() && !logis[1 - side].is_empty() {
+                                    Verdict::BeforeReps { seconds }
+                                } else {
+                                    Verdict::Outpaced { seconds, by: (landed[side] / split[side] as f64 - reps_on[g]).max(0.0) }
+                                };
+                                out.verdicts[1 - side].push((target_slot, v));
                             }
-                            let share = plain.get(fleets[1 - side][*o].slot).copied().unwrap_or(0.0);
-                            let scale = firing[g] * eff * share * spool * part;
-                            in_flight[side].push((t, *o, [v.em * scale, v.thermal * scale, v.kinetic * scale, v.explosive * scale]));
+                        }
+                        let taken: Vec<usize> = primary[side].iter().enumerate().filter(|(x, _)| *x != g).filter_map(|(_, q)| *q).filter(|q| fleets[1 - side][*q].alive).collect();
+                        primary[side][g] = pick_except(&sides[side].fleet.target_order, &fleets[1 - side], &taken);
+                        since[side][g] = t + STEP;
+                        first_hit[side][g] = None;
+                        reps_landed[side][g] = None;
+                        // A new call: the ships keep the next primaries locked, so a gun that has
+                        // cycled shoots it from the next step, a held volley at once. Only the
+                        // opening call waits for the ships to react.
+                        for next in next_fire[side].iter_mut() {
+                            for (_, (at, _)) in next.iter_mut().enumerate().filter(|(i, _)| i % split[side] == g % split[side]) {
+                                *at = at.max(since[side][g]);
+                            }
+                        }
+                        verdict_open[side][g] = primary[side][g].map(|n| (n, t + STEP));
+                        if let Some(n) = primary[side][g] {
+                            start_adc(&mut fleets[1 - side][n], t + STEP, out, 1 - side);
                         }
                     }
                 }
             }
-            // What lands now, per ship; on a ship already dead it is lost.
-            let mut arriving: Vec<(usize, [f64; 4])> = Vec::new();
-            in_flight[side].retain(|(at, ship, d)| {
-                if *at > t + 1e-9 {
-                    return true;
-                }
-                if fleets[1 - side][*ship].alive {
-                    match arriving.iter_mut().find(|(s, _)| s == ship) {
-                        Some((_, x)) => (0..4).for_each(|i| x[i] += d[i]),
-                        None => arriving.push((*ship, *d)),
-                    }
-                } else {
-                    out.wasted[side] += d.iter().sum::<f64>();
-                }
-                false
-            });
-            // The timeline carries what lands per second sustained, not one step's volley, a
-            // vorton's arc included.
-            let alive_other = fleets[1 - side].iter().filter(|s| s.alive).count();
-            let arcs: Vec<f64> = guns[side].groups.iter().map(|(_, w, _, _, _)| 1.0 + extra_targets(&mut arc_memo[1 - side], sides[1 - side].fleet.formation, alive_other, w)).collect();
-            for g in 0..gn {
-                let Some(p) = primary[side][g] else { continue };
-                let target_slot = fleets[1 - side][p].slot;
-                let suppressing = fleets[1 - side][p].sup_until > t;
-                landed[side] += guns[side].groups.iter().zip(&arcs).map(|((k, w, plain, suppressed, second), arc)| {
-                    if *second != (g >= split[side]) {
-                        return 0.0;
-                    }
-                    let shares = if suppressing { suppressed } else { plain };
-                    let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64 / split[side] as f64;
-                    let spool = w.spool_at(t - since[side][g]) / (1.0 + w.spool_max * w.spool_frac);
-                    if w.dot.is_some() {
-                        return 0.0;
-                    }
-                    w.dps * spool * alive * arc * shares.get(target_slot).copied().unwrap_or(0.0)
-                }).sum::<f64>() * eff;
-            }
-            // Breacher pods tick on whatever they were put on, through no resistance.
-            for (i, ship) in fleets[1 - side].iter_mut().enumerate().filter(|(_, s)| s.alive && s.dot_until > t) {
-                let cut = if t < ship.breach_until { ship.breach.map_or(1.0, |b| b.0) } else { 1.0 };
-                let rate = ship.dot * cut;
-                landed[side] += rate;
-                hit_true(ship, rate * STEP);
-                // A ship the pods finish counts as a kill like one a volley does.
-                if !ship.alive && !arriving.iter().any(|(p, _)| *p == i) {
-                    arriving.push((i, [0.0; 4]));
-                }
-            }
-            let full: Vec<bool> = arriving.iter().map(|(p, _)| fleets[1 - side][*p].hp == fleets[1 - side][*p].max).collect();
-            for (p, d) in &arriving {
-                hit(&mut fleets[1 - side][*p], *d, t);
-                for g in 0..gn {
-                    if primary[side][g] == Some(*p) && first_hit[side][g].is_none() && d.iter().sum::<f64>() > 0.0 {
-                        first_hit[side][g] = Some(t);
-                    }
-                }
-            }
-            // Repairs from the target side's logi: none before a primary is hurt. They share out
-            // over the hurt primaries by turns; each logi ship after its own reaction, its lock
-            // on its ship and its first cycle, times the logistics efficiency, lessened as they
-            // pile up on one ship as the game does it (`rep_landing`), times what the ship takes
-            // in. Only damage present is healed, so what overreps is lost.
-            let hurt: Vec<usize> = (0..gn).filter(|g| first_hit[side][*g].is_some() && primary[side][*g].is_some_and(|p| fleets[1 - side][p].alive)).collect();
-            let mut reps_on = vec![0.0f64; gn];
-            let logi_eff = f64::from(sides[1 - side].fleet.logi_efficiency.clamp(0.0, 1.0));
-            for (turn, g) in hurt.iter().enumerate() {
-                let (Some(p), Some(hit_at)) = (primary[side][*g], first_hit[side][*g]) else { continue };
-                // Another group on the same ship shares its repairs, not doubles them.
-                if hurt[..turn].iter().any(|x| primary[side][*x] == Some(p)) {
-                    continue;
-                }
-                let target_slot = fleets[1 - side][p].slot;
-                let intake = sides[1 - side].stats.slots[target_slot].computed.rep_intake;
-                let signature = sides[1 - side].stats.slots[target_slot].computed.mobility.signature;
-                let active: Vec<u32> = sides[1 - side].stats.slots.iter().enumerate().map(|(k, _)| {
-                    let Some((_, _, land)) = logis[1 - side].iter().find(|(x, _, _)| *x == k) else { return 0 };
-                    let n = alive_at[1 - side].get(k).copied().unwrap_or(0);
-                    let lock = sides[1 - side].stats.slots[k].computed.sensors.lock_time_s(signature);
-                    let role = fleets[1 - side][p].role;
-                    (0..n).filter(|i| i % hurt.len() == turn && t >= hit_at + logi_start(*i, n, sides[1 - side].fleet, role, lock, *land)).count() as u32
-                }).collect();
-                if active.iter().any(|n| *n > 0) {
-                    let since = reps_landed[side][*g].map_or(0.0, |at| t - at);
-                    let landing = super::reps_on_one_at(sides[1 - side].stats, &|k, _| active[k], Some(since));
-                    let ship = &mut fleets[1 - side][p];
-                    for layer in 0..3 {
-                        let rate = landing[layer] * logi_eff * intake;
-                        reps_on[*g] += rate;
-                        ship.hp[layer] = (ship.hp[layer] + rate * STEP).min(ship.max[layer]);
-                    }
-                }
-            }
-            for g in 0..gn {
-                if reps_on[g] > 0.0 && reps_landed[side][g].is_none() {
-                    reps_landed[side][g] = Some(t);
-                }
-            }
-            // Critical mass, on the first group's primary: the damage landing there no longer
-            // beats the repairs on it, and one volley of the side no longer kills it outright,
-            // which no repair answers.
-            if let (None, Some(p), Some(_)) = (out.critical_mass_lost[side], primary[side][0], reps_landed[side][0]) {
-                let target_slot = fleets[1 - side][p].slot;
-                let suppressing = fleets[1 - side][p].sup_until > t;
-                let sustained: f64 = guns[side].groups.iter().filter(|g| !g.4).map(|(k, w, plain, suppressed, _)| {
-                    let shares = if suppressing { suppressed } else { plain };
-                    let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64 / split[side] as f64;
-                    w.dps * alive * shares.get(target_slot).copied().unwrap_or(0.0)
-                }).sum::<f64>() * eff;
-                // Through the layer now being worn down.
-                let ship = &fleets[1 - side][p];
-                let layer = ship.hp.iter().position(|h| *h > 0.0).unwrap_or(2);
-                let avg_res = ship.resonance[layer].iter().sum::<f64>() / 4.0;
-                let volley: f64 = guns[side].groups.iter().filter(|g| !g.4 && g.1.alpha()).map(|(k, w, plain, suppressed, _)| {
-                    let shares = if suppressing { suppressed } else { plain };
-                    let alive = alive_at[side].get(*k).copied().unwrap_or(0) as f64 / split[side] as f64;
-                    w.volley.total() * alive * shares.get(target_slot).copied().unwrap_or(0.0)
-                }).sum::<f64>() * eff;
-                let full: f64 = (0..3).map(|l| ship.max[l] / (ship.resonance[l].iter().sum::<f64>() / 4.0).max(1e-6)).sum();
-                if !holds_critical_mass(sustained * avg_res, reps_on[0], volley, full) {
-                    out.critical_mass_lost[side] = Some(t);
-                    out.events.push((t, Event::CriticalMassLost { side }));
-                }
-            }
-            // Kills: the verdict for a slot's first called ship, then a new call for every group
-            // that shot it.
-            for (n_arrived, (p, _)) in arriving.iter().enumerate() {
-                if fleets[1 - side][*p].alive {
-                    continue;
-                }
-                let target_slot = fleets[1 - side][*p].slot;
-                out.events.push((t, Event::Kill { side: 1 - side, slot: target_slot }));
-                for g in 0..gn {
-                    if primary[side][g] != Some(*p) {
-                        continue;
-                    }
-                    if let Some((open, at)) = verdict_open[side][g] {
-                        if open == *p && !out.verdicts[1 - side].iter().any(|(s, _)| *s == target_slot) {
-                            let seconds = t - at;
-                            let v = if full[n_arrived] && seconds < STEP * 2.0 {
-                                Verdict::OneVolley
-                            } else if reps_landed[side][g].is_none() && !logis[1 - side].is_empty() {
-                                Verdict::BeforeReps { seconds }
-                            } else {
-                                Verdict::Outpaced { seconds, by: (landed[side] / split[side] as f64 - reps_on[g]).max(0.0) }
-                            };
-                            out.verdicts[1 - side].push((target_slot, v));
+            // Reactive hardeners take a step at the end of each of their cycles.
+            for fleet in fleets.iter_mut() {
+                for s in fleet.iter_mut().filter(|s| s.alive) {
+                    if let Some((r, rah)) = &mut s.rah {
+                        if rah.cycle_s > 0.0 && ((t + STEP) / rah.cycle_s).floor() != (t / rah.cycle_s).floor() {
+                            let sum: f64 = s.last_hit.iter().sum();
+                            if sum > 0.0 {
+                                *r = crate::calc::patch::adapt_step(*r, rah.armor_before, s.last_hit.map(|x| x / sum), rah.shift);
+                            }
                         }
                     }
-                    let taken: Vec<usize> = primary[side].iter().enumerate().filter(|(x, _)| *x != g).filter_map(|(_, q)| *q).filter(|q| fleets[1 - side][*q].alive).collect();
-                    primary[side][g] = pick_except(&sides[side].fleet.target_order, &fleets[1 - side], &taken);
-                    since[side][g] = t + STEP;
-                    first_hit[side][g] = None;
-                    reps_landed[side][g] = None;
-                    // A new call: the ships keep the next primaries locked, so a gun that has
-                    // cycled shoots it from the next step, a held volley at once. Only the
-                    // opening call waits for the ships to react.
-                    for next in next_fire[side].iter_mut() {
-                        for (_, (at, _)) in next.iter_mut().enumerate().filter(|(i, _)| i % split[side] == g % split[side]) {
-                            *at = at.max(since[side][g]);
-                        }
-                    }
-                    verdict_open[side][g] = primary[side][g].map(|n| (n, t + STEP));
-                    if let Some(n) = primary[side][g] {
-                        start_adc(&mut fleets[1 - side][n], t + STEP, &mut out, 1 - side);
-                    }
                 }
             }
+            let alive = [fleets[0].iter().filter(|s| s.alive).count() as u32, fleets[1].iter().filter(|s| s.alive).count() as u32];
+            out.timeline.push((t, alive[0], alive[1], landed[0], landed[1]));
+            t += STEP;
+            if alive[0] == 0 || alive[1] == 0 {
+                out.winner = if alive[0] > 0 { Some(0) } else if alive[1] > 0 { Some(1) } else { None };
+                *done = true;
+                break;
+            }
+            }
+        *at = t;
+        if t >= limit {
+            *done = true;
         }
-        // Reactive hardeners take a step at the end of each of their cycles.
-        for fleet in &mut fleets {
-            for s in fleet.iter_mut().filter(|s| s.alive) {
-                if let Some((r, rah)) = &mut s.rah {
-                    if rah.cycle_s > 0.0 && ((t + STEP) / rah.cycle_s).floor() != (t / rah.cycle_s).floor() {
-                        let sum: f64 = s.last_hit.iter().sum();
-                        if sum > 0.0 {
-                            *r = crate::calc::patch::adapt_step(*r, rah.armor_before, s.last_hit.map(|x| x / sum), rah.shift);
-                        }
-                    }
-                }
-            }
-        }
-        let alive = [fleets[0].iter().filter(|s| s.alive).count() as u32, fleets[1].iter().filter(|s| s.alive).count() as u32];
-        out.timeline.push((t, alive[0], alive[1], landed[0], landed[1]));
-        t += STEP;
-        if alive[0] == 0 || alive[1] == 0 {
-            out.winner = if alive[0] > 0 { Some(0) } else if alive[1] > 0 { Some(1) } else { None };
-            break;
-        }
+        *done
     }
-    out.seconds = t;
-    for side in 0..2 {
-        for (k, s) in sides[side].stats.slots.iter().enumerate() {
-            if s.count > 0 && !out.verdicts[side].iter().any(|(x, _)| *x == k) && fleets[side].iter().any(|x| x.slot == k && x.alive) {
-                out.verdicts[side].push((k, if called[side][k] { Verdict::Held } else { Verdict::NotCalled }));
+
+    /// Seconds of fight time worked out so far.
+    pub fn seconds(&self) -> f64 {
+        self.t
+    }
+
+    /// The race as it ended.
+    pub fn finish(self, a: &Side, b: &Side) -> Race {
+        let sides = [a, b];
+        let RaceRun { fleets, mut out, called, t, .. } = self;
+        out.seconds = t;
+        for side in 0..2 {
+            for (k, s) in sides[side].stats.slots.iter().enumerate() {
+                if s.count > 0 && !out.verdicts[side].iter().any(|(x, _)| *x == k) && fleets[side].iter().any(|x| x.slot == k && x.alive) {
+                    out.verdicts[side].push((k, if called[side][k] { Verdict::Held } else { Verdict::NotCalled }));
+                }
             }
         }
+        out
     }
-    out
 }
 
 /// A ship just called primary switches on its assault damage control and its signature

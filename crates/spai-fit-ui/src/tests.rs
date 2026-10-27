@@ -2118,9 +2118,14 @@ fn real_data_fleet_frames_after_a_layout_change() {
     let mut job = crate::fleet_panel::FightJob::new(s.dogma.clone().unwrap(), fleet.clone(), fleet, mine.clone(), mine, Vec::new());
     let (mut worst, mut steps) = (0.0f64, 0);
     loop {
+        let stage = job.stage();
         let t = std::time::Instant::now();
         let done = job.step();
-        worst = worst.max(t.elapsed().as_secs_f64() * 1000.0);
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        if ms > 15.0 {
+            println!("   step {stage}: {ms:.0} ms");
+        }
+        worst = worst.max(ms);
         steps += 1;
         if done {
             break;

@@ -812,3 +812,27 @@ fn logi_pre_lock_the_support_ships_but_not_the_damage_dealers() {
     }
     assert_eq!(Fleet::default().logi_prelock, 1.0, "they hold their support ships locked from the start");
 }
+
+/// A race taken a slice of time at a time, as the web build does between frames, is the race
+/// worked out at once.
+#[test]
+fn a_race_in_slices_is_the_race_at_once() {
+    let d = dataset();
+    let lib = library();
+    let skills = |_: Option<&str>| SkillSet::all_v();
+    let a = Fleet { size: 30, slots: vec![slot("brawler", CountRule::Fill { min: 0, max: 100 }), slot("logi", CountRule::Fixed(4))], ..Fleet::default() };
+    let b = Fleet { size: 30, slots: vec![slot("kiter", CountRule::Fill { min: 0, max: 100 })], ..Fleet::default() };
+    let (sa, sb) = (stats(&d, &a, &lookup(&lib), &skills), stats(&d, &b, &lookup(&lib), &skills));
+    let (side_a, side_b) = (sweep::Side { fleet: &a, stats: &sa, ammo: &[] }, sweep::Side { fleet: &b, stats: &sb, ammo: &[] });
+    let whole = race::race(&d, &side_a, &side_b, 2_000.0, 600.0);
+    let mut run = race::RaceRun::new(&d, &side_a, &side_b, 2_000.0, 600.0);
+    let mut slices = 0;
+    while !run.advance(&side_a, &side_b, 7.0) {
+        slices += 1;
+    }
+    let parts = run.finish(&side_a, &side_b);
+    assert!(slices > 2, "{slices}");
+    assert_eq!(parts.timeline, whole.timeline);
+    assert_eq!(parts.winner, whole.winner);
+    assert_eq!(parts.verdicts, whole.verdicts);
+}

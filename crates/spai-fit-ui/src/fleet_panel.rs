@@ -1743,8 +1743,10 @@ fn ammo_key(x: &spai_fit::fleet::SlotStats, env: &str) -> u64 {
 
 /// Ranges of the sweep worked out in one step.
 const RANGES_A_STEP: usize = 8;
+/// Seconds of the race worked out in one step.
+const RACE_A_STEP_S: f64 = 20.0;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Stage {
     Ammo(usize, usize),
     Points(usize),
@@ -1770,8 +1772,14 @@ pub(crate) struct FightJob {
     points: Vec<spai_fit::fleet::sweep::RangePoint>,
     sweep: Option<spai_fit::fleet::sweep::Sweep>,
     race: Option<spai_fit::fleet::race::Race>,
+    race_run: Option<spai_fit::fleet::race::RaceRun>,
+    /// A slot's charge picks over the ranges so far, and how far they have got.
+    band_picks: Option<(spai_fit::fleet::sweep::Picks, usize)>,
     bands: [Vec<(usize, spai_fit::ids::TypeId, Vec<spai_fit::fleet::ammo::Band>)>; 2],
     stage: Stage,
+    /// A slot's options being worked out a charge a step: its key, the plan, where it is in it,
+    /// and what it has so far.
+    building: Option<(u64, Vec<(spai_fit::ids::TypeId, Option<spai_fit::ids::TypeId>, Vec<(spai_fit::ids::TypeId, bool)>)>, usize, usize, Choices)>,
     done: usize,
     total: usize,
 }
@@ -1783,8 +1791,14 @@ impl FightJob {
         ranges.sort_by(|x, y| x.total_cmp(y));
         ranges.dedup();
         let slots = mine.slots.len() + theirs.slots.len();
-        let total = slots * 2 + ranges.len().div_ceil(RANGES_A_STEP) + 2;
-        FightJob { dogma, fleet, enemy, mine, theirs, known, fresh: Vec::new(), ammo: [Vec::new(), Vec::new()], ranges, points: Vec::new(), sweep: None, race: None, bands: [Vec::new(), Vec::new()], stage: Stage::Ammo(0, 0), done: 0, total }
+        let race_steps = (f64::from(fleet.race_length_s.max(60.0)) / RACE_A_STEP_S).ceil() as usize;
+        let total = slots * 2 + ranges.len().div_ceil(RANGES_A_STEP) + 1 + race_steps;
+        FightJob { dogma, fleet, enemy, mine, theirs, known, fresh: Vec::new(), ammo: [Vec::new(), Vec::new()], ranges, points: Vec::new(), sweep: None, race: None, race_run: None, band_picks: None, bands: [Vec::new(), Vec::new()], stage: Stage::Ammo(0, 0), building: None, done: 0, total }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stage(&self) -> String {
+        format!("{:?}", self.stage)
     }
 
     pub(crate) fn progress(&self) -> f32 {
@@ -1803,18 +1817,48 @@ impl FightJob {
             Stage::Ammo(side, k) => {
                 let stats = self.stats(side).clone();
                 if let Some(x) = stats.slots.get(k) {
-                    let key = ammo_key(x, &format!("{:?}", stats.env));
-                    let found = self.known.iter().chain(&self.fresh).find(|(kk, _)| *kk == key).map(|(_, a)| a.clone());
-                    let a = found.unwrap_or_else(|| {
-                        let a = Arc::new(spai_fit::fleet::ammo::choices(&dogma, &x.fit, &x.skills, &stats.env));
-                        self.fresh.push((key, a.clone()));
-                        a
-                    });
-                    let mut a = (*a).clone();
-                    relabel(&mut a, &x.fit);
-                    self.ammo[side].push(a);
-                    self.done += 1;
-                    self.stage = Stage::Ammo(side, k + 1);
+                    // A slot's options take a charge a step: each is the fit worked out again.
+                    let finished = match self.building.as_mut() {
+                        None => {
+                            let key = ammo_key(x, &format!("{:?}", stats.env));
+                            match self.known.iter().chain(&self.fresh).find(|(kk, _)| *kk == key).map(|(_, a)| a.clone()) {
+                                Some(a) => Some(a),
+                                None => {
+                                    let plan = spai_fit::fleet::ammo::plan(&dogma, &x.fit);
+                                    let out = plan.iter().map(|(weapon, loaded, _)| spai_fit::fleet::ammo::AmmoChoice { weapon: *weapon, loaded: *loaded, options: Vec::new() }).collect();
+                                    self.building = Some((key, plan, 0, 0, out));
+                                    None
+                                }
+                            }
+                        }
+                        Some((key, plan, wi, ci, out)) => {
+                            if *wi >= plan.len() {
+                                let a = Arc::new(std::mem::take(out));
+                                self.fresh.push((*key, a.clone()));
+                                Some(a)
+                            } else {
+                                let (weapon, _, charges) = &plan[*wi];
+                                if let Some(&(c, carried)) = charges.get(*ci) {
+                                    if let Some(g) = spai_fit::fleet::ammo::option(&dogma, &x.fit, &x.skills, &stats.env, *weapon, c) {
+                                        out[*wi].options.push((c, carried, g));
+                                    }
+                                    *ci += 1;
+                                } else {
+                                    *wi += 1;
+                                    *ci = 0;
+                                }
+                                None
+                            }
+                        }
+                    };
+                    if let Some(a) = finished {
+                        self.building = None;
+                        let mut a = (*a).clone();
+                        relabel(&mut a, &x.fit);
+                        self.ammo[side].push(a);
+                        self.done += 1;
+                        self.stage = Stage::Ammo(side, k + 1);
+                    }
                 } else if side == 0 {
                     self.stage = Stage::Ammo(1, 0);
                 } else {
@@ -1840,9 +1884,16 @@ impl FightJob {
             Stage::Race => {
                 let a = sweep::Side { fleet: &self.fleet, stats: &self.mine, ammo: &self.ammo[0] };
                 let b = sweep::Side { fleet: &self.enemy, stats: &self.theirs, ammo: &self.ammo[1] };
-                self.race = Some(spai_fit::fleet::race::race(&dogma, &a, &b, f64::from(self.fleet.range), f64::from(self.fleet.race_length_s.max(60.0))));
+                // Some seconds of the fight a step, not all of it at once.
+                let run = self.race_run.get_or_insert_with(|| spai_fit::fleet::race::RaceRun::new(&dogma, &a, &b, f64::from(self.fleet.range), f64::from(self.fleet.race_length_s.max(60.0))));
+                let over = run.advance(&a, &b, RACE_A_STEP_S);
                 self.done += 1;
-                self.stage = Stage::Bands(0, 0);
+                if over {
+                    if let Some(run) = self.race_run.take() {
+                        self.race = Some(run.finish(&a, &b));
+                    }
+                    self.stage = Stage::Bands(0, 0);
+                }
             }
             Stage::Bands(side, k) => {
                 let a = sweep::Side { fleet: &self.fleet, stats: &self.mine, ammo: &self.ammo[0] };
@@ -1850,13 +1901,32 @@ impl FightJob {
                 let (x, y) = if side == 0 { (&a, &b) } else { (&b, &a) };
                 if k < x.stats.slots.len() {
                     let ranges: Vec<f64> = self.sweep.as_ref().map(|s| s.points.iter().map(|p| p.distance).collect()).unwrap_or_default();
-                    let found = match sweep::primary(x.fleet, y.stats) {
-                        Some(t) if x.stats.slots[k].count > 0 => sweep::ammo_bands(x, y, k, t, &ranges).into_iter().map(|(w, b)| (k, w, b)).collect(),
-                        _ => Vec::new(),
-                    };
-                    self.bands[side].extend(found);
-                    self.done += 1;
-                    self.stage = Stage::Bands(side, k + 1);
+                    match sweep::primary(x.fleet, y.stats).filter(|_| x.stats.slots[k].count > 0) {
+                        // A few ranges a step, merged into bands once the slot has them all.
+                        Some(t) => {
+                            let (picks, at) = self.band_picks.get_or_insert_with(|| (Vec::new(), 0));
+                            let to = (*at + RANGES_A_STEP).min(ranges.len());
+                            let chunk = sweep::ammo_picks(x, y, k, t, &ranges[*at..to]);
+                            if picks.is_empty() {
+                                *picks = chunk;
+                            } else {
+                                for ((_, all), (_, more)) in picks.iter_mut().zip(chunk) {
+                                    all.extend(more);
+                                }
+                            }
+                            *at = to;
+                            if to >= ranges.len() {
+                                let (picks, _) = self.band_picks.take().unwrap_or_default();
+                                self.bands[side].extend(sweep::bands_from_picks(&picks, &ranges).into_iter().map(|(w, b)| (k, w, b)));
+                                self.done += 1;
+                                self.stage = Stage::Bands(side, k + 1);
+                            }
+                        }
+                        None => {
+                            self.done += 1;
+                            self.stage = Stage::Bands(side, k + 1);
+                        }
+                    }
                 } else if side == 0 {
                     self.stage = Stage::Bands(1, 0);
                 } else {

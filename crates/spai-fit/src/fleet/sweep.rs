@@ -344,6 +344,14 @@ pub fn ehp_against(t: &crate::stats::Tank, d: &crate::stats::Damage) -> f64 {
 /// `target`, as the fight leaves it at each range: the target slowed by `a`'s webs and grown by
 /// its painters, crossing at its fleet's speed, the options under `b`'s disruptors.
 pub fn ammo_bands(a: &Side, b: &Side, k: usize, target: &SlotStats, ranges: &[f64]) -> Vec<(crate::ids::TypeId, Vec<ammo::Band>)> {
+    bands_from_picks(&ammo_picks(a, b, k, target, ranges), ranges)
+}
+
+/// What `ammo_bands` picks at each of `ranges`, per charged weapon of the slot: the best carried
+/// charge and a better uncarried one. Worked out some ranges at a time, then merged.
+pub type Picks = Vec<(crate::ids::TypeId, Vec<(f64, Option<((crate::ids::TypeId, f64), Option<(crate::ids::TypeId, f64)>)>)>)>;
+
+pub fn ammo_picks(a: &Side, b: &Side, k: usize, target: &SlotStats, ranges: &[f64]) -> Picks {
     let Some(choices) = a.ammo.get(k) else { return Vec::new() };
     // The ewar each way and the formations' pairs per range, worked out once for every weapon.
     let slot = &a.stats.slots[k];
@@ -368,14 +376,26 @@ pub fn ammo_bands(a: &Side, b: &Side, k: usize, target: &SlotStats, ranges: &[f6
     choices
         .iter()
         .map(|c| {
-            let pick = |d: f64| {
-                let (_, probes, on_a) = at.iter().find(|(x, _, _)| *x == d)?;
-                let best = |carried_only: bool| c.options.iter().filter(|(_, carried, _)| !carried_only || *carried).map(|(ch, _, g)| (*ch, landed(g, probes, on_a))).max_by(|x, y| x.1.total_cmp(&y.1));
-                let carried = best(true)?;
-                let any = best(false).filter(|(ch, v)| *ch != carried.0 && *v > carried.1 * 1.0001);
-                Some((carried, any))
-            };
-            (c.weapon, ammo::bands_by(ranges, &pick))
+            let picks = at
+                .iter()
+                .map(|(d, probes, on_a)| {
+                    let best = |carried_only: bool| c.options.iter().filter(|(_, carried, _)| !carried_only || *carried).map(|(ch, _, g)| (*ch, landed(g, probes, on_a))).max_by(|x, y| x.1.total_cmp(&y.1));
+                    let pick = best(true).map(|carried| (carried, best(false).filter(|(ch, v)| *ch != carried.0 && *v > carried.1 * 1.0001)));
+                    (*d, pick)
+                })
+                .collect();
+            (c.weapon, picks)
+        })
+        .collect()
+}
+
+/// Picks of every range, put together a chunk at a time, merged into each weapon's bands.
+pub fn bands_from_picks(picks: &Picks, ranges: &[f64]) -> Vec<(crate::ids::TypeId, Vec<ammo::Band>)> {
+    picks
+        .iter()
+        .map(|(weapon, at)| {
+            let pick = |d: f64| at.iter().find(|(x, _)| *x == d).and_then(|(_, p)| *p);
+            (*weapon, ammo::bands_by(ranges, &pick))
         })
         .collect()
 }

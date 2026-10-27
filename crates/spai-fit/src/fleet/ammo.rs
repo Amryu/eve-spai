@@ -21,9 +21,19 @@ pub struct AmmoChoice {
 /// Every charged weapon type of the fit with its options: the fit worked out again with each
 /// compatible charge in all of that type's modules.
 pub fn choices(dogma: &Dogma, fit: &Fit, skills: &SkillSet, env: &Env) -> Vec<AmmoChoice> {
-    let mut out: Vec<AmmoChoice> = Vec::new();
+    plan(dogma, fit)
+        .into_iter()
+        .map(|(weapon, loaded, charges)| AmmoChoice { weapon, loaded, options: charges.into_iter().filter_map(|(c, carried)| option(dogma, fit, skills, env, weapon, c).map(|w| (c, carried, w))).collect() })
+        .collect()
+}
+
+/// What `choices` works out, before any of it: each charged weapon type, what it has loaded, and
+/// every charge it takes with whether the fit carries it. Each is then one `option`, so the work
+/// can be taken a charge at a time.
+pub fn plan(dogma: &Dogma, fit: &Fit) -> Vec<(TypeId, Option<TypeId>, Vec<(TypeId, bool)>)> {
+    let mut out: Vec<(TypeId, Option<TypeId>, Vec<(TypeId, bool)>)> = Vec::new();
     for m in &fit.modules {
-        if out.iter().any(|c| c.weapon == m.type_id) {
+        if out.iter().any(|(w, _, _)| *w == m.type_id) {
             continue;
         }
         let charges = dogma.compatible_charges(m.type_id);
@@ -31,21 +41,21 @@ pub fn choices(dogma: &Dogma, fit: &Fit, skills: &SkillSet, env: &Env) -> Vec<Am
             continue;
         }
         let carried = |c: TypeId| m.charge == Some(c) || fit.cargo.iter().any(|x| x.type_id == c && x.quantity > 0);
-        let mut options = Vec::new();
-        for c in charges {
-            let mut f = fit.clone();
-            for x in f.modules.iter_mut().filter(|x| x.type_id == m.type_id) {
-                x.charge = Some(c);
-            }
-            // The weapons only: the rest of the fit's figures do not change with a charge.
-            let calc = crate::calc::Calc::new(dogma, &f, skills, env);
-            if let Some(w) = crate::stats::weapons(&calc, &f).into_iter().find(|w| w.type_id == m.type_id && w.charge == Some(c)) {
-                options.push((c, carried(c), w));
-            }
-        }
-        out.push(AmmoChoice { weapon: m.type_id, loaded: m.charge, options });
+        out.push((m.type_id, m.charge, charges.into_iter().map(|c| (c, carried(c))).collect()));
     }
     out
+}
+
+/// The weapon group of `weapon` as the fit would have it with `charge` in all of that type's
+/// modules.
+pub fn option(dogma: &Dogma, fit: &Fit, skills: &SkillSet, env: &Env, weapon: TypeId, charge: TypeId) -> Option<WeaponGroup> {
+    let mut f = fit.clone();
+    for x in f.modules.iter_mut().filter(|x| x.type_id == weapon) {
+        x.charge = Some(charge);
+    }
+    // The weapons only: the rest of the fit's figures do not change with a charge.
+    let calc = crate::calc::Calc::new(dogma, &f, skills, env);
+    crate::stats::weapons(&calc, &f).into_iter().find(|w| w.type_id == weapon && w.charge == Some(charge))
 }
 
 /// What a weapon group lands per second on the target at `distance`.

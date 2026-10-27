@@ -731,53 +731,89 @@ impl FleetStats {
 
 /// Computes every slot with the fleet's bursts applied.
 pub fn stats(dogma: &Dogma, fleet: &Fleet, fits: &dyn Fn(&str) -> Option<Fit>, skills: &dyn Fn(Option<&str>) -> SkillSet) -> FleetStats {
-    let env = env_of(dogma, fleet, fits, skills);
-    let counts = resolve_counts(fleet);
-    let mut out = FleetStats { name: fleet.name.clone(), main: fleet.main.unwrap_or(0), speed_min: f64::INFINITY, env: env.clone(), ..FleetStats::default() };
-    for (index, (slot, count)) in fleet.slots.iter().zip(counts).enumerate() {
-        let Some(fit) = fits(&slot.fit_id) else { continue };
-        let fit = slot.adjusted(flown(dogma, &fit, slot.variation));
-        let pilot = skills(slot.profile.as_deref());
-        let calc = Calc::new(dogma, &fit, &pilot, &env);
-        let mut computed = compute_with(&calc, &fit);
-        if !fleet.drones {
-            computed.weapons.retain(|w| w.alpha());
-        }
-        // Smartbombs are there against drones, not the enemy fleet: only the main slot fights
-        // with them, and only when it has nothing else.
-        let main_slot = fleet.main.unwrap_or(0) == index;
-        if !main_slot || computed.weapons.iter().any(|w| w.kind != WeaponKind::Smartbomb) {
-            computed.weapons.retain(|w| w.kind != WeaponKind::Smartbomb);
-        }
-        let n = f64::from(count);
-        out.dps += computed.dps() * n;
-        out.volley += computed.weapons.iter().filter(|w| w.alpha()).map(|w| w.volley.total()).sum::<f64>() * n;
-        for m in &computed.remote.modules {
-            let slot = match m.kind {
-                RemoteKind::Web => &mut out.projected.webs,
-                RemoteKind::Painter => &mut out.projected.painters,
-                RemoteKind::TrackingDisruptor => &mut out.projected.tracking_disruptors,
-                _ => continue,
-            };
-            *slot += count;
-        }
-        out.logi_rep += (computed.remote.armor_rep + computed.remote.shield_rep) * n;
-        out.neut += computed.remote.neut * n;
-        if count > 0 {
-            out.speed_min = out.speed_min.min(computed.mobility.max_velocity);
-            out.speed_max = out.speed_max.max(computed.mobility.max_velocity);
-        }
-        out.ships += count;
-        let role = role_of(dogma, fleet, index, fit.ship);
-        out.slots.push(SlotStats { fit_id: slot.fit_id.clone(), name: fit.name.clone(), count, computed, slot: index, ship: fit.ship, role, fit, skills: pilot });
+    let mut run = StatsRun::new(dogma, fleet, fits, skills);
+    while !run.step(dogma) {}
+    run.finish()
+}
+
+/// A fleet's numbers worked out a slot at a time: the web build has no threads and draws its page
+/// between slots.
+pub struct StatsRun {
+    fleet: Fleet,
+    /// Per slot its fit, pilot and count, looked up at the start.
+    slots: Vec<(Option<Fit>, SkillSet, u32)>,
+    env: Env,
+    out: FleetStats,
+    next: usize,
+}
+
+impl StatsRun {
+    pub fn new(dogma: &Dogma, fleet: &Fleet, fits: &dyn Fn(&str) -> Option<Fit>, skills: &dyn Fn(Option<&str>) -> SkillSet) -> Self {
+        let env = env_of(dogma, fleet, fits, skills);
+        let counts = resolve_counts(fleet);
+        let out = FleetStats { name: fleet.name.clone(), main: fleet.main.unwrap_or(0), speed_min: f64::INFINITY, env: env.clone(), ..FleetStats::default() };
+        let slots = fleet.slots.iter().zip(counts).map(|(slot, count)| (fits(&slot.fit_id), skills(slot.profile.as_deref()), count)).collect();
+        StatsRun { fleet: fleet.clone(), slots, env, out, next: 0 }
     }
-    if !out.speed_min.is_finite() {
-        out.speed_min = 0.0;
+
+    /// One slot further; true once every slot is in.
+    pub fn step(&mut self, dogma: &Dogma) -> bool {
+        let index = self.next;
+        if index >= self.fleet.slots.len() {
+            return true;
+        }
+        self.next += 1;
+        let (fleet, env, out) = (&self.fleet, &self.env, &mut self.out);
+        let slot = &fleet.slots[index];
+        let (found, pilot, count) = self.slots[index].clone();
+        if let Some(fit) = found {
+            let fit = slot.adjusted(flown(dogma, &fit, slot.variation));
+            let calc = Calc::new(dogma, &fit, &pilot, env);
+            let mut computed = compute_with(&calc, &fit);
+            if !fleet.drones {
+                computed.weapons.retain(|w| w.alpha());
+            }
+            // Smartbombs are there against drones, not the enemy fleet: only the main slot fights
+            // with them, and only when it has nothing else.
+            let main_slot = fleet.main.unwrap_or(0) == index;
+            if !main_slot || computed.weapons.iter().any(|w| w.kind != WeaponKind::Smartbomb) {
+                computed.weapons.retain(|w| w.kind != WeaponKind::Smartbomb);
+            }
+            let n = f64::from(count);
+            out.dps += computed.dps() * n;
+            out.volley += computed.weapons.iter().filter(|w| w.alpha()).map(|w| w.volley.total()).sum::<f64>() * n;
+            for m in &computed.remote.modules {
+                let slot = match m.kind {
+                    RemoteKind::Web => &mut out.projected.webs,
+                    RemoteKind::Painter => &mut out.projected.painters,
+                    RemoteKind::TrackingDisruptor => &mut out.projected.tracking_disruptors,
+                    _ => continue,
+                };
+                *slot += count;
+            }
+            out.logi_rep += (computed.remote.armor_rep + computed.remote.shield_rep) * n;
+            out.neut += computed.remote.neut * n;
+            if count > 0 {
+                out.speed_min = out.speed_min.min(computed.mobility.max_velocity);
+                out.speed_max = out.speed_max.max(computed.mobility.max_velocity);
+            }
+            out.ships += count;
+            let role = role_of(dogma, fleet, index, fit.ship);
+            out.slots.push(SlotStats { fit_id: slot.fit_id.clone(), name: fit.name.clone(), count, computed, slot: index, ship: fit.ship, role, fit, skills: pilot });
+        }
+        self.next >= self.fleet.slots.len()
     }
-    if out.main >= out.slots.len() {
-        out.main = 0;
+
+    pub fn finish(self) -> FleetStats {
+        let mut out = self.out;
+        if !out.speed_min.is_finite() {
+            out.speed_min = 0.0;
+        }
+        if out.main >= out.slots.len() {
+            out.main = 0;
+        }
+        out
     }
-    out
 }
 
 /// What the enemy's ewar does to a target: webs cut its speed, painters grow its signature, both
