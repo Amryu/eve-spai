@@ -885,6 +885,15 @@ fn the_slot_picker_offers_what_the_hull_and_the_fit_leave_room_for() {
     assert!(!fits(&d, gun, &room(0, 100.0), FitFilter::Left), "no turret hardpoint free");
     assert!(fits(&d, gun, &room(0, 100.0), FitFilter::Totals), "but it fits an empty hull");
     assert!(!fits(&d, gun, &room(1, 1.0), FitFilter::Left), "not enough CPU left");
+    // A reactor control unit adds a share of the powergrid: offered though the fit is over by
+    // less than that, and on a fit far over it costs no powergrid, so it is kept too.
+    let rcu = d.type_(ids::RCU).unwrap();
+    let mut over = room(1, 100.0);
+    over.power_left = -5.0;
+    assert!(fits(&d, rcu, &over, FitFilter::Left), "20% of 40 MW makes up 5 MW over");
+    over.power_left = -50.0;
+    assert!(fits(&d, rcu, &over, FitFilter::Left), "it takes no powergrid, so it makes nothing worse");
+    assert!(!fits(&d, rcu, &room(1, 0.5), FitFilter::Left), "its own CPU still has to fit");
     let mut no_turrets = room(1, 100.0);
     no_turrets.turrets_total = 0;
     assert!(!fits(&d, gun, &no_turrets, FitFilter::Hull) && fits(&d, gun, &no_turrets, FitFilter::All), "a hull without turret hardpoints takes no gun at all");

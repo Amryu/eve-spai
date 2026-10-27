@@ -85,7 +85,8 @@ pub struct FitRoom {
 }
 
 /// Whether the module may go in under the filter. CPU and powergrid are the module's own, before
-/// skills, so it errs on the side of leaving a module out that skills would let in.
+/// skills, so it errs on the side of leaving a module out that skills would let in; what it adds
+/// to the hull's output is counted in its favour.
 pub fn fits(dogma: &Dogma, t: &spai_fit::dogma::TypeDef, room: &FitRoom, filter: FitFilter) -> bool {
     if filter == FitFilter::All {
         return true;
@@ -117,10 +118,39 @@ pub fn fits(dogma: &Dogma, t: &spai_fit::dogma::TypeDef, room: &FitRoom, filter:
         return true;
     }
     let (cpu, power) = room.costs.get(&t.id).copied().unwrap_or((f64::from(t.attr(attr::CPU).unwrap_or(0.0)), f64::from(t.attr(attr::POWER).unwrap_or(0.0))));
+    // What it adds to the hull's own CPU and powergrid counts too: a reactor control unit makes
+    // room for itself and more.
+    let (cpu_gain, power_gain) = output_gain(dogma, t, room.cpu_total, room.power_total);
     if filter == FitFilter::Totals {
-        return cpu <= room.cpu_total + 1e-6 && power <= room.power_total + 1e-6;
+        return cpu <= room.cpu_total + cpu_gain + 1e-6 && power <= room.power_total + power_gain + 1e-6;
     }
-    cpu <= room.cpu_left + 1e-6 && power <= room.power_left + 1e-6 && !(turret && room.turrets_free == 0) && !(launcher && room.launchers_free == 0)
+    // A fit already over keeps a module that takes nothing more of it, or gives more back.
+    let room_for = |net: f64, left: f64| net <= left + 1e-6 || net <= 1e-6;
+    room_for(cpu - cpu_gain, room.cpu_left) && room_for(power - power_gain, room.power_left) && !(turret && room.turrets_free == 0) && !(launcher && room.launchers_free == 0)
+}
+
+/// The CPU and powergrid the module's own effects add to the ship's output, at these totals.
+pub fn output_gain(dogma: &Dogma, t: &spai_fit::dogma::TypeDef, cpu_total: f64, power_total: f64) -> (f64, f64) {
+    use spai_fit::dogma::{Domain, Func, Op};
+    let mut gain = (0.0, 0.0);
+    for m in t.effects.iter().filter_map(|(e, _)| dogma.effect(*e)).flat_map(|e| e.modifiers.iter()) {
+        if m.domain != Domain::Ship || m.func != Func::Item {
+            continue;
+        }
+        let (total, at) = match m.modified {
+            attr::CPU_OUTPUT => (cpu_total, &mut gain.0),
+            attr::POWER_OUTPUT => (power_total, &mut gain.1),
+            _ => continue,
+        };
+        let v = f64::from(t.attr(m.modifying).unwrap_or(0.0));
+        *at += match m.op {
+            Op::PostPercent => total * v / 100.0,
+            Op::ModAdd => v,
+            Op::PostMul | Op::PreMul => total * (v - 1.0),
+            _ => 0.0,
+        };
+    }
+    (gain.0.max(0.0), gain.1.max(0.0))
 }
 
 impl SimUi {
