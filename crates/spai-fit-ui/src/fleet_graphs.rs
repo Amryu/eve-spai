@@ -132,14 +132,18 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, place: Option<bool>) {
     if matches!(sim.fleet_graph, FleetGraph::DamageByRange | FleetGraph::VolleyByRange) {
         overlay_filter(ui, &an, &mut sim.fleet_graph_ewar_shown, &mut sim.fleet_graph_ammo);
     }
+    if matches!(sim.fleet_graph, FleetGraph::ShipsOverTime | FleetGraph::DamageOverTime) {
+        race_filter(ui, &mut sim.fleet_graph_primaries, &mut sim.fleet_graph_critical);
+    }
+    let race_marks = (sim.fleet_graph_primaries, sim.fleet_graph_critical);
     let shown = sim.fleet_graph_ewar_shown.clone();
     let labels = [sim.ship_labels(&an.fleet, &an.mine), sim.ship_labels(&an.enemy, &an.theirs)];
     let dogma = sim.dogma.clone().filter(|_| sim.fleet_graph_ammo);
     let plot = match sim.fleet_graph {
         FleetGraph::DamageByRange => by_range(ui, &an, &shown, dogma.as_deref()),
         FleetGraph::VolleyByRange => volley_by_range(ui, &an, &shown, dogma.as_deref(), &labels),
-        FleetGraph::ShipsOverTime => over_time(&an, true, &labels),
-        FleetGraph::DamageOverTime => over_time(&an, false, &labels),
+        FleetGraph::ShipsOverTime => over_time(&an, true, &labels, race_marks),
+        FleetGraph::DamageOverTime => over_time(&an, false, &labels, race_marks),
         FleetGraph::Angular => angular(&an, &labels),
     };
     let height = (ui.available_height() - 4.0).max(200.0);
@@ -182,6 +186,22 @@ fn overlay_filter(ui: &mut egui::Ui, an: &Analysis, shown: &mut Vec<spai_fit::st
                     shown.push(k);
                 }
             }
+        }
+    });
+    ui.add_space(2.0);
+}
+
+/// The race graphs' overlays, each a toggle.
+fn race_filter(ui: &mut egui::Ui, primaries: &mut bool, critical: &mut bool) {
+    use spai_ui::widgets::SteadySelect as _;
+    let tip = |on: bool| if on { tr!("Shown on the graph; click to leave it off") } else { tr!("Left off the graph; click to show it") };
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new(tr!("Show")).weak());
+        if ui.menu_label(*primaries, tr!("Primaries")).on_hover_text(tip(*primaries)).clicked() {
+            *primaries = !*primaries;
+        }
+        if ui.menu_label(*critical, tr!("Critical mass")).on_hover_text(tip(*critical)).clicked() {
+            *critical = !*critical;
         }
     });
     ui.add_space(2.0);
@@ -301,7 +321,7 @@ fn volley_by_range(ui: &egui::Ui, an: &Analysis, shown: &[spai_fit::stats::Remot
 /// The race at the set range: ships left on each side, or the damage each lands, over time, with
 /// where each loses its critical mass and, along the bottom, the hull each turns its guns on. The
 /// readout names the primaries and the ships left at the pointer.
-fn over_time(an: &Analysis, ships: bool, labels: &[Vec<String>; 2]) -> Plot {
+fn over_time(an: &Analysis, ships: bool, labels: &[Vec<String>; 2], (show_primaries, show_critical): (bool, bool)) -> Plot {
     let r = &an.race;
     let pick = |x: &(f64, u32, u32, f64, f64), side: usize| match (ships, side) {
         (true, 0) => f64::from(x.1),
@@ -311,7 +331,7 @@ fn over_time(an: &Analysis, ships: bool, labels: &[Vec<String>; 2]) -> Plot {
     };
     let names = [&an.mine.name, &an.theirs.name];
     let series = (0..2).map(|side| PlotSeries { label: names[side].clone(), color: series_color(side), points: r.timeline.iter().map(|x| [x.0, pick(x, side)]).collect() }).collect();
-    let mut markers: Vec<PlotMarker> = (0..2).filter_map(|side| r.critical_mass_lost[side].map(|t| PlotMarker { x: t, label: trf!("{a} loses critical mass", a = text::clip(names[side], 18)), color: series_color(side), to: None, fill: false, bottom: false })).collect();
+    let mut markers: Vec<PlotMarker> = (0..2).filter(|_| show_critical).filter_map(|side| r.critical_mass_lost[side].map(|t| PlotMarker { x: t, label: trf!("{a} loses critical mass", a = text::clip(names[side], 18)), color: series_color(side), to: None, fill: false, bottom: false })).collect();
     let target_names = |side: usize, slots: &[Option<usize>]| {
         let mut v: Vec<String> = Vec::new();
         for k in slots.iter().flatten() {
@@ -323,7 +343,7 @@ fn over_time(an: &Analysis, ships: bool, labels: &[Vec<String>; 2]) -> Plot {
         v.join(", ")
     };
     // Only where the hull changes: a fleet of one hull works through it without a mark a kill.
-    for side in 0..2 {
+    for side in (0..2).filter(|_| show_primaries) {
         let mut last = String::new();
         for (t, slots) in &r.primaries[side] {
             let n = target_names(side, slots);
@@ -354,8 +374,8 @@ fn over_time(an: &Analysis, ships: bool, labels: &[Vec<String>; 2]) -> Plot {
             let mut rows: Vec<(u32, &String)> = left.iter().enumerate().filter(|(_, n)| **n > 0).filter_map(|(k, n)| labels[side].get(k).map(|l| (*n, l))).collect();
             rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
             if !rows.is_empty() {
-                let list: Vec<String> = rows.iter().map(|(n, l)| format!("{n} {l}")).collect();
-                lines.push(trf!("{a} left: {b}", a = text::clip(&names[side], 18), b = list.join(", ")));
+                lines.push(trf!("{a} left:", a = text::clip(&names[side], 18)));
+                lines.extend(rows.iter().map(|(n, l)| format!("    {n} × {l}")));
             }
         }
         lines

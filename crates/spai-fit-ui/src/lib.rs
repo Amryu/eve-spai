@@ -539,6 +539,9 @@ pub struct SimUi {
     pub fleet_graph_ewar_shown: Vec<spai_fit::stats::RemoteKind>,
     /// Whether the range graphs mark the primary weapons' charges.
     pub fleet_graph_ammo: bool,
+    /// Whether the race graphs mark each side's primaries, and where each loses critical mass.
+    pub fleet_graph_primaries: bool,
+    pub fleet_graph_critical: bool,
     pub fleet_graph_open: bool,
     pub fleet_graph_place: GraphPlace,
     pub fleet_graph_size: Option<f32>,
@@ -654,6 +657,8 @@ impl Default for SimUi {
             fleet_graph: fleet_graphs::FleetGraph::default(),
             fleet_graph_ewar_shown: Vec::new(),
             fleet_graph_ammo: true,
+            fleet_graph_primaries: true,
+            fleet_graph_critical: true,
             fleet_graph_open: false,
             fleet_graph_place: GraphPlace::default(),
             fleet_graph_size: None,

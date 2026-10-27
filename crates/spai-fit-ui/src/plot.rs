@@ -301,9 +301,10 @@ impl Plot {
             if let Some(more) = &self.readout {
                 lines.extend(more(x));
             }
+            // Lines as wide as they are: wrapped at the tooltip's width, a list of ships broke mid-name.
             response.on_hover_ui_at_pointer(|ui| {
                 for l in lines {
-                    ui.label(l);
+                    ui.add(egui::Label::new(l).wrap_mode(egui::TextWrapMode::Extend));
                 }
             });
         }
