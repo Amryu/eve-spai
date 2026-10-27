@@ -437,59 +437,45 @@ pub fn booster_variations(dogma: &Dogma, fit: &mut Fit) {
     }
 }
 
-/// The boosters a fleet of the doctrine needs: as few as run every kind their hulls strengthen,
-/// each covering all its kinds' charges, with as many different mindlinks as they can fly, keeping
-/// the setups and mindlinks the source fits.
+/// The variation a projected booster flies: its base when that carries a mindlink, else one that
+/// does, so each of its charges runs with its kind's mindlink.
+fn linked_variation(dogma: &Dogma, fit: &Fit) -> Option<u32> {
+    let link = |ids: &[crate::ids::TypeId]| ids.iter().any(|i| dogma.type_(*i).is_some_and(|t| t.name.contains("Command Mindlink")));
+    if link(&fit.implants) {
+        return None;
+    }
+    let carries = |v: &&crate::variations::Variation| v.ops.iter().any(|o| matches!(o, crate::variations::RefitOp::SetImplants(ids) if link(ids)));
+    // The mindlink alone reads plainest; the charges bring their own bursts anyway.
+    fit.variations.iter().filter(carries).find(|v| v.group.as_deref() == Some(MINDLINK_GROUP)).or_else(|| fit.variations.iter().find(carries)).map(|v| v.id)
+}
+
+/// The boosters a fleet of the doctrine needs: as few as cover every kind their hulls strengthen,
+/// each covering all the charges its hull can, the ones with more bursts first.
 fn needed_boosters(dogma: &Dogma, doctrine: &Doctrine, boosters: &[usize]) -> Vec<crate::fit::ProjectedFit> {
-    let fits: Vec<&Fit> = boosters.iter().filter_map(|&i| doctrine.fits[i].fit.as_ref()).collect();
-    let kinds: Vec<Vec<BurstKind>> = fits.iter().map(|f| served_kinds(dogma, f)).collect();
-    let own: Vec<bool> = fits.iter().zip(&kinds).map(|(f, k)| spread_ops(dogma, f, k).is_none()).collect();
-    let linked = |b: usize, k: BurstKind| dogma.type_named(k.mindlink_name()).is_some_and(|l| fits[b].implants.contains(&l.id));
-    let bursts = |b: usize| fits[b].modules.iter().filter(|m| burst_kind(dogma, m.type_id).is_some()).count();
-    let score = |pick: &[Option<BurstKind>]| {
-        let mut covered: Vec<BurstKind> = pick.iter().enumerate().filter(|(_, k)| k.is_some()).flat_map(|(b, _)| kinds[b].iter().copied()).collect();
+    let fits: Vec<(&str, &Fit)> = boosters.iter().filter_map(|&i| doctrine.fits[i].fit.as_ref().map(|f| (doctrine.fits[i].fit_id.as_str(), f))).collect();
+    let kinds: Vec<Vec<BurstKind>> = fits.iter().map(|(_, f)| hull_kinds(dogma, f)).collect();
+    let bursts = |b: usize| fits[b].1.modules.iter().filter(|m| burst_kind(dogma, m.type_id).is_some()).count();
+    // Few boosters: every subset is tried.
+    let mut best: Option<(usize, std::cmp::Reverse<usize>, usize, u32)> = None;
+    for mask in 1u32..(1 << fits.len().min(16)) {
+        let chosen: Vec<usize> = (0..fits.len()).filter(|b| mask & (1 << b) != 0).collect();
+        let mut covered: Vec<BurstKind> = chosen.iter().flat_map(|b| kinds[*b].iter().copied()).collect();
         covered.sort_by_key(|k| BurstKind::COMBAT.iter().position(|c| c == k));
         covered.dedup();
-        let mut links: Vec<BurstKind> = pick.iter().flatten().copied().collect();
-        links.sort_by_key(|k| BurstKind::COMBAT.iter().position(|c| c == k));
-        links.dedup();
-        let used = pick.iter().flatten().count();
-        let owns = pick.iter().enumerate().filter(|(b, k)| k.is_some() && own[*b]).count();
-        let kept = pick.iter().enumerate().filter(|(b, k)| k.is_some_and(|k| linked(*b, k))).count();
-        let n: usize = pick.iter().enumerate().filter(|(_, k)| k.is_some()).map(|(b, _)| bursts(b)).sum();
-        (covered.len(), std::cmp::Reverse(used), links.len(), owns, kept, n)
-    };
-    // Few boosters and four kinds: every pick of boosters and mindlinks is tried.
-    fn walk(b: usize, kinds: &[Vec<BurstKind>], pick: &mut Vec<Option<BurstKind>>, best: &mut Vec<Option<BurstKind>>, better: &dyn Fn(&[Option<BurstKind>], &[Option<BurstKind>]) -> bool) {
-        if b == kinds.len() {
-            if better(pick, best) {
-                best.clone_from(pick);
-            }
-            return;
+        let score = (covered.len(), std::cmp::Reverse(chosen.len()), chosen.iter().map(|b| bursts(*b)).sum::<usize>(), u32::MAX - mask);
+        if best.is_none_or(|b| (score.0, score.1, score.2, score.3) > (b.0, b.1, b.2, b.3)) {
+            best = Some(score);
         }
-        pick[b] = None;
-        walk(b + 1, kinds, pick, best, better);
-        for k in &kinds[b] {
-            pick[b] = Some(*k);
-            walk(b + 1, kinds, pick, best, better);
-        }
-        pick[b] = None;
     }
-    let mut best: Vec<Option<BurstKind>> = vec![None; fits.len()];
-    let mut pick = best.clone();
-    walk(0, &kinds, &mut pick, &mut best, &|a, b| score(a) > score(b));
-    let mut out: Vec<(usize, crate::fit::ProjectedFit)> = Vec::new();
-    for (b, kind) in best.iter().enumerate() {
-        let Some(kind) = *kind else { continue };
-        let fit = fits[b];
-        let variation = booster_variation(dogma, fit, kind);
-        let mut flown = fit.clone();
-        flown.active_variations = variation.into_iter().collect();
-        let flown = crate::variations::resolve(dogma, &flown);
-        out.push((BurstKind::COMBAT.iter().position(|c| *c == kind).unwrap_or(0), crate::fit::ProjectedFit { fit_id: doctrine.fits[boosters[b]].fit_id.clone(), count: 1, active: true, variation, charges: covered_charges(dogma, &flown) }));
-    }
-    out.sort_by_key(|(k, _)| *k);
-    out.into_iter().map(|(_, p)| p).collect()
+    let Some(best) = best else { return Vec::new() };
+    let mask = u32::MAX - best.3;
+    (0..fits.len())
+        .filter(|b| mask & (1 << b) != 0)
+        .map(|b| {
+            let (id, fit) = fits[b];
+            crate::fit::ProjectedFit { fit_id: id.to_owned(), count: 1, active: true, variation: linked_variation(dogma, fit), charges: crate::fleet::boostable_charges(dogma, fit) }
+        })
+        .collect()
 }
 
 /// The doctrine's command fits as boosters: each gets its mindlink and burst swap variations,

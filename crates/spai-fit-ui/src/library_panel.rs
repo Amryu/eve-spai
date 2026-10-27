@@ -380,7 +380,7 @@ pub fn project_picker(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
     if let Some(id) = chosen {
         // A booster covers all its charges from the start: one entry stands for every boost it runs.
         let charges = match (&sim.dogma, sim.sessions().iter().find(|s| s.id == id).map(|s| &s.fit).or_else(|| sim.fit_docs.get(&id))) {
-            (Some(d), Some(fit)) => spai_fit::doctrine::covered_charges(d, fit),
+            (Some(d), Some(fit)) => spai_fit::fleet::boostable_charges(d, fit),
             _ => Vec::new(),
         };
         sim.edit(spai_fit::history::EditKind::Other, now_ms, |f| match f.projected_fits.iter_mut().find(|p| p.fit_id == id) {

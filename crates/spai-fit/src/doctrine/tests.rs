@@ -331,3 +331,19 @@ fn a_copy_projects_its_own_boosters() {
     });
     assert_eq!(fits[1].projected_fits[0].fit_id, copy.fits[0].fit_id);
 }
+
+/// A booster covers every charge its hull can boost, fitted or not: each on its kind's burst, a
+/// strategic cruiser with its boosting subsystem.
+#[test]
+fn a_booster_covers_what_its_hull_can_boost_without_fitting_it() {
+    let d = dataset();
+    let skills = crate::skills::SkillSet::all_v();
+    let mut fit = Fit::new(ids::T3C, "T3C");
+    fit.modules.push(crate::fit::Module::new(ids::BURST, Slot::High, 0).with_state(crate::fit::State::Active));
+    fit.implants.push(ids::SHIELD_MINDLINK);
+    assert_eq!(crate::fleet::boostable_charges(&d, &fit), [ids::BURST_CHARGE, ids::SKIRM_CHARGE], "both kinds its subsystem strengthens");
+    let buffs = crate::fleet::covered_bursts(&d, &fit, &[ids::BURST_CHARGE, ids::SKIRM_CHARGE], &skills);
+    assert_eq!(buffs.iter().map(|(id, _)| *id as u32).collect::<Vec<_>>(), [12, 60], "skirmish too, on a burst it does not fit");
+    let plain = crate::fleet::covered_bursts(&d, &Fit { ship: ids::SHIP, ..fit.clone() }, &[ids::BURST_CHARGE], &skills);
+    assert!(buffs[0].1 > plain[0].1 * 1.05, "the subsystem's bonus counts though not fitted: {} vs {}", buffs[0].1, plain[0].1);
+}

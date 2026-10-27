@@ -564,20 +564,51 @@ pub fn bursts_of(dogma: &Dogma, fit: &Fit, skills: &SkillSet) -> Vec<(BuffId, f6
     out
 }
 
-/// The bursts a booster fit gives when it covers these charges: each from one of its bursts that
-/// takes it, loaded with it alone and running. No charges is what its bursts have loaded.
+/// The kind whose bursts load the charge.
+pub fn charge_kind(dogma: &Dogma, charge: crate::ids::TypeId) -> Option<BurstKind> {
+    BurstKind::ALL.into_iter().find(|k| dogma.type_named(k.module_name()).is_some_and(|m| dogma.takes_charge(m.id, charge)))
+}
+
+/// Whether the implant is a command mindlink.
+fn is_mindlink(dogma: &Dogma, implant: crate::ids::TypeId) -> bool {
+    dogma.type_(implant).is_some_and(|t| t.name.contains("Command Mindlink") || t.name.ends_with("Foreman Mindlink"))
+}
+
+/// The bursts a booster fit gives when it covers these charges, each figured on its own: run by a
+/// burst of its kind (one it fits, else the kind's Tech II in place of another), with the kind's
+/// mindlink if the fit carries one, and a strategic cruiser's boosting subsystem. A booster cycles
+/// its bursts, so one fit stands for every boost its hull gives. No charges is what its bursts
+/// have loaded.
 pub fn covered_bursts(dogma: &Dogma, fit: &Fit, charges: &[crate::ids::TypeId], skills: &SkillSet) -> Vec<(BuffId, f64)> {
+    use crate::fit::{Module, Slot};
     if charges.is_empty() {
         return bursts_of(dogma, fit, skills);
     }
     let is_burst = |t: crate::ids::TypeId| dogma.type_(t).is_some_and(|ty| ty.effects.iter().any(|(e, _)| dogma.effect(*e).is_some_and(|x| BurstKind::ALL.iter().any(|k| k.effect() == x.name))));
+    let linked = fit.implants.iter().any(|i| is_mindlink(dogma, *i));
     let mut out = Vec::new();
     for &c in charges {
-        // Any burst that takes it, offline ones too: a hull that runs fewer at once than it fits
-        // cycles them.
-        let Some(at) = fit.modules.iter().position(|m| m.state > State::Offline && is_burst(m.type_id) && dogma.compatible_charges(m.type_id).contains(&c)).or_else(|| fit.modules.iter().position(|m| is_burst(m.type_id) && dogma.compatible_charges(m.type_id).contains(&c))) else { continue };
+        let Some(kind) = charge_kind(dogma, c) else { continue };
         let mut one = fit.clone();
-        // The others offline: a hull that runs one burst at a time would cap the loaded one.
+        let takes = |m: &Module| is_burst(m.type_id) && dogma.takes_charge(m.type_id, c);
+        let at = match one.modules.iter().position(|m| takes(m) && m.state > State::Offline).or_else(|| one.modules.iter().position(takes)) {
+            Some(at) => at,
+            None => {
+                let Some(module) = dogma.type_named(kind.module_name()).map(|t| t.id) else { continue };
+                match one.modules.iter().position(|m| is_burst(m.type_id)) {
+                    Some(at) => {
+                        one.modules[at].type_id = module;
+                        at
+                    }
+                    None => {
+                        let index = one.modules.iter().filter(|m| m.slot == Slot::High).map(|m| m.index + 1).max().unwrap_or(0);
+                        one.modules.push(Module::new(module, Slot::High, index));
+                        one.modules.len() - 1
+                    }
+                }
+            }
+        };
+        // The others offline: a hull that runs one burst at a time would cap this one.
         for (i, m) in one.modules.iter_mut().enumerate() {
             if is_burst(m.type_id) && i != at {
                 m.charge = None;
@@ -586,9 +617,29 @@ pub fn covered_bursts(dogma: &Dogma, fit: &Fit, charges: &[crate::ids::TypeId], 
         }
         one.modules[at].charge = Some(c);
         one.modules[at].state = State::Active;
+        if linked {
+            one.implants.retain(|i| !is_mindlink(dogma, *i));
+            one.implants.extend(dogma.type_named(kind.mindlink_name()).map(|t| t.id));
+        }
+        if let Some(sub) = boost_subsystem(dogma, one.ship, kind) {
+            let group = dogma.type_(sub).map(|t| t.group);
+            let index = group.and_then(|g| dogma.subsystem_groups(one.ship).iter().position(|x| *x == g)).unwrap_or(0) as u8;
+            one.modules.retain(|m| !(m.slot == Slot::Subsystem && dogma.type_(m.type_id).map(|t| t.group) == group));
+            one.modules.push(Module::new(sub, Slot::Subsystem, index).with_state(State::Online));
+        }
         out.extend(bursts_of(dogma, &one, skills));
     }
     out
+}
+
+/// The charges a booster can cover: every charge of each kind its hull strengthens, or of the
+/// kinds it runs on a hull that strengthens none.
+pub fn boostable_charges(dogma: &Dogma, fit: &Fit) -> Vec<crate::ids::TypeId> {
+    let mut kinds: Vec<BurstKind> = BurstKind::COMBAT.into_iter().filter(|k| hull_boosts(dogma, fit.ship, *k)).collect();
+    if kinds.is_empty() {
+        kinds = BurstKind::COMBAT.into_iter().filter(|k| fit_has_burst(dogma, fit, *k)).collect();
+    }
+    kinds.into_iter().filter_map(|k| dogma.type_named(k.module_name())).flat_map(|m| dogma.compatible_charges(m.id)).collect()
 }
 
 /// The fleet's environment: the strongest of every buff its boosters give.
