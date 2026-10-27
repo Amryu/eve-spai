@@ -343,7 +343,8 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
         let base = sim.sessions().iter().find(|s| s.id == id).map(|s| &s.fit).or_else(|| sim.fit_docs.get(&id)).map_or_else(|| tr!("Base").to_owned(), crate::base_label);
         let flying = variation.and_then(|v| variations.iter().find(|(x, _)| *x == v)).map(|(_, n)| n.clone());
         let mut set_variation: Option<Option<u32>> = None;
-        let found = sim.sessions().iter().find(|s| s.id == id).map(|s| (s.fit.name.clone(), s.fit.ship)).or_else(|| sim.library.iter().find(|e| e.id == id).map(|e| (e.name.clone(), e.ship)));
+        // A supplied doctrine's fit is in no library, only among the fits read.
+        let found = sim.sessions().iter().find(|s| s.id == id).map(|s| (s.fit.name.clone(), s.fit.ship)).or_else(|| sim.library.iter().find(|e| e.id == id).map(|e| (e.name.clone(), e.ship))).or_else(|| sim.fit_docs.get(&id).map(|f| (f.name.clone(), f.ship)));
         let (name, ship) = found.unwrap_or_else(|| (tr!("A fit no longer saved").to_owned(), 0));
         let src = sim.sessions().iter().find(|s| s.id == id).map(|s| &s.fit).or_else(|| sim.fit_docs.get(&id));
         let takes = src.map(|f| spai_fit::doctrine::covered_charges(dogma, f)).unwrap_or_default();

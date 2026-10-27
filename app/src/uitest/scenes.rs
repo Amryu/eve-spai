@@ -10037,3 +10037,20 @@ fn uitest_a_projected_module_is_flown_from_a_picked_hull() {
         harness::shot(&mut h, "imperium_projected_source_picked");
     }
 }
+
+/// A supplied doctrine's fit projected onto a fit is in no library: its row still names it.
+#[test]
+fn uitest_a_projected_supplied_fit_is_named() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut scene = imperium_scene_with("imperium_projected_supplied", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        let id = spai_fit::doctrine::supplied_fit_id("gsf-x", "bifrost");
+        sim.fit_docs.insert(id.clone(), spai_fit::fit::Fit::new(spai_fit::test_support::ids::SHIP, "Boost - V25.1"));
+        sim.edit(spai_fit::history::EditKind::Other, 5, move |f| f.projected_fits.push(spai_fit::fit::ProjectedFit { fit_id: id, ..Default::default() }));
+        sim.dock.first = 3;
+    });
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(4);
+    assert!(h.query_all_by_label_contains("Boost - V25.1").next().is_some(), "the supplied fit's name is on its row");
+    assert!(h.query_all_by_label_contains("A fit no longer saved").next().is_none());
+}
