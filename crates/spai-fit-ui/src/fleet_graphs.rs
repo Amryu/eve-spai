@@ -122,7 +122,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, place: Option<bool>) {
     ui.add_space(4.0);
     let analysis = sim.fleet_analysis();
     if sim.fleet_analysis_pending() {
-        crate::fleet_panel::working_badge(ui);
+        crate::fleet_panel::working_badge(ui, sim.fleet_analysis_progress());
     }
     let Some(an) = analysis else {
         ui.add_space(8.0);

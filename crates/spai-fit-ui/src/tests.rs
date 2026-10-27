@@ -276,7 +276,7 @@ fn fleets_ask_for_fit_documents_and_compute_once_they_arrive() {
     let (theirs, a, b) = enemy.expect("the mirror needs no document");
     assert_eq!(theirs.ships, 30, "the copy follows the edits");
     assert!((a.applied_dps - b.applied_dps).abs() < 1e-9);
-    let an = s.fleet_analysis().expect("the mirror is analysed");
+    let an = s.fleet_analysis_settled().expect("the mirror is analysed");
     assert_eq!(an.sweep.a_best, an.sweep.b_best);
     assert!(an.sweep.a_favoured.is_empty() && an.sweep.b_favoured.is_empty(), "neither side is favoured against itself");
     // A knob moving keeps the last analysis on screen until it rests.
@@ -1863,7 +1863,10 @@ fn a_changed_fleet_is_analysed_off_the_frame_and_the_result_comes_in() {
     f.fleet.size = 20;
     f.fleet.slots.push(FleetSlot { fit_id, rule: CountRule::Fill { min: 0, max: 100 }, ..FleetSlot::default() });
     f.enemy = Some(crate::fleet_panel::MIRROR.to_owned());
-    let first = s.fleet_analysis().expect("the first analysis is worked out at once");
+    // The first one too is worked out off the frame: nothing on screen but its progress.
+    assert!(s.fleet_analysis().is_none() && s.fleet_analysis_progress().is_some(), "the frame is not held up for the first one either");
+    let first = s.fleet_analysis_settled().expect("the first analysis comes in");
+    assert!(s.fleet_analysis_progress().is_none(), "no run left once it is in");
     // A change: the old one is shown while the new one is worked out on its own thread.
     s.fleet.as_mut().unwrap().fleet.slots[0].charges = vec![(ids::GUN, ids::AMMO_LONG)];
     s.now_ms = 0;

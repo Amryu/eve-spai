@@ -552,6 +552,14 @@ fn imperium_scene_with(name: &'static str, size: [f32; 2], extreme: bool, pane: 
 fn fleet_fixture(sim: &mut spai_fit_ui::SimUi) {
     use spai_fit::fleet::{BurstKind, CountRule, Fleet, FleetSlot};
     use spai_fit::test_support::ids;
+    // The open tabs as saved: their autosave lists the fits again from the scratch profile, which
+    // holds none of these, and the fleet's rows lost their fits whenever the frames ran long
+    // enough for it, as they do while the analysis runs off the frame.
+    let open: Vec<String> = sim.sessions().iter().map(|s| s.id.clone()).collect();
+    for id in open {
+        sim.handle(spai_fit_ui::HostEvent::Saved(id));
+    }
+    let _ = sim.take_requests();
     let fit = |name: &str, guns: u8| {
         let mut f = spai_fit::fit::Fit::new(ids::SHIP, name);
         for i in 0..guns {
