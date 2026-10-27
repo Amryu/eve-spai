@@ -2165,3 +2165,41 @@ fn a_fight_taken_step_by_step_is_the_fight_worked_out_at_once() {
     assert_eq!(parts.race.timeline, whole.race.timeline);
     assert_eq!(fresh.len(), 1, "the slot's options handed back for the cache, once for both sides");
 }
+
+/// Every knob the race reads works the fight out again: the logi's timing and the race's length
+/// left the last analysis on screen as if it were still the one.
+#[test]
+fn the_logi_settings_and_the_race_length_redo_the_fight() {
+    use spai_fit::fleet::{CountRule, FleetSlot};
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    apply(&mut s, PickTarget::Charge(Slot::High, 0), ids::AMMO, 2);
+    s.save();
+    let reqs = s.take_requests();
+    let HostRequest::SaveFit { id: fit_id, .. } = &reqs[0] else { panic!("{reqs:?}") };
+    let fit_id = fit_id.clone();
+    s.handle(HostEvent::Saved(fit_id.clone()));
+    s.new_fleet(10);
+    let f = s.fleet.as_mut().unwrap();
+    f.fleet.size = 20;
+    f.fleet.slots.push(FleetSlot { fit_id, rule: CountRule::Fill { min: 0, max: 100 }, ..FleetSlot::default() });
+    f.enemy = Some(crate::fleet_panel::MIRROR.to_owned());
+    let mut last = s.fleet_analysis_settled().expect("the first analysis");
+    let changes: [fn(&mut spai_fit::fleet::Fleet); 5] = [
+        |f| f.logi_spread_s = 9.0,
+        |f| f.logi_reaction_s = 4.0,
+        |f| f.logi_prelock = 0.2,
+        |f| f.logi_efficiency = 0.4,
+        |f| f.race_length_s = 120.0,
+    ];
+    for (i, change) in changes.into_iter().enumerate() {
+        change(&mut s.fleet.as_mut().unwrap().fleet);
+        s.now_ms += 10_000;
+        let _ = s.fleet_analysis();
+        s.now_ms += 10_000;
+        let next = s.fleet_analysis_settled().unwrap();
+        assert!(!Arc::ptr_eq(&next, &last), "change {i} worked the fight out again");
+        last = next;
+    }
+}

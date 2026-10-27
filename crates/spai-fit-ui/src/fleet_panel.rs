@@ -403,7 +403,10 @@ impl SimUi {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (mine_key, theirs_key).hash(&mut h);
         for x in [&f.fleet, &enemy] {
-            serde_json::to_string(&(x.range, x.motion, x.formation, &x.target_order, x.adc, x.volley_efficiency, x.ewar_auto, &x.ewar, &x.ewar_plan, x.split_fire)).unwrap_or_default().hash(&mut h);
+            // Everything the sweep and the race read off the fleet: a knob left out here changed
+            // nothing on screen, the last analysis kept as if it were still the one.
+            let logi = (x.logi_efficiency, x.logi_prelock, x.logi_reaction_s, x.logi_spread_s, x.race_length_s);
+            serde_json::to_string(&(x.range, x.motion, x.formation, &x.target_order, x.adc, x.volley_efficiency, x.ewar_auto, &x.ewar, &x.ewar_plan, x.split_fire, logi)).unwrap_or_default().hash(&mut h);
         }
         let key = h.finish();
         let now = self.now_ms;
