@@ -162,7 +162,13 @@ fn a_fleet_from_a_doctrine_takes_roles_from_the_hulls_and_boosters_from_the_burs
     assert_eq!(f.slots.iter().map(|s| s.fit_id.as_str()).collect::<Vec<_>>(), vec!["d-logi", "d-dps", "d-boost"]);
     assert!(f.slots.iter().all(|s| matches!(s.rule, CountRule::Fill { .. })), "the synthetic hull is no logi or command ship: every slot fills");
     assert_eq!(f.main, Some(0));
-    assert_eq!(f.boosters, vec![(BurstKind::Shield, "d-boost".to_owned())]);
+    assert!(f.boosters.is_empty(), "no booster fits");
+    assert_eq!(f.boost_shortcuts.iter().map(|b| (b.kind, b.hull, b.mindlink)).collect::<Vec<_>>(), [(BurstKind::Shield, None, true)], "a booster entry for the kind, the hull without bonuses standing in as none");
+    let mut t3c = gun_fit("t3c", 0);
+    t3c.ship = ids::T3C;
+    t3c.modules.push(Module::new(ids::BURST, Slot::High, 4).with_state(State::Active));
+    let f = from_doctrine(&d, "Hammer", &[fits[2].clone(), ("d-t3c".to_owned(), t3c)], &SkillSet::all_v());
+    assert_eq!(f.boost_shortcuts.iter().map(|b| (b.kind, b.hull)).collect::<Vec<_>>(), [(BurstKind::Shield, Some(ids::T3C)), (BurstKind::Skirmish, Some(ids::T3C))], "the strongest hull, for every kind it strengthens");
     assert!(f.ewar_auto);
     assert_eq!(role_rule(&d, 0), CountRule::Fill { min: 0, max: 1000 });
 }

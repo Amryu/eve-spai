@@ -1544,7 +1544,7 @@ pub(crate) fn boosters_ui(ui: &mut egui::Ui, boosters: &mut Vec<(BurstKind, Stri
                     let shortcut = shortcuts.iter().position(|b| b.kind == kind);
                     let name = if let Some(i) = shortcut {
                         let hull = shortcuts[i].hull.zip(dogma).map_or_else(|| tr!("no hull bonus").to_owned(), |(h, d)| spai_fit::formats::name_of(d, h));
-                        trf!("Generic booster · {hull}", hull = hull)
+                        trf!("Booster · {hull}", hull = hull)
                     } else {
                         current.as_ref().and_then(|id| library.iter().find(|x| &x.id == id).map(|x| x.name.clone()).or_else(|| doctrine_fits.iter().find(|(d, _)| d == id).map(|(_, n)| n.clone()))).unwrap_or_else(|| tr!("none").to_owned())
                     };
@@ -1563,7 +1563,7 @@ pub(crate) fn boosters_ui(ui: &mut egui::Ui, boosters: &mut Vec<(BurstKind, Stri
                         }
                         if let Some(d) = dogma {
                             ui.separator();
-                            ui.label(egui::RichText::new(tr!("Generic booster, in no slot")).weak());
+                            ui.label(egui::RichText::new(tr!("Booster, in no slot")).weak());
                             let on_hull = |h: Option<spai_fit::ids::TypeId>| shortcut.is_some_and(|i| shortcuts[i].hull == h);
                             if ui.menu_label(on_hull(None), tr!("A hull without burst bonuses")).clicked() {
                                 pick = Some(Some(Err(None)));

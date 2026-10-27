@@ -1057,9 +1057,33 @@ pub fn scripts_of(dogma: &Dogma, module: crate::ids::TypeId) -> Vec<crate::ids::
     dogma.compatible_charges(module).into_iter().filter(|c| dogma.type_(*c).and_then(|t| dogma.group(t.group)).is_some_and(|g| g.name.contains("Script"))).collect()
 }
 
+/// How much a booster entry of the kind on this hull gives: its buffs' sizes together, with the
+/// mindlink, all V.
+fn shortcut_strength(dogma: &Dogma, kind: BurstKind, hull: TypeId) -> f64 {
+    let b = crate::fit::BoostShortcut { kind, hull: Some(hull), mindlink: true, ..Default::default() };
+    shortcut_bursts(dogma, &b).iter().map(|(_, v)| v.abs()).sum()
+}
+
+/// A booster entry for each kind these booster fits cover, on the strongest of their hulls for it,
+/// with the mindlink and every charge. A fit without bursts boosts nothing.
+pub fn boosts_for(dogma: &Dogma, fits: &[&Fit]) -> Vec<crate::fit::BoostShortcut> {
+    let fits: Vec<&&Fit> = fits.iter().filter(|f| BurstKind::COMBAT.iter().any(|k| fit_has_burst(dogma, f, *k))).collect();
+    BurstKind::COMBAT
+        .into_iter()
+        .filter_map(|kind| {
+            let able: Vec<TypeId> = fits.iter().filter(|f| crate::doctrine::hull_kinds(dogma, f).contains(&kind)).map(|f| f.ship).collect();
+            let best = able.iter().copied().max_by(|a, b| shortcut_strength(dogma, kind, *a).total_cmp(&shortcut_strength(dogma, kind, *b)))?;
+            // A hull that strengthens none of them stands in as no hull bonus.
+            let hull = hull_boosts(dogma, best, kind).then_some(best);
+            Some(crate::fit::BoostShortcut { kind, hull, mindlink: true, ..Default::default() })
+        })
+        .collect()
+}
+
 /// A fleet from a doctrine's presets: every fit a slot with its role's rule, the first line ship
-/// the main, and the booster fits by the bursts they carry.
-pub fn from_doctrine(dogma: &Dogma, name: &str, fits: &[(String, Fit)], skills: &SkillSet) -> Fleet {
+/// the main, and a booster entry for each kind its booster fits run, on the strongest of their
+/// hulls.
+pub fn from_doctrine(dogma: &Dogma, name: &str, fits: &[(String, Fit)], _skills: &SkillSet) -> Fleet {
     let mut fleet = Fleet { name: name.to_owned(), ..Fleet::default() };
     for (id, fit) in fits {
         let rule = role_rule(dogma, fit.ship);
@@ -1067,18 +1091,9 @@ pub fn from_doctrine(dogma: &Dogma, name: &str, fits: &[(String, Fit)], skills: 
             fleet.main = Some(fleet.slots.len());
         }
         fleet.slots.push(FleetSlot { fit_id: id.clone(), rule, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() });
-        let calc = Calc::new(dogma, fit, skills, &Env::default());
-        for (i, it) in calc.modules() {
-            if it.state < State::Active {
-                continue;
-            }
-            for kind in BurstKind::COMBAT {
-                if calc.effect_names(i).any(|n| n == kind.effect()) && !fleet.boosters.iter().any(|(k, _)| *k == kind) {
-                    fleet.boosters.push((kind, id.clone()));
-                }
-            }
-        }
     }
+    let fits: Vec<&Fit> = fits.iter().map(|(_, f)| f).collect();
+    fleet.boost_shortcuts = boosts_for(dogma, &fits);
     fleet
 }
 
