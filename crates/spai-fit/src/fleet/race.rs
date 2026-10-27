@@ -72,6 +72,9 @@ pub struct Race {
     pub critical_mass_lost: [Option<f64>; 2],
     /// Per target slot of each side: how its first ship to be primaried fared.
     pub verdicts: [Vec<(usize, Verdict)>; 2],
+    /// Raw damage each side sent, and of it what reached a ship already dead.
+    pub fired: [f64; 2],
+    pub wasted: [f64; 2],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -458,6 +461,7 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                         continue;
                     }
                     in_flight[side].push((t + flight, p, [v.em * scale, v.thermal * scale, v.kinetic * scale, v.explosive * scale]));
+                    out.fired[side] += v.total() * scale;
                     // A vorton's arc, a bomb's blast or a doomsday's beam goes on to the ships near
                     // the primary, as many as its formation puts within reach: whole strikes on the
                     // first, a share on the last.
@@ -488,6 +492,8 @@ pub fn race(dogma: &crate::Dogma, a: &Side, b: &Side, distance: f64, limit: f64)
                         Some((_, x)) => (0..4).for_each(|i| x[i] += d[i]),
                         None => arriving.push((*ship, *d)),
                     }
+                } else {
+                    out.wasted[side] += d.iter().sum::<f64>();
                 }
                 false
             });

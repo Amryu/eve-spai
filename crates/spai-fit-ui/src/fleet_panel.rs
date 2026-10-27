@@ -1459,6 +1459,9 @@ fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, di
             });
             let first_loss = r.events.iter().find(|(_, e)| matches!(e, Event::Kill { side: s, .. } if *s == side)).map(|(t, _)| *t);
             line(ui, &trf!("{a} first loss", a = name), first_loss.map_or_else(|| tr!("none").to_owned(), text::secs));
+            if r.fired[side] > 0.0 {
+                tline(ui, &trf!("{a} damage on wrecks", a = name), format!("{}%", text::num(100.0 * r.wasted[side] / r.fired[side])), |ui| tip(ui, tr!("Damage on wrecks"), &[], tr!("The share of what it sent that reached a ship already dead: missiles in flight when their target died. A turret holds its volley for the next primary instead.")));
+            }
             let other = 1 - side;
             tline(ui, &trf!("{a} reps catch up", a = name), match r.critical_mass_lost[other] {
                 Some(t) => {
@@ -1466,7 +1469,7 @@ fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, di
                     trf!("at {s}, {n} enemies left", s = text::secs(t), n = left)
                 }
                 None => tr!("never").to_owned(),
-            }, |ui| tip(ui, tr!("Reps catch up"), &[], tr!("From here the other side's damage on its primary, through the resistances of the layer being worn, no longer beats the repairs on it: it has lost its critical mass.")));
+            }, |ui| tip(ui, tr!("Reps catch up"), &[], tr!("From here the other side's damage on its primary, through the resistances of the layer being worn, no longer beats the repairs on it, and one volley of it no longer kills a ship outright: it has lost its critical mass.")));
         }
     });
     let target_side = 1 - dir;
