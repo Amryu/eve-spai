@@ -535,7 +535,10 @@ pub struct SimUi {
     pub(crate) graph_in_window: bool,
     pub fleet_graph: fleet_graphs::FleetGraph,
     /// Ewar kinds left off the by-range graphs, to thin them out.
-    pub fleet_graph_hidden_ewar: Vec<spai_fit::stats::RemoteKind>,
+    /// The ewar kinds drawn on the range graphs; none until picked, they crowd the graph.
+    pub fleet_graph_ewar_shown: Vec<spai_fit::stats::RemoteKind>,
+    /// Whether the range graphs mark the primary weapons' charges.
+    pub fleet_graph_ammo: bool,
     pub fleet_graph_open: bool,
     pub fleet_graph_place: GraphPlace,
     pub fleet_graph_size: Option<f32>,
@@ -649,7 +652,8 @@ impl Default for SimUi {
             graph_dock_w: None,
             graph_in_window: false,
             fleet_graph: fleet_graphs::FleetGraph::default(),
-            fleet_graph_hidden_ewar: Vec::new(),
+            fleet_graph_ewar_shown: Vec::new(),
+            fleet_graph_ammo: true,
             fleet_graph_open: false,
             fleet_graph_place: GraphPlace::default(),
             fleet_graph_size: None,

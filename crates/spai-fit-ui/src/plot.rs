@@ -24,6 +24,8 @@ pub struct Plot {
     pub markers: Vec<PlotMarker>,
     /// Horizontal dashed lines at a value of y, such as a line's peak, labelled at the right.
     pub levels: Vec<PlotLevel>,
+    /// More lines for the readout at a value of x, under the series'.
+    pub readout: Option<Box<dyn Fn(f64) -> Vec<String>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -295,6 +297,9 @@ impl Plot {
                 if let Some(y) = value_at(&s.points, x) {
                     lines.push(format!("{}: {}", s.label, (self.fmt_y)(y)));
                 }
+            }
+            if let Some(more) = &self.readout {
+                lines.extend(more(x));
             }
             response.on_hover_ui_at_pointer(|ui| {
                 for l in lines {

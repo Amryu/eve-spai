@@ -1256,8 +1256,27 @@ pub fn results(sim: &mut SimUi, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new(tr!("No fleet open.")).weak());
         return;
     };
-    let names: HashMap<String, String> = sim.library.iter().map(|f| (f.id.clone(), f.name.clone())).collect();
     let analysis = sim.fleet_analysis();
+    // Ships by hull, the fit's name only to tell two alike apart.
+    let labels: Vec<(Arc<FleetStats>, Vec<String>)> = {
+        let own = sim.fleet.as_ref().map(|f| f.fleet.clone());
+        let other = sim.fleet.as_ref().and_then(|f| f.enemy.clone()).and_then(|id| sim.enemy_fleet(&id));
+        let mut v = Vec::new();
+        if let Some(f) = own {
+            v.push((mine.clone(), sim.ship_labels(&f, &mine)));
+        }
+        if let (Some(f), Some((t, _, _))) = (other, &enemy) {
+            v.push((t.clone(), sim.ship_labels(&f, t)));
+        }
+        if let Some(an) = &analysis {
+            v.push((an.mine.clone(), sim.ship_labels(&an.fleet, &an.mine)));
+            v.push((an.theirs.clone(), sim.ship_labels(&an.enemy, &an.theirs)));
+        }
+        v
+    };
+    let names = |s: &spai_fit::fleet::SlotStats| -> String {
+        labels.iter().find_map(|(st, l)| st.slots.iter().position(|x| std::ptr::eq(x, s)).and_then(|i| l.get(i).cloned())).unwrap_or_else(|| s.name.clone())
+    };
     if sim.fleet_analysis_pending() {
         working_badge(ui, sim.fleet_analysis_progress());
     }
@@ -1419,13 +1438,13 @@ fn stretches(v: &[(f64, f64)]) -> String {
 
 /// One direction of the fight: where the shooter wants to be, what holds it, the race, how the
 /// target's ships fare when primaried, and the shooter's ammo by range.
-fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, dir: usize, names: &HashMap<String, String>) {
+fn engagement_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, an: &Analysis, dir: usize, names: &dyn Fn(&spai_fit::fleet::SlotStats) -> String) {
     use spai_fit::fleet::race::{Event, Verdict};
     use spai_fit::fleet::sweep::{self, Side};
     let (shooter, target) = if dir == 0 { (&an.mine, &an.theirs) } else { (&an.theirs, &an.mine) };
     let (shooter_fleet, target_fleet) = if dir == 0 { (&an.fleet, &an.enemy) } else { (&an.enemy, &an.fleet) };
     let (sa, sb) = (Side { fleet: shooter_fleet, stats: shooter, ammo: &an.ammo[dir] }, Side { fleet: target_fleet, stats: target, ammo: &an.ammo[1 - dir] });
-    let slot_name = |s: &spai_fit::fleet::SlotStats| names.get(&s.fit_id).cloned().unwrap_or_else(|| s.fit_id.clone());
+    let slot_name = |s: &spai_fit::fleet::SlotStats| names(s);
     let primary = sweep::primary(shooter_fleet, target);
     let primary_name = primary.map_or_else(|| tr!("none").to_owned(), |p| slot_name(p));
     let sw = &an.sweep;
@@ -1582,8 +1601,8 @@ fn weapon_label(dogma: &spai_fit::Dogma, w: &spai_fit::stats::WeaponGroup) -> St
     }
 }
 
-fn fleet_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, s: &FleetStats, names: &HashMap<String, String>) {
-    let name = |slot: &spai_fit::fleet::SlotStats| names.get(&slot.fit_id).cloned().unwrap_or_else(|| slot.name.clone());
+fn fleet_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, s: &FleetStats, names: &dyn Fn(&spai_fit::fleet::SlotStats) -> String) {
+    let name = |slot: &spai_fit::fleet::SlotStats| names(slot);
     let per_slot = |f: &dyn Fn(&spai_fit::fleet::SlotStats) -> String| s.slots.iter().filter(|x| x.count > 0).map(|x| (format!("{} x {}", x.count, name(x)), f(x))).collect::<Vec<_>>();
     title(ui, &s.name, false);
     tline(ui, tr!("Ships"), s.ships.to_string(), |ui| tip(ui, tr!("Ships"), &per_slot(&|x| x.count.to_string()), ""));
@@ -1997,5 +2016,41 @@ impl FightJob {
         let [ma, ta] = self.ammo;
         let analysis = Analysis { fleet: self.fleet, range, mine: self.mine, theirs: self.theirs, enemy: self.enemy, ammo: [Arc::new(ma), Arc::new(ta)], sweep: self.sweep.unwrap_or_default(), race: self.race.unwrap_or_default(), ammo_bands: self.bands };
         (analysis, self.fresh)
+    }
+}
+
+/// What each of a fleet's slots is called, by index into `stats.slots`: its hull, then its
+/// variation where another slot flies the same hull, then its fit's name where that still leaves
+/// two alike.
+pub fn ship_labels(dogma: &spai_fit::Dogma, fleet: &Fleet, stats: &FleetStats, fit_of: &dyn Fn(&str) -> Option<Fit>) -> Vec<String> {
+    let hull = |x: &spai_fit::fleet::SlotStats| spai_fit::formats::name_of(dogma, x.ship);
+    let variation = |x: &spai_fit::fleet::SlotStats| {
+        let id = fleet.slots.get(x.slot)?.variation?;
+        fit_of(&x.fit_id)?.variations.iter().find(|v| v.id == id).map(|v| v.name.clone())
+    };
+    let mut out: Vec<String> = stats.slots.iter().map(hull).collect();
+    let clash = |out: &[String], i: usize| out.iter().enumerate().any(|(j, x)| j != i && *x == out[i]);
+    let first: Vec<bool> = (0..out.len()).map(|i| clash(&out, i)).collect();
+    for (i, x) in stats.slots.iter().enumerate() {
+        if first[i] {
+            if let Some(v) = variation(x) {
+                out[i] = format!("{} ({v})", out[i]);
+            }
+        }
+    }
+    let second: Vec<bool> = (0..out.len()).map(|i| clash(&out, i)).collect();
+    for (i, x) in stats.slots.iter().enumerate() {
+        if second[i] && !x.name.is_empty() {
+            out[i] = if first[i] && variation(x).is_some() { format!("{} ({}, {})", hull(x), variation(x).unwrap_or_default(), x.name) } else { format!("{} ({})", hull(x), x.name) };
+        }
+    }
+    out
+}
+
+impl SimUi {
+    /// `ship_labels` with the fits at hand.
+    pub(crate) fn ship_labels(&self, fleet: &Fleet, stats: &FleetStats) -> Vec<String> {
+        let Some(dogma) = self.dogma.as_deref() else { return stats.slots.iter().map(|x| x.name.clone()).collect() };
+        ship_labels(dogma, fleet, stats, &|id| self.fit_docs.get(id).cloned())
     }
 }

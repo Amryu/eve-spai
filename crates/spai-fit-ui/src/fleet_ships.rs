@@ -89,10 +89,11 @@ fn name(dogma: &Dogma, id: TypeId) -> String {
 }
 
 /// The targets on offer: the enemy fleet's ships, then the fits open in tabs.
-fn targets(sim: &mut SimUi, theirs: Option<&FleetStats>, enemy_name: &str) -> Vec<(ShipTarget, String, Arc<Computed>)> {
+fn targets(sim: &mut SimUi, theirs: Option<&FleetStats>, enemy_name: &str, labels: &[String]) -> Vec<(ShipTarget, String, Arc<Computed>)> {
     let mut out = Vec::new();
-    for s in theirs.iter().flat_map(|t| t.slots.iter()).filter(|s| s.count > 0) {
-        out.push((ShipTarget::Enemy(s.slot), trf!("{fleet}: {ship}", fleet = enemy_name, ship = s.name), Arc::new(s.computed.clone())));
+    for (i, s) in theirs.iter().flat_map(|t| t.slots.iter().enumerate()).filter(|(_, s)| s.count > 0) {
+        let ship = labels.get(i).unwrap_or(&s.name);
+        out.push((ShipTarget::Enemy(s.slot), trf!("{fleet}: {ship}", fleet = enemy_name, ship = ship), Arc::new(s.computed.clone())));
     }
     let tabs: Vec<(String, String)> = sim.sessions().iter().filter(|s| s.fit.ship != 0).map(|s| (s.id.clone(), s.fit.name.clone())).collect();
     for (id, n) in tabs {
@@ -391,14 +392,15 @@ fn fleet_ewar(fleet: &FleetStats, theirs: bool, set: &HashMap<EwarSource, u32>, 
 }
 
 /// Every ewar module type of a fleet's ships, with how many fly: (source, label, count).
-fn sources(dogma: &Dogma, fleet: &FleetStats, theirs: bool) -> Vec<(EwarSource, String, u32)> {
+fn sources(dogma: &Dogma, fleet: &FleetStats, theirs: bool, labels: &[String]) -> Vec<(EwarSource, String, u32)> {
     let mut out: Vec<(EwarSource, String, u32)> = Vec::new();
-    for s in fleet.slots.iter().filter(|s| s.count > 0) {
+    for (i, s) in fleet.slots.iter().enumerate().filter(|(_, s)| s.count > 0) {
+        let ship = labels.get(i).unwrap_or(&s.name);
         for m in s.computed.remote.modules.iter().filter(|m| !m.kind.is_assist()) {
             let key = EwarSource { theirs, slot: s.slot, module: m.type_id };
             match out.iter_mut().find(|(k, _, _)| *k == key) {
                 Some(e) => e.2 += s.count,
-                None => out.push((key, trf!("{module} on {ship}", module = name(dogma, m.type_id), ship = s.name), s.count)),
+                None => out.push((key, trf!("{module} on {ship}", module = name(dogma, m.type_id), ship = ship), s.count)),
             }
         }
     }
@@ -421,6 +423,8 @@ struct Scene {
     /// How each fleet lays its ewar, and over how many primaries.
     our_plan: (spai_fit::fleet::ewar::EwarPlan, u32),
     their_plan: (spai_fit::fleet::ewar::EwarPlan, u32),
+    /// What each side's slots go by, by index into their stats: hulls first (`ship_labels`).
+    labels: [Vec<String>; 2],
     /// Per fleet slot, whether it flies swaps, and its split weapon stacks.
     swapped: Vec<bool>,
     splits: Vec<Vec<spai_fit::fleet::WeaponSplit>>,
@@ -451,7 +455,8 @@ fn gather(sim: &mut SimUi) -> Option<Scene> {
     let mine = sim.cached_stats(&fleet);
     let ammo = sim.ammo_for(&mine);
     let theirs = enemy.as_ref().map(|e| sim.cached_stats(e));
-    let offered = targets(sim, theirs.as_deref(), enemy.as_ref().map_or("", |e| e.name.as_str()));
+    let labels = [sim.ship_labels(&fleet, &mine), enemy.as_ref().zip(theirs.as_deref()).map(|(e, t)| sim.ship_labels(e, t)).unwrap_or_default()];
+    let offered = targets(sim, theirs.as_deref(), enemy.as_ref().map_or("", |e| e.name.as_str()), &labels[1]);
     let swapped = fleet.slots.iter().map(|s| !s.charges.is_empty() || s.mode.is_some() || !s.splits.is_empty()).collect();
     let splits = fleet.slots.iter().map(|s| s.splits.clone()).collect();
     let their_plan = enemy.as_ref().map_or_else(Default::default, |e| (e.ewar_plan.clone(), e.split_fire));
@@ -460,7 +465,7 @@ fn gather(sim: &mut SimUi) -> Option<Scene> {
         theirs.as_ref().map_or(0, |t| t.slots.iter().filter(|x| x.computed.remote.modules.iter().any(|m| matches!(m.kind, RemoteKind::ArmorRep | RemoteKind::ShieldRep | RemoteKind::HullRep))).map(|x| x.count).sum()),
         enemy.as_ref().map_or(1.0, |e| e.logi_efficiency),
     );
-    Some(Scene { mine, ammo, theirs, offered, range: fleet.range, motions, volley_efficiency: fleet.volley_efficiency, their_logi, our_plan: (fleet.ewar_plan.clone(), fleet.split_fire), their_plan, swapped, splits })
+    Some(Scene { mine, ammo, theirs, offered, range: fleet.range, motions, volley_efficiency: fleet.volley_efficiency, their_logi, our_plan: (fleet.ewar_plan.clone(), fleet.split_fire), their_plan, swapped, splits, labels })
 }
 
 fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
@@ -494,11 +499,11 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
         egui::Panel::left("sim_fleet_ships_list").resizable(false).exact_size(210.0).frame(egui::Frame::NONE.inner_margin(egui::Margin { left: 0, right: 8, top: 0, bottom: 0 })).show_inside(ui, |ui| {
             ui.label(egui::RichText::new(tr!("Ships")).strong());
             egui::ScrollArea::vertical().id_salt("sim_fleet_ships_pick").auto_shrink([false, false]).show(ui, |ui| {
-                for (_, s) in &ships {
-                    let label = trf!("{name} × {n}", name = s.name, n = s.count);
+                for (i, s) in &ships {
+                    let label = trf!("{name} × {n}", name = scene.labels[0].get(*i).unwrap_or(&s.name), n = s.count);
                     let r = rows::row(ui, "fleet_ships_pick", ("sim_fleet_ships_pick", s.slot), rows::ROW_H, st.ship == Some(s.slot), |ui| {
                         let w = ui.available_width();
-                        icon_cell(ui, w, Some(s.ship), egui::RichText::new(&label), &trf!("{label} · {hull}", label = label, hull = name(&dogma, s.ship)));
+                        icon_cell(ui, w, Some(s.ship), egui::RichText::new(&label), &trf!("{label} · {fit}", label = label, fit = s.name));
                     });
                     if r.clicked() {
                         pick = Some(s.slot);
@@ -515,8 +520,8 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
     let mut changes: Vec<Change> = Vec::new();
     let mut distance = st.distance.unwrap_or(scene.range);
     let mut motion = st.motion.unwrap_or(crate::graphs_panel::Motion { shooter: scene.motions.0, target: scene.motions.1 });
-    let ours_sources = sources(&dogma, &scene.mine, false);
-    let their_sources = scene.theirs.as_ref().map(|t| sources(&dogma, t, true)).unwrap_or_default();
+    let ours_sources = sources(&dogma, &scene.mine, false, &scene.labels[0]);
+    let their_sources = scene.theirs.as_ref().map(|t| sources(&dogma, t, true, &scene.labels[1])).unwrap_or_default();
     // Measured outside the scroll area: inside, a row too wide would widen what it is measured by.
     let pad = if wide { 10.0 } else { 0.0 };
     let view_w = ui.available_width() - 12.0 - pad;
@@ -529,11 +534,12 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
         ui.allocate_ui_with_layout(egui::vec2(view_w, 30.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.set_height(30.0);
             let hull = name(&dogma, s.ship);
+            let label = |i: usize, o: &SlotStats| scene.labels[0].get(i).cloned().unwrap_or_else(|| o.name.clone());
             if !wide {
-                crate::combo::combo(ui, "sim_fleet_ships_pick_menu", 150.0, &s.name, |ui| {
+                crate::combo::combo(ui, "sim_fleet_ships_pick_menu", 150.0, &label(pos, s), |ui| {
                     use spai_ui::widgets::SteadySelect as _;
-                    for (_, o) in &ships {
-                        if ui.menu_label(o.slot == k, trf!("{name} × {n}", name = o.name, n = o.count)).clicked() {
+                    for (i, o) in &ships {
+                        if ui.menu_label(o.slot == k, trf!("{name} × {n}", name = label(*i, o), n = o.count)).clicked() {
                             st.ship = Some(o.slot);
                         }
                     }
@@ -541,7 +547,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
             }
             let modes = dogma.modes_of(s.ship);
             let swapped = scene.swapped.get(k).copied().unwrap_or(false);
-            let title = trf!("{name} · {hull}", name = s.name, hull = hull);
+            let title = trf!("{name} · {fit}", name = label(pos, s), fit = s.name);
             let others = if wide { 0.0 } else { 160.0 } + if modes.is_empty() { 0.0 } else { 150.0 } + 2.0 * 30.0 + 90.0;
             let title_w = (ui.available_width() - others).max(120.0);
             ui.allocate_ui_with_layout(egui::vec2(title_w, 30.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {

@@ -2364,3 +2364,25 @@ fn a_delete_asks_first_unless_ctrl_is_held() {
     assert!(s.fleet.is_none());
     assert!(s.take_requests().iter().any(|r| matches!(r, HostRequest::DeleteFleet(x) if *x == fleet)));
 }
+
+/// Slots go by their hull; two of one hull by their variations, then by their fits' names.
+#[test]
+fn ships_go_by_hull_and_only_say_more_when_two_are_alike() {
+    use spai_fit::fleet::{FleetSlot, FleetStats, SlotStats};
+    let d = spai_fit::test_support::dataset();
+    let slot = |slot: usize, ship, name: &str, fit: &str| SlotStats { fit_id: fit.into(), name: name.into(), count: 1, computed: Default::default(), slot, ship, role: spai_fit::fleet::Role::Mainline, fit: Default::default(), skills: spai_fit::skills::SkillSet::all_v() };
+    let mut fit = spai_fit::fit::Fit { ship: ids::SHIP, name: "Brawler".into(), ..Default::default() };
+    fit.variations.push(spai_fit::variations::Variation { id: 1, name: "Webs".into(), kind: spai_fit::variations::VariationKind::Refit, refit_key: None, ops: vec![], group: None });
+    let fits: std::collections::HashMap<String, spai_fit::fit::Fit> = [("a".to_owned(), fit.clone()), ("b".to_owned(), fit)].into();
+    let fleet = spai_fit::fleet::Fleet { slots: vec![FleetSlot { fit_id: "a".into(), ..Default::default() }, FleetSlot { fit_id: "a".into(), variation: Some(1), ..Default::default() }, FleetSlot { fit_id: "b".into(), variation: Some(1), ..Default::default() }, FleetSlot { fit_id: "c".into(), ..Default::default() }], ..Default::default() };
+    let stats = FleetStats { slots: vec![slot(0, ids::SHIP, "Brawler", "a"), slot(1, ids::SHIP, "Brawler", "a"), slot(2, ids::SHIP, "Other brawler", "b"), slot(3, ids::T3C, "Loki thing", "c")], ..Default::default() };
+    let hull = spai_fit::formats::name_of(&d, ids::SHIP);
+    let t3c = spai_fit::formats::name_of(&d, ids::T3C);
+    let labels = crate::fleet_panel::ship_labels(&d, &fleet, &stats, &|id| fits.get(id).cloned());
+    assert_eq!(labels[3], t3c, "a hull of its own needs nothing more");
+    assert_eq!(labels[0], hull, "no variation: the hull, the others say what sets them apart");
+    assert_eq!(labels[1], format!("{hull} (Webs, Brawler)"));
+    assert_eq!(labels[2], format!("{hull} (Webs, Other brawler)"));
+    let unique: std::collections::HashSet<&String> = labels.iter().collect();
+    assert_eq!(unique.len(), labels.len());
+}

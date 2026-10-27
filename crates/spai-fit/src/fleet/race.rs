@@ -75,6 +75,11 @@ pub struct Race {
     /// Raw damage each side sent, and of it what reached a ship already dead.
     pub fired: [f64; 2],
     pub wasted: [f64; 2],
+    /// Per side, from the start and whenever it changes: the enemy slot each of its groups has
+    /// primaried.
+    pub primaries: [Vec<(f64, Vec<Option<usize>>)>; 2],
+    /// Per side, from the start and whenever a ship dies: its ships alive per slot.
+    pub alive_by_slot: [Vec<(f64, Vec<u32>)>; 2],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -705,6 +710,21 @@ impl RaceRun {
             }
             let alive = [fleets[0].iter().filter(|s| s.alive).count() as u32, fleets[1].iter().filter(|s| s.alive).count() as u32];
             out.timeline.push((t, alive[0], alive[1], landed[0], landed[1]));
+            for side in 0..2 {
+                let now: Vec<Option<usize>> = primary[side].iter().map(|p| p.map(|i| fleets[1 - side][i].slot)).collect();
+                if out.primaries[side].last().is_none_or(|(_, x)| *x != now) {
+                    out.primaries[side].push((t, now));
+                }
+                let mut by_slot = vec![0u32; sides[side].stats.slots.len()];
+                for x in fleets[side].iter().filter(|x| x.alive) {
+                    if let Some(n) = by_slot.get_mut(x.slot) {
+                        *n += 1;
+                    }
+                }
+                if out.alive_by_slot[side].last().is_none_or(|(_, x)| *x != by_slot) {
+                    out.alive_by_slot[side].push((t, by_slot));
+                }
+            }
             t += STEP;
             if alive[0] == 0 || alive[1] == 0 {
                 out.winner = if alive[0] > 0 { Some(0) } else if alive[1] > 0 { Some(1) } else { None };

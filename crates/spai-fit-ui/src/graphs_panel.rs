@@ -322,6 +322,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         y_to: sim.graph_y_to.get(&kind.axes().0).copied(),
         bands: Vec::new(),
         markers: Vec::new(),
+        readout: None,
         levels: if kind.is_damage() { max_level(graphs::max_damage(&computed, &spec), fmt_y, ui.visuals().text_color()).into_iter().collect() } else { Vec::new() },
         series: series
             .iter()
@@ -794,7 +795,7 @@ fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit
     }
     let _ = ui;
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(LINES), lines.len()));
-    Some(Plot { x_label: x_label.to_owned(), y_label: y_label.to_owned(), fmt_x, fmt_y, y_to: sim.graph_y_to.get(&spec.kind.axes().0).copied(), series: lines, bands: Vec::new(), markers: Vec::new(), levels })
+    Some(Plot { x_label: x_label.to_owned(), y_label: y_label.to_owned(), fmt_x, fmt_y, y_to: sim.graph_y_to.get(&spec.kind.axes().0).copied(), series: lines, bands: Vec::new(), markers: Vec::new(), levels, readout: None })
 }
 
 /// A dashed line at what the fit lands with perfect application, labelled with it.

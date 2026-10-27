@@ -130,16 +130,17 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, place: Option<bool>) {
         return;
     };
     if matches!(sim.fleet_graph, FleetGraph::DamageByRange | FleetGraph::VolleyByRange) {
-        ewar_filter(ui, &an, &mut sim.fleet_graph_hidden_ewar);
+        overlay_filter(ui, &an, &mut sim.fleet_graph_ewar_shown, &mut sim.fleet_graph_ammo);
     }
-    let hidden = sim.fleet_graph_hidden_ewar.clone();
-    let dogma = sim.dogma.clone();
+    let shown = sim.fleet_graph_ewar_shown.clone();
+    let labels = [sim.ship_labels(&an.fleet, &an.mine), sim.ship_labels(&an.enemy, &an.theirs)];
+    let dogma = sim.dogma.clone().filter(|_| sim.fleet_graph_ammo);
     let plot = match sim.fleet_graph {
-        FleetGraph::DamageByRange => by_range(ui, &an, &hidden, dogma.as_deref()),
-        FleetGraph::VolleyByRange => volley_by_range(ui, &an, &hidden),
-        FleetGraph::ShipsOverTime => over_time(&an, true),
-        FleetGraph::DamageOverTime => over_time(&an, false),
-        FleetGraph::Angular => angular(&an),
+        FleetGraph::DamageByRange => by_range(ui, &an, &shown, dogma.as_deref()),
+        FleetGraph::VolleyByRange => volley_by_range(ui, &an, &shown, dogma.as_deref(), &labels),
+        FleetGraph::ShipsOverTime => over_time(&an, true, &labels),
+        FleetGraph::DamageOverTime => over_time(&an, false, &labels),
+        FleetGraph::Angular => angular(&an, &labels),
     };
     let height = (ui.available_height() - 4.0).max(200.0);
     ui.allocate_ui_with_layout(egui::vec2(width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -149,11 +150,12 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, place: Option<bool>) {
 }
 
 fn plain() -> Plot {
-    Plot { x_label: String::new(), y_label: String::new(), series: Vec::new(), fmt_x: text::num, fmt_y: text::num, y_to: None, bands: Vec::new(), markers: Vec::new(), levels: Vec::new() }
+    Plot { x_label: String::new(), y_label: String::new(), series: Vec::new(), fmt_x: text::num, fmt_y: text::num, y_to: None, bands: Vec::new(), markers: Vec::new(), levels: Vec::new(), readout: None }
 }
 
-/// The ewar kinds either side brings, by name, each a toggle for the graph.
-fn ewar_filter(ui: &mut egui::Ui, an: &Analysis, hidden: &mut Vec<spai_fit::stats::RemoteKind>) {
+/// The overlays of the range graphs, each a toggle: the charges, and each ewar kind either side
+/// brings, by name.
+fn overlay_filter(ui: &mut egui::Ui, an: &Analysis, shown: &mut Vec<spai_fit::stats::RemoteKind>, ammo: &mut bool) {
     use spai_ui::widgets::SteadySelect as _;
     let mut kinds: Vec<spai_fit::stats::RemoteKind> = Vec::new();
     for (k, _, _) in an.sweep.a_cutoffs.iter().chain(&an.sweep.b_cutoffs) {
@@ -161,19 +163,23 @@ fn ewar_filter(ui: &mut egui::Ui, an: &Analysis, hidden: &mut Vec<spai_fit::stat
             kinds.push(*k);
         }
     }
-    if kinds.is_empty() {
-        return;
-    }
+    let tip = |on: bool| if on { tr!("Shown on the graph; click to leave it off") } else { tr!("Left off the graph; click to show it") };
     ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new(tr!("Ewar")).weak());
+        ui.label(egui::RichText::new(tr!("Show")).weak());
+        if ui.menu_label(*ammo, tr!("Ammo")).on_hover_text(tip(*ammo)).clicked() {
+            *ammo = !*ammo;
+        }
+        if !kinds.is_empty() {
+            ui.label(egui::RichText::new(tr!("Ewar")).weak());
+        }
         for k in kinds {
-            let on = !hidden.contains(&k);
+            let on = shown.contains(&k);
             let name = crate::stats_panel::ewar_name(k).unwrap_or_default();
-            if ui.menu_label(on, name).on_hover_text(if on { tr!("Shown on the graph; click to leave it off") } else { tr!("Left off the graph; click to show it") }).clicked() {
+            if ui.menu_label(on, name).on_hover_text(tip(on)).clicked() {
                 if on {
-                    hidden.push(k);
+                    shown.retain(|x| *x != k);
                 } else {
-                    hidden.retain(|x| *x != k);
+                    shown.push(k);
                 }
             }
         }
@@ -183,11 +189,11 @@ fn ewar_filter(ui: &mut egui::Ui, an: &Analysis, hidden: &mut Vec<spai_fit::stat
 
 /// Each side's ewar as reaches from nothing out: full strength to its optimal, then fading
 /// through its falloff. Tackle holds to its optimal only.
-fn ewar_markers(an: &Analysis, hidden: &[spai_fit::stats::RemoteKind]) -> Vec<PlotMarker> {
+fn ewar_markers(an: &Analysis, shown: &[spai_fit::stats::RemoteKind]) -> Vec<PlotMarker> {
     let sw = &an.sweep;
     let mut out = Vec::new();
     for (cuts, color) in [(&sw.a_cutoffs, series_color(0)), (&sw.b_cutoffs, series_color(1))] {
-        for (kind, optimal, edge) in cuts.iter().filter(|(k, _, _)| !hidden.contains(k)) {
+        for (kind, optimal, edge) in cuts.iter().filter(|(k, _, _)| shown.contains(k)) {
             if let Some(name) = crate::stats_panel::ewar_name(*kind) {
                 out.push(PlotMarker { x: *optimal, label: name.to_owned(), color: color.gamma_multiply(0.8), to: (*edge > *optimal).then_some(*edge), fill: true, bottom: false });
             }
@@ -230,10 +236,16 @@ fn ammo_markers(an: &Analysis, dogma: Option<&spai_fit::Dogma>) -> Vec<PlotMarke
     out
 }
 
+/// Green where the open fleet is favoured, red where its opponent is.
+fn favoured(an: &Analysis) -> Vec<PlotBand> {
+    let sw = &an.sweep;
+    sw.a_favoured.iter().map(|(f, t)| PlotBand { from: *f, to: *t, color: GOOD }).chain(sw.b_favoured.iter().map(|(f, t)| PlotBand { from: *f, to: *t, color: BAD })).collect()
+}
+
 /// Damage each fleet lands on the other's primary over range, shaded where either is favoured,
 /// with the best ranges, the set range, each side's ewar reach and where its primary weapon
 /// switches charges.
-fn by_range(ui: &egui::Ui, an: &Analysis, hidden: &[spai_fit::stats::RemoteKind], dogma: Option<&spai_fit::Dogma>) -> Plot {
+fn by_range(ui: &egui::Ui, an: &Analysis, shown: &[spai_fit::stats::RemoteKind], dogma: Option<&spai_fit::Dogma>) -> Plot {
     let sw = &an.sweep;
     let (a, b) = (series_color(0), series_color(1));
     let mut markers = vec![
@@ -241,9 +253,9 @@ fn by_range(ui: &egui::Ui, an: &Analysis, hidden: &[spai_fit::stats::RemoteKind]
         PlotMarker { x: sw.a_best, label: trf!("{a} best", a = text::clip(&an.mine.name, 18)), color: a, to: None, fill: false, bottom: false },
         PlotMarker { x: sw.b_best, label: trf!("{a} best", a = text::clip(&an.theirs.name, 18)), color: b, to: None, fill: false, bottom: false },
     ];
-    markers.extend(ewar_markers(an, hidden));
+    markers.extend(ewar_markers(an, shown));
     markers.extend(ammo_markers(an, dogma));
-    let bands = sw.a_favoured.iter().map(|(f, t)| PlotBand { from: *f, to: *t, color: GOOD }).chain(sw.b_favoured.iter().map(|(f, t)| PlotBand { from: *f, to: *t, color: BAD })).collect();
+    let bands = favoured(an);
     Plot {
         x_label: tr!("Distance").to_owned(),
         y_label: tr!("Effective DPS on the primary").to_owned(),
@@ -259,8 +271,8 @@ fn by_range(ui: &egui::Ui, an: &Analysis, hidden: &[spai_fit::stats::RemoteKind]
 }
 
 /// One volley of each fleet on the other's first target over range, with that target's effective
-/// hit points flat across: above it, one volley kills.
-fn volley_by_range(ui: &egui::Ui, an: &Analysis, hidden: &[spai_fit::stats::RemoteKind]) -> Plot {
+/// hit points flat across: above it, one volley kills. Shaded and marked as damage by range.
+fn volley_by_range(ui: &egui::Ui, an: &Analysis, shown: &[spai_fit::stats::RemoteKind], dogma: Option<&spai_fit::Dogma>, labels: &[Vec<String>; 2]) -> Plot {
     let sw = &an.sweep;
     let (a, b) = (series_color(0), series_color(1));
     let mut series = vec![
@@ -268,10 +280,11 @@ fn volley_by_range(ui: &egui::Ui, an: &Analysis, hidden: &[spai_fit::stats::Remo
         PlotSeries { label: an.theirs.name.clone(), color: b, points: sw.points.iter().map(|p| [p.distance, p.b.applied_volley]).collect() },
     ];
     let far = sw.points.last().map_or(1.0, |p| p.distance);
-    for (fleet, other, color) in [(&an.fleet, &an.theirs, a), (&an.enemy, &an.mine, b)] {
+    for (fleet, other, color, names) in [(&an.fleet, &an.theirs, a, &labels[1]), (&an.enemy, &an.mine, b, &labels[0])] {
         if let Some(t) = sweep::primary(fleet, other) {
             let ehp = t.computed.tank.ehp;
-            series.push(PlotSeries { label: trf!("{a} effective HP", a = text::clip(&t.name, 22)), color: color.gamma_multiply(0.55), points: vec![[0.0, ehp], [far, ehp]] });
+            let name = other.slots.iter().position(|x| x.slot == t.slot).and_then(|i| names.get(i)).unwrap_or(&t.name);
+            series.push(PlotSeries { label: trf!("{a} effective HP", a = text::clip(name, 22)), color: color.gamma_multiply(0.55), points: vec![[0.0, ehp], [far, ehp]] });
         }
     }
     Plot {
@@ -279,14 +292,16 @@ fn volley_by_range(ui: &egui::Ui, an: &Analysis, hidden: &[spai_fit::stats::Remo
         y_label: tr!("Effective volley on the primary").to_owned(),
         fmt_x: text::metres,
         series,
-        markers: std::iter::once(PlotMarker { x: f64::from(an.range), label: tr!("set range").to_owned(), color: ui.visuals().text_color(), to: None, fill: false, bottom: false }).chain(ewar_markers(an, hidden)).collect(),
+        markers: std::iter::once(PlotMarker { x: f64::from(an.range), label: tr!("set range").to_owned(), color: ui.visuals().text_color(), to: None, fill: false, bottom: false }).chain(ewar_markers(an, shown)).chain(ammo_markers(an, dogma)).collect(),
+        bands: favoured(an),
         ..plain()
     }
 }
 
 /// The race at the set range: ships left on each side, or the damage each lands, over time, with
-/// where each loses its critical mass.
-fn over_time(an: &Analysis, ships: bool) -> Plot {
+/// where each loses its critical mass and, along the bottom, the hull each turns its guns on. The
+/// readout names the primaries and the ships left at the pointer.
+fn over_time(an: &Analysis, ships: bool, labels: &[Vec<String>; 2]) -> Plot {
     let r = &an.race;
     let pick = |x: &(f64, u32, u32, f64, f64), side: usize| match (ships, side) {
         (true, 0) => f64::from(x.1),
@@ -296,13 +311,62 @@ fn over_time(an: &Analysis, ships: bool) -> Plot {
     };
     let names = [&an.mine.name, &an.theirs.name];
     let series = (0..2).map(|side| PlotSeries { label: names[side].clone(), color: series_color(side), points: r.timeline.iter().map(|x| [x.0, pick(x, side)]).collect() }).collect();
-    let markers = (0..2).filter_map(|side| r.critical_mass_lost[side].map(|t| PlotMarker { x: t, label: trf!("{a} loses critical mass", a = text::clip(names[side], 18)), color: series_color(side), to: None, fill: false, bottom: false })).collect();
+    let mut markers: Vec<PlotMarker> = (0..2).filter_map(|side| r.critical_mass_lost[side].map(|t| PlotMarker { x: t, label: trf!("{a} loses critical mass", a = text::clip(names[side], 18)), color: series_color(side), to: None, fill: false, bottom: false })).collect();
+    let target_names = |side: usize, slots: &[Option<usize>]| {
+        let mut v: Vec<String> = Vec::new();
+        for k in slots.iter().flatten() {
+            let n = labels[1 - side].get(*k).cloned().unwrap_or_default();
+            if !v.contains(&n) {
+                v.push(n);
+            }
+        }
+        v.join(", ")
+    };
+    // Only where the hull changes: a fleet of one hull works through it without a mark a kill.
+    for side in 0..2 {
+        let mut last = String::new();
+        for (t, slots) in &r.primaries[side] {
+            let n = target_names(side, slots);
+            if !n.is_empty() && n != last {
+                markers.push(PlotMarker { x: *t, label: n.clone(), color: series_color(side).gamma_multiply(0.9), to: None, fill: false, bottom: true });
+            }
+            last = n;
+        }
+    }
+    let primaries = r.primaries.clone();
+    let alive = r.alive_by_slot.clone();
+    let (labels, names) = (labels.clone(), [an.mine.name.clone(), an.theirs.name.clone()]);
+    let readout = move |x: f64| {
+        let mut lines = Vec::new();
+        for side in 0..2 {
+            let at = |v: &[(f64, Vec<Option<usize>>)]| v.iter().rev().find(|(t, _)| *t <= x).or(v.first()).map(|(_, s)| s.clone()).unwrap_or_default();
+            let mut targets: Vec<String> = Vec::new();
+            for k in at(&primaries[side]).into_iter().flatten() {
+                let n = labels[1 - side].get(k).cloned().unwrap_or_default();
+                if !targets.contains(&n) {
+                    targets.push(n);
+                }
+            }
+            if !targets.is_empty() {
+                lines.push(trf!("{a} shoots {b}", a = text::clip(&names[side], 18), b = targets.join(", ")));
+            }
+            let left = alive[side].iter().rev().find(|(t, _)| *t <= x).or(alive[side].first()).map(|(_, v)| v.clone()).unwrap_or_default();
+            let mut rows: Vec<(u32, &String)> = left.iter().enumerate().filter(|(_, n)| **n > 0).filter_map(|(k, n)| labels[side].get(k).map(|l| (*n, l))).collect();
+            rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+            if !rows.is_empty() {
+                let list: Vec<String> = rows.iter().map(|(n, l)| format!("{n} {l}")).collect();
+                lines.push(trf!("{a} left: {b}", a = text::clip(&names[side], 18), b = list.join(", ")));
+            }
+        }
+        lines
+    };
     Plot {
         x_label: tr!("Time").to_owned(),
         y_label: if ships { tr!("Ships") } else { tr!("DPS on the primary") }.to_owned(),
         fmt_x: |v| text::secs(v),
         series,
         markers,
+        readout: Some(Box::new(readout)),
         ..plain()
     }
 }
@@ -310,7 +374,7 @@ fn over_time(an: &Analysis, ships: bool) -> Plot {
 /// Every shooter-target pair's angular velocity at the set range, sorted: the share of pairs at or
 /// below a value. Flat lines mark where each side's turrets still hit the other's primary half
 /// the time.
-fn angular(an: &Analysis) -> Plot {
+fn angular(an: &Analysis, labels: &[Vec<String>; 2]) -> Plot {
     let a = Side { fleet: &an.fleet, stats: &an.mine, ammo: &an.ammo[0] };
     let b = Side { fleet: &an.enemy, stats: &an.theirs, ammo: &an.ammo[1] };
     let d = f64::from(an.range);
@@ -330,7 +394,7 @@ fn angular(an: &Analysis) -> Plot {
                 continue;
             }
             seen.push((k, w.type_id));
-            let name = stats.slots.get(k).map_or(String::new(), |s| s.name.clone());
+            let name = labels[side].get(k).cloned().or_else(|| stats.slots.get(k).map(|s| s.name.clone())).unwrap_or_default();
             series.push(PlotSeries { label: trf!("{a} hits half at", a = text::clip(&name, 22)), color: series_color(side).gamma_multiply(0.55), points: vec![[0.0, rad], [100.0, rad]] });
         }
     }
