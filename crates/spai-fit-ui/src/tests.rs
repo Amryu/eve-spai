@@ -2481,3 +2481,26 @@ fn ships_go_by_hull_and_only_say_more_when_two_are_alike() {
     let unique: std::collections::HashSet<&String> = labels.iter().collect();
     assert_eq!(unique.len(), labels.len());
 }
+
+/// The ship's details list what the hull carries and reads something, the rest under "All".
+#[test]
+fn the_ship_details_leave_out_what_the_hull_does_not_carry() {
+    let mut dogma = spai_fit::test_support::dataset();
+    // Named as the game names them, so the pilot-facing filter lets them through.
+    for a in &mut dogma.attributes {
+        a.display = a.name.clone();
+    }
+    let fit = Fit::new(ids::SHIP, "x");
+    let calc = spai_fit::calc::Calc::new(&dogma, &fit, &SkillSet::all_v(), &spai_fit::calc::Env::default());
+    let item = calc.ship_idx();
+    let t = dogma.type_(ids::SHIP).unwrap();
+    let shown = crate::details::rows_for_item(&dogma, &calc, item, false);
+    assert!(!shown.is_empty());
+    for r in &shown {
+        assert!(t.attrs.iter().any(|(a, _)| *a == r.attr), "{} is not the hull's", r.label);
+        assert!(calc.value(item, r.attr) != 0.0 || t.attr(r.attr).is_some_and(|v| v != 0.0), "{} reads nothing", r.label);
+    }
+    let every = crate::details::rows_for_item(&dogma, &calc, item, true);
+    assert!(every.len() >= shown.len());
+    assert!(calc.attrs(item).iter().all(|a| every.iter().any(|r| r.attr == *a)), "all of them under All");
+}

@@ -274,13 +274,19 @@ fn what(step: &spai_fit::calc::Step) -> String {
 
 /// Every attribute of a fitted item: the data's value, the fit's, and how it got there.
 pub fn rows_for_item(dogma: &Dogma, calc: &Calc, item: ItemIdx, all: bool) -> Vec<AttrRow> {
+    // Skills reach attributes on every ship (jump drives, conduit passengers) that the hull itself
+    // has none of: only what the item carries, and not what reads nothing.
+    let carried: Vec<AttrId> = dogma.type_(calc.items()[item].type_id).map(|t| t.attrs.iter().map(|(a, _)| *a).collect()).unwrap_or_default();
     attrs_shown(dogma, &calc.attrs(item), all)
         .into_iter()
-        .map(|a| {
+        .filter_map(|a| {
+            let e = calc.explain(item, a);
+            (all || (carried.contains(&a) && !(e.value == 0.0 && e.base == 0.0))).then_some((a, e))
+        })
+        .map(|(a, e)| {
             let def = dogma.attr(a);
             let unit = def.and_then(|d| d.unit);
             let high_is_good = def.is_none_or(|d| d.high_is_good);
-            let e = calc.explain(item, a);
             let steps = e
                 .steps
                 .iter()
@@ -314,6 +320,7 @@ pub fn rows_for_type(dogma: &Dogma, type_id: TypeId, all: bool) -> Vec<AttrRow> 
     let attrs: Vec<AttrId> = t.attrs.iter().map(|(a, _)| *a).collect();
     attrs_shown(dogma, &attrs, all)
         .into_iter()
+        .filter(|a| all || t.attr(*a).is_some_and(|v| v != 0.0))
         .map(|a| {
             let unit = dogma.attr(a).and_then(|d| d.unit);
             AttrRow { attr: a, label: label_of(dogma, a), raw: value_text(dogma, f64::from(t.attr(a).unwrap_or(0.0)), unit), fitted: None, changed: false, better: None, steps: Vec::new() }
