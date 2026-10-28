@@ -45,7 +45,8 @@ pub struct Entry {
 /// One line of the list: a group header, `depth` levels in, or a fit under it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Line {
-    Group { key: String, title: String, n: usize, depth: u8 },
+    /// `hull` on a hull's node: its icon goes there, not on each fit under it.
+    Group { key: String, title: String, n: usize, depth: u8, hull: Option<TypeId> },
     Fit(Entry),
 }
 
@@ -88,7 +89,7 @@ fn hull_tree(list: &[&Entry], hull: &dyn Fn(TypeId) -> HullPath, folded: &BTreeS
         let class = rows[i].0.class.clone();
         let in_class = rows[i..].iter().take_while(|(p, _)| p.class == class).count();
         let key = format!("class:{}", class.0);
-        out.push(Line::Group { key: key.clone(), title: class.1.clone(), n: in_class, depth: 0 });
+        out.push(Line::Group { key: key.clone(), title: class.1.clone(), n: in_class, depth: 0, hull: None });
         let class_shut = folded.contains(&key);
         let end = i + in_class;
         while i < end {
@@ -97,7 +98,7 @@ fn hull_tree(list: &[&Entry], hull: &dyn Fn(TypeId) -> HullPath, folded: &BTreeS
             let gkey = format!("group:{}:{}", class.0, group.to_lowercase());
             let group_end = i + in_group;
             if !class_shut {
-                out.push(Line::Group { key: gkey.clone(), title: group.clone(), n: in_group, depth: 1 });
+                out.push(Line::Group { key: gkey.clone(), title: group.clone(), n: in_group, depth: 1, hull: None });
             }
             let group_shut = class_shut || folded.contains(&gkey);
             while i < group_end {
@@ -105,7 +106,7 @@ fn hull_tree(list: &[&Entry], hull: &dyn Fn(TypeId) -> HullPath, folded: &BTreeS
                 let in_hull = rows[i..group_end].iter().take_while(|(_, e)| e.ship == ship).count();
                 let hkey = format!("hull:{ship}");
                 if !group_shut {
-                    out.push(Line::Group { key: hkey.clone(), title: rows[i].0.hull.clone(), n: in_hull, depth: 2 });
+                    out.push(Line::Group { key: hkey.clone(), title: rows[i].0.hull.clone(), n: in_hull, depth: 2, hull: Some(ship) });
                     if !folded.contains(&hkey) {
                         out.extend(rows[i..i + in_hull].iter().map(|(_, e)| Line::Fit((*e).clone())));
                     }
@@ -169,7 +170,7 @@ pub fn lines(entries: &[Entry], hull: &dyn Fn(TypeId) -> HullPath, grouping: Gro
     let mut out = Vec::new();
     for (key, title, fits) in groups {
         let shut = folded.contains(&key);
-        out.push(Line::Group { key, title, n: fits.len(), depth: 0 });
+        out.push(Line::Group { key, title, n: fits.len(), depth: 0, hull: None });
         if !shut {
             out.extend(fits.into_iter().map(Line::Fit));
         }
@@ -257,6 +258,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let mut edit_tags: Option<(String, Vec<String>)> = None;
     let mut copy: Option<String> = None;
     let indent = fit_indent(sim.library_state.grouping);
+    let under_hull = sim.library_state.grouping == Grouping::Hull;
     let folded = sim.library_state.folded.clone();
     // A search with no fit to show offers a new fit of each hull it names.
     let hulls: Vec<(TypeId, String)> = if shown.is_empty() && sim.library_state.grouping == Grouping::Hull { hulls_matching(sim, &sim.library_state.query) } else { Vec::new() };
@@ -281,11 +283,14 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         }
         for line in shown.iter().skip(range.start).take(range.end - range.start) {
             match line {
-                Line::Group { key, title, n, depth } => {
+                Line::Group { key, title, n, depth, hull: node_hull } => {
                     let shut = folded.contains(key);
                     let r = rows::row(ui, "fits", ("sim_lib_group", key), ROW_H, false, |ui| {
                         ui.add_space(f32::from(*depth) * GROUP_INDENT);
                         ui.add(egui::Label::new(if shut { icon::CARET_RIGHT } else { icon::CARET_DOWN }).selectable(false));
+                        if let Some(t) = node_hull {
+                            crate::icons::type_icon(ui, *t, 18.0);
+                        }
                         let w = ui.available_width();
                         rows::cell(ui, w, egui::RichText::new(format!("{title}  ({n})")).strong(), "");
                     });
@@ -297,7 +302,9 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
                     let selected = current.as_deref() == Some(e.id.as_str());
                     let r = rows::row(ui, "fits", ("sim_lib", &e.id, e.doctrine.is_some()), ROW_H, selected, |ui| {
                         ui.add_space(indent);
-                        crate::icons::type_icon(ui, e.ship, 18.0);
+                        if !under_hull {
+                            crate::icons::type_icon(ui, e.ship, 18.0);
+                        }
                         let side = if e.doctrine.is_some() { 22.0 } else { 26.0 + rows::GAP };
                         let w = ui.available_width() - side;
                         let label = if selected && dirty { format!("{}*", e.name) } else { e.name.clone() };
@@ -440,7 +447,7 @@ pub fn pick_list(ui: &mut egui::Ui, salt: &str, state: &mut LibraryState, all: &
             continue;
         }
         let key = format!("first:{title}");
-        shown.push(Line::Group { key: key.clone(), title: title.clone(), n: found.len(), depth: 0 });
+        shown.push(Line::Group { key: key.clone(), title: title.clone(), n: found.len(), depth: 0, hull: None });
         if !state.folded.contains(&key) {
             shown.extend(found);
         }
@@ -455,11 +462,14 @@ pub fn pick_list(ui: &mut egui::Ui, salt: &str, state: &mut LibraryState, all: &
         }
         for (k, line) in shown.iter().enumerate().skip(range.start).take(range.end - range.start) {
             match line {
-                Line::Group { key, title, n, depth } => {
+                Line::Group { key, title, n, depth, hull: node_hull } => {
                     let shut = state.folded.contains(key);
                     let r = rows::row(ui, salt, ("sim_pick_group", salt, key), ROW_H, false, |ui| {
                         ui.add_space(f32::from(*depth) * GROUP_INDENT);
                         ui.add(egui::Label::new(if shut { icon::CARET_RIGHT } else { icon::CARET_DOWN }).selectable(false));
+                        if let Some(t) = node_hull {
+                            crate::icons::type_icon(ui, *t, 18.0);
+                        }
                         let w = ui.available_width();
                         rows::cell(ui, w, egui::RichText::new(format!("{title}  ({n})")).strong(), "");
                     });
@@ -470,7 +480,9 @@ pub fn pick_list(ui: &mut egui::Ui, salt: &str, state: &mut LibraryState, all: &
                 Line::Fit(e) => {
                     let r = rows::row(ui, salt, ("sim_pick", salt, k, &e.id), ROW_H, false, |ui| {
                         ui.add_space(if k < lead { GROUP_INDENT } else { fit_indent(state.grouping) });
-                        crate::icons::type_icon(ui, e.ship, 18.0);
+                        if k < lead || state.grouping != Grouping::Hull {
+                            crate::icons::type_icon(ui, e.ship, 18.0);
+                        }
                         let w = ui.available_width() - if e.doctrine.is_some() { 22.0 } else { 0.0 };
                         let p = hull(e.ship);
                         let label = if k < lead || state.grouping != Grouping::Hull { format!("{}: {}", p.hull, e.name) } else { e.name.clone() };
