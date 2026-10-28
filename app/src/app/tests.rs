@@ -3102,6 +3102,20 @@ mod route_zone_tests {
         assert!(!g.is_bridge(30_004_759, 30_003_704));
         assert_eq!(g.route_with(30_004_759, 30_003_704, true, true, &Default::default(), |_| true).map(|r| r.len()), Some(3), "two gates");
     }
+
+    #[test]
+    fn a_planned_route_takes_bridges_whatever_the_intel_distance_setting() {
+        let ctx = egui::Context::default();
+        let mut a = SpaiApp::build(&ctx, true);
+        a.systems = Some(crate::uitest::fixtures::systems_bridged());
+        a.settings.jump_bridges = vec![crate::settings::JumpBridge { from: "1DQ1-A".into(), to: "7-K5EL".into() }];
+        a.settings.intel_count_bridges = false;
+        for (from, to) in [(30_004_759, 30_003_704), (30_003_704, 30_004_759)] {
+            a.map_route_anchors = vec![from, to];
+            let (_, opts) = a.route_input().unwrap().plan();
+            assert_eq!(opts[0].path, vec![from, to], "the bridge, both ways");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3697,3 +3711,4 @@ mod loss_fitting_tests {
         assert_eq!(doc.items, [item(2881, 27, 1), item(185, 27, 100), item(2454, FLAG_DRONE_BAY, 2), item(2881, FLAG_CARGO, 4), item(9999, 89, 1)]);
     }
 }
+

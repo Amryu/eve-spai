@@ -24,7 +24,7 @@ pub(crate) struct RouteInput {
 }
 
 impl RouteInput {
-    fn plan(&self) -> (Vec<crate::web::route::LegChoice>, Vec<crate::web::route::RouteOption>) {
+    pub(crate) fn plan(&self) -> (Vec<crate::web::route::LegChoice>, Vec<crate::web::route::RouteOption>) {
         let (legs, mut opts) = crate::web::route::chain(
             &self.graph,
             &self.coords,
@@ -443,7 +443,7 @@ impl SpaiApp {
     }
 
     /// Everything a route plan reads, owned, so it can be worked out off the UI thread.
-    fn route_input(&mut self) -> Option<RouteInput> {
+    pub(crate) fn route_input(&mut self) -> Option<RouteInput> {
         let graph = self.route_graph()?;
         let (mut avoid_gate, mut avoid_jump) = (self.route_avoid(false), self.route_avoid(true));
         let rules = self.route_rule_avoid();
@@ -457,7 +457,9 @@ impl SpaiApp {
             ship: self.jump_ship.min(crate::jumproute::SHIP_CLASSES.len() - 1),
             jdc: self.jump_jdc,
             jfc: self.jump_jfc,
-            bridges: self.settings.intel_count_bridges,
+            // The graph holds the bridges this route's zone limit allows; the intel setting of the
+            // same name is about hostiles, who cannot take them.
+            bridges: true,
             holes: if self.settings.route_via_wormholes { self.wh_adjacency() } else { Default::default() },
             danger: self.route_danger(),
             pick: self.map_leg_pick.clone(),
