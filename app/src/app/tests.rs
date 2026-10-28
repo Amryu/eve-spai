@@ -3161,17 +3161,6 @@ mod scan_route_tests {
     }
 
     #[test]
-    fn the_plain_set_destination_is_gone_while_a_gate_route_is_planned() {
-        let (_ctx, mut a) = app();
-        a.map_route_clear();
-        assert!(a.plain_destination_offered(), "no route: offered");
-        a.map_route_start("gate", 30_000_001);
-        assert!(!a.plain_destination_offered(), "a gate route has its own");
-        a.map_route_start("jump", 30_000_001);
-        assert!(a.plain_destination_offered());
-    }
-
-    #[test]
     fn the_area_around_an_exploration_upgrade_is_left_out() {
         let (_ctx, mut a) = app();
         a.settings.sov_upgrades = vec![crate::settings::SovUpgrade { system: "Plain".into(), upgrade: "<- Major Threat Detection Array 3, Exploration Detector 3".into() }];

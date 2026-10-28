@@ -710,29 +710,6 @@ impl SpaiApp {
             if let Some(info) = self.systems.as_ref().and_then(|g| g.info_of(sid)) {
                 ui.label(egui::RichText::new(&info.name).strong());
             }
-            let has_char = self.active_character != "No character";
-            if self.plain_destination_offered()
-                && ui
-                .add_enabled(has_char, egui::Button::new(tr!("Set Destination")))
-                .on_disabled_hover_text(tr!("Log a character in to route in the game"))
-                .clicked()
-            {
-                let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
-                self.set_destination_esi(cid, self.active_character.clone(), sid);
-                self.route_destination = Some(sid);
-                // The planner's own route would hide this one, holes and all.
-                self.map_route_clear();
-                self.ingame_route = true;
-                ui.close();
-            }
-            if self.plain_destination_offered() {
-                let mut picked = None;
-                ui.menu_button(tr!("Set Destination for"), |ui| picked = self.destination_characters_menu(ui));
-                if let Some(names) = picked {
-                    self.set_destination_for(&names, sid);
-                    ui.close();
-                }
-            }
             if (self.route_destination.is_some() || self.ingame_route) && self.map_route_anchors.is_empty() {
                 if ui
                     .button(egui::RichText::new(tr!("Clear Route")).color(crate::theme::standing::HOSTILE))
@@ -1871,8 +1848,6 @@ impl SpaiApp {
         let mut open_cynos = false;
         let mut open_notes = false;
         let mut open_wh = false;
-        let mut wh_route_changed = false;
-        let mut via_wh_changed = false;
         let mut highlight_changed = false;
 
         group(ui, tr!("Sovereignty"));
@@ -1971,25 +1946,15 @@ impl SpaiApp {
             );
         }
         {
-            let route_via = self.settings.route_via_wormholes;
-            let mut via = route_via;
             let mut thera = self.map_overlays.thera;
             let mut turnur = self.map_overlays.turnur;
             let mut on = self.map_overlays.wormholes;
             row(
                 ui,
                 &mut |ui| {
-                    gear_menu(ui, tr!("Wormholes on the map and in routes"), &mut |ui| {
+                    gear_menu(ui, tr!("Wormholes on the map"), &mut |ui| {
                         ui.checkbox(&mut thera, trf!("{icon}  Thera", icon = icon::PLANET));
                         ui.checkbox(&mut turnur, trf!("{icon}  Turnur", icon = icon::PLANET));
-                        ui.separator();
-                        via_wh_changed |= ui
-                            .checkbox(&mut via, tr!("Route through them"))
-                            .on_hover_text(tr!("Routes and Set Destination use scanned holes, with a waypoint at each entrance"))
-                            .changed();
-                        if via {
-                            wh_route_changed |= self.wh_route_options_ui(ui);
-                        }
                         ui.separator();
                         if ui.button(trf!("{icon}  Open the wormhole tab", icon = icon::SPIRAL)).clicked() {
                             open_wh = true;
@@ -2004,9 +1969,6 @@ impl SpaiApp {
             self.map_overlays.thera = thera;
             self.map_overlays.turnur = turnur;
             self.map_overlays.wormholes = on;
-            if via != route_via {
-                self.settings.route_via_wormholes = via;
-            }
         }
 
         group(ui, tr!("Activity"));
@@ -2078,13 +2040,6 @@ impl SpaiApp {
         }
         if highlight_changed {
             self.needs_save = true;
-        }
-        if via_wh_changed {
-            self.needs_save = true;
-            self.replan_routes();
-        }
-        if wh_route_changed {
-            self.wh_routing_changed();
         }
         if open_coalitions {
             self.coalitions_open = true;

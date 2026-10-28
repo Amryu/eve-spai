@@ -235,12 +235,6 @@ impl SpaiApp {
         !self.map_route_anchors.is_empty()
     }
 
-    /// Whether the map's menu offers the plain in-game "Set Destination". Not while a gate route is
-    /// planned: that has its own "Set as Destination", and the plain one would throw the plan away.
-    pub(crate) fn plain_destination_offered(&self) -> bool {
-        !(self.map_route_kind_active() && self.map_route_kind == "gate")
-    }
-
     /// How leg `i` is flown.
     pub(crate) fn map_leg_kind(&self, i: usize) -> &'static str {
         self.map_leg_kinds.get(i).copied().unwrap_or(default_leg(self.map_route_kind))
