@@ -258,7 +258,7 @@ impl SpaiApp {
                 } else {
                     txt
                 });
-                if i > 0 && spai_ui::widgets::icon_button(ui, icon::X).on_hover_text(tr!("Remove")).clicked() {
+                if i > 0 && spai_ui::widgets::quiet_icon_button(ui, icon::X).on_hover_text(tr!("Remove")).clicked() {
                     drop_anchor = Some(i);
                 }
             }

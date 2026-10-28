@@ -36,6 +36,19 @@ pub fn icon_button(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui
     .inner
 }
 
+/// An icon button with no frame, dimmed until hovered: for a lesser action beside framed ones.
+pub fn quiet_icon_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = egui::vec2(4.0, 1.0);
+        let dim = ui.visuals().weak_text_color();
+        let id = ui.next_auto_id();
+        let hovered = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
+        let t = egui::RichText::new(text);
+        ui.add(egui::Button::new(if hovered { t } else { t.color(dim) }).small().frame(false))
+    })
+    .inner
+}
+
 impl SteadySelect for egui::Ui {
     fn menu_label<'a>(
         &mut self,

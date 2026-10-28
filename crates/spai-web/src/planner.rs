@@ -816,7 +816,7 @@ impl RoutePlan {
                 }
                 let t = egui::RichText::new(name(id)).strong();
                 ui.label(if i == 0 || i == self.anchors.len() - 1 { t.color(ui.visuals().hyperlink_color) } else { t });
-                if i > 0 && spai_ui::widgets::icon_button(ui, icon::X).on_hover_text("Remove").clicked() {
+                if i > 0 && spai_ui::widgets::quiet_icon_button(ui, icon::X).on_hover_text("Remove").clicked() {
                     drop = Some(i);
                 }
             }
