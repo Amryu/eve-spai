@@ -560,7 +560,7 @@ impl StarMap {
                 legend(ui, rows);
             }
             ui.separator();
-            self.plan.panel(ui, geo);
+            self.plan.panel(ui, geo, &d.hole_list);
         });
     }
 }

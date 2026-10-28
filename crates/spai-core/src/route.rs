@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::map::MapSystem;
 
 /// One system on a route, and how it was reached from the one before it.
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Default)]
 pub struct Hop {
     pub id: i64,
     pub name: String,

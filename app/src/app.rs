@@ -3506,6 +3506,28 @@ impl SpaiApp {
         }
     }
 
+    /// The route's second leg as a hole, with what a scan wrote down about it.
+    #[cfg(test)]
+    pub(crate) fn seed_route_hole(&mut self) {
+        let Some(opt) = self.map_route_opts.get_mut(self.map_route_at) else { return };
+        let (Some(a), Some(b)) = (opt.hops.get(1).map(|h| h.id), opt.hops.get(2).map(|h| h.id)) else { return };
+        opt.hops[2].hole = true;
+        let now = crate::clock::utc().timestamp();
+        self.wh_cache.push(crate::wormholes::Wormhole {
+            system_id: a,
+            signature: Some("QRT-482".into()),
+            wh_type: Some("N432".into()),
+            dest_system_id: Some(b),
+            dest_wh_type: Some("K162".into()),
+            mass: Some(crate::wormholes::Mass::Reduced),
+            life: Some(crate::wormholes::Life::Under4h),
+            observed_at: Some(now),
+            reported_at: now - 3600,
+            updated_at: now,
+            ..Default::default()
+        });
+    }
+
     #[cfg(test)]
     pub(crate) fn seed_jump_ship(&mut self, ship: usize) {
         self.jump_ship = ship;

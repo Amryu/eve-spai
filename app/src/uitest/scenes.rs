@@ -1722,6 +1722,9 @@ fn route_panel_scene_full(name: &'static str, detail: bool, fork: bool) -> Scene
             if fork {
                 a.seed_route_fork();
             }
+            if name.ends_with("_hole") {
+                a.seed_route_hole();
+            }
             a
         });
         app.jump_plan_ui(ui);
@@ -2628,6 +2631,7 @@ pub(crate) fn all() -> Vec<Scene> {
         route_panel_scene("route_panel_gate"),
         route_panel_scene_cfg("route_panel_costs_and_warnings", true),
         route_panel_scene_full("route_panel_fork", false, true),
+        route_panel_scene_full("route_panel_hole", false, false),
         route_panel_ahead_scene("route_panel_jump_ahead"),
         link_menu_scene("map_link_menu"),
         jump_plan_scene("jump_plan_command_carrier", [360.0, 560.0], 5),

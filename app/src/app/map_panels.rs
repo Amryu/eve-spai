@@ -652,6 +652,7 @@ impl SpaiApp {
         let mut show_intel: Option<i64> = None;
         let mut warn_intel: Option<i64> = None;
         let mut fork_now: Option<(i64, i64)> = None;
+        let now = crate::clock::utc().timestamp();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for (i, h) in hops.iter().enumerate() {
                 // A system the user named gets its own ground, so the route reads as the legs it was
@@ -738,8 +739,8 @@ impl SpaiApp {
                                         .color(security_color(h.security))
                                         .strong(),
                                 );
-                                let (tail, colour) = spai_ui::star_map::hop_tail(h, i == 0);
-                                let tail = egui::RichText::new(tail).size(11.0);
+                                let (tail, colour) = spai_ui::star_map::hop_tail(h, i.checked_sub(1).map(|p| hops[p].id), &self.wh_cache, now);
+                                let tail = egui::RichText::new(tail);
                                 ui.label(match colour {
                                     Some(c) => tail.color(c),
                                     None => tail.weak(),

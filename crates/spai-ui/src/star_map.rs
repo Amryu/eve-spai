@@ -780,17 +780,65 @@ pub fn paint_region_labels(painter: &egui::Painter, draw: &[MapSystem], pos: &Ha
 
 /// Jove Observatory systems' marker colour.
 /// How a route list names the way into a hop, and its colour: the map's own colours for each kind
-/// of leg, so a jump, a bridge or a hole stands out from the gates around it. `None` is a gate.
-pub fn hop_tail(h: &spai_core::route::Hop, first: bool) -> (String, Option<egui::Color32>) {
-    if first {
+/// of leg, so a jump, a bridge or a hole stands out from the gates around it. `None` is a gate. A
+/// hole leg names what is known of the hole from `prev`, the system it is entered from.
+pub fn hop_tail(h: &spai_core::route::Hop, prev: Option<i64>, holes: &[spai_core::wormholes::Wormhole], now: i64) -> (String, Option<egui::Color32>) {
+    let Some(prev) = prev else {
         return (crate::tr!("start").to_owned(), None);
-    }
+    };
     match h.kind {
         2 => (crate::trf!("jump {ly} ly", ly = format!("{:.1}", h.ly.unwrap_or_default())), Some(egui::Color32::from_rgb(0xE0, 0x7B, 0xE0))),
         1 => (crate::tr!("ansiblex").to_owned(), Some(egui::Color32::from_rgb(0x3A, 0xD0, 0x6A))),
-        _ if h.hole => (crate::tr!("wormhole").to_owned(), Some(egui::Color32::from_rgb(0x4D, 0xD0, 0xC4))),
+        _ if h.hole => {
+            let mut text = crate::tr!("wormhole").to_owned();
+            if let Some(about) = route_hole(holes, prev, h.id, now).map(|w| hole_facts(&w, now)).filter(|a| !a.is_empty()) {
+                text.push(' ');
+                text.push_str(&about);
+            }
+            (text, Some(egui::Color32::from_rgb(0x4D, 0xD0, 0xC4)))
+        }
         _ => (crate::tr!("gate").to_owned(), None),
     }
+}
+
+/// The known hole from `from` into `to`, as seen from `from`: of several, the one with the most time
+/// left, then the most written down about it.
+pub fn route_hole(holes: &[spai_core::wormholes::Wormhole], from: i64, to: i64, now: i64) -> Option<spai_core::wormholes::Wormhole> {
+    let joins = |w: &&spai_core::wormholes::Wormhole| (w.system_id == from && w.dest_system_id == Some(to)) || (w.system_id == to && w.dest_system_id == Some(from));
+    let near = spai_core::wormholes::Wormhole { system_id: from, ..Default::default() };
+    let facts = |w: &spai_core::wormholes::Wormhole| [w.signature.is_some(), w.wh_type.is_some() || w.dest_wh_type.is_some(), w.mass.is_some() || w.life.is_some()].iter().filter(|b| **b).count();
+    holes
+        .iter()
+        .filter(joins)
+        .map(|w| w.clone().facing(&near))
+        .min_by_key(|w| (spai_core::wormholes::time_left(w, now), std::cmp::Reverse(facts(w))))
+}
+
+/// A hole's signature on the near side, its type and how stable it is, as far as known: "ABC-123
+/// C729 <4h, mass <10%", or "stable" for one read as neither shrinking nor ageing.
+pub fn hole_facts(w: &spai_core::wormholes::Wormhole, now: i64) -> String {
+    use spai_core::wormholes::{Mass, TimeLeft};
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(sig) = w.signature.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        parts.push(sig.to_uppercase());
+    }
+    let typed = |t: &Option<String>| t.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_uppercase);
+    let code = [typed(&w.wh_type), typed(&w.dest_wh_type)].into_iter().flatten().find(|t| t != "K162").or_else(|| typed(&w.wh_type));
+    parts.extend(code);
+    let time = spai_core::wormholes::time_left(w, now);
+    let mut state: Vec<String> = Vec::new();
+    if time != TimeLeft::Plenty {
+        state.push(if time == TimeLeft::Expiring { crate::tr!("closing").to_owned() } else { crate::trf!("{t} left", t = time.short()) });
+    }
+    match w.mass {
+        Some(m @ (Mass::Reduced | Mass::Critical)) => state.push(crate::trf!("mass {m}", m = m.short())),
+        Some(Mass::Fresh) if state.is_empty() => state.push(crate::tr!("stable").to_owned()),
+        _ => {}
+    }
+    if !state.is_empty() {
+        parts.push(state.join(", "));
+    }
+    parts.join(" ")
 }
 
 pub const JOVE_COLOR: egui::Color32 = egui::Color32::from_rgb(0xB8, 0x8C, 0xF0);
@@ -842,6 +890,47 @@ pub fn paint_hole_mark(painter: &egui::Painter, at: egui::Pos2, icon_h: f32, ico
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_hole_leg_names_its_signature_type_and_state_from_the_side_it_is_entered() {
+        use spai_core::route::Hop;
+        use spai_core::wormholes::{Life, Mass, Wormhole};
+        let now = 1_800_000_000;
+        // Recorded from the far side: the route enters it from 30000142.
+        let hole = Wormhole {
+            system_id: 31_000_005,
+            signature: Some("xyz-789".into()),
+            wh_type: Some("K162".into()),
+            dest_system_id: Some(30_000_142),
+            dest_signature: Some("ABC-123".into()),
+            dest_wh_type: Some("H296".into()),
+            mass: Some(Mass::Critical),
+            life: Some(Life::Under4h),
+            observed_at: Some(now),
+            reported_at: now - 3600,
+            updated_at: now,
+            ..Default::default()
+        };
+        let hop = Hop { id: 31_000_005, hole: true, ..Default::default() };
+        let (text, _) = super::hop_tail(&hop, Some(30_000_142), std::slice::from_ref(&hole), now);
+        assert_eq!(text, "wormhole ABC-123 H296 <4h left, mass <10%");
+        let stable = Wormhole { mass: Some(Mass::Fresh), life: Some(Life::OverDay), ..hole.clone() };
+        assert_eq!(super::hole_facts(&stable.facing(&Wormhole { system_id: 30_000_142, ..Default::default() }), now), "ABC-123 H296 stable");
+        let (bare, _) = super::hop_tail(&hop, Some(30_000_142), &[], now);
+        assert_eq!(bare, "wormhole", "nothing known, nothing added");
+        let (gate, _) = super::hop_tail(&Hop { id: 1, ..Default::default() }, Some(2), &[], now);
+        assert_eq!(gate, "gate");
+    }
+
+    #[test]
+    fn of_two_holes_on_a_leg_the_longer_lived_is_named() {
+        use spai_core::wormholes::{Life, Wormhole};
+        let now = 1_800_000_000;
+        let base = Wormhole { system_id: 1, dest_system_id: Some(2), reported_at: now - 600, updated_at: now, observed_at: Some(now), ..Default::default() };
+        let dying = Wormhole { signature: Some("AAA".into()), life: Some(Life::Under1h), ..base.clone() };
+        let fresh = Wormhole { signature: Some("BBB".into()), life: Some(Life::OverDay), ..base };
+        assert_eq!(super::route_hole(&[dying, fresh], 1, 2, now).and_then(|w| w.signature).as_deref(), Some("BBB"));
+    }
+
     use super::*;
 
     /// Each step is a pair, and so is a stretch through wormhole space between two k-space

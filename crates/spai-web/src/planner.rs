@@ -769,7 +769,8 @@ impl RoutePlan {
     }
 
     /// The route panel: what is planned, its settings, alternatives and hops.
-    pub fn panel(&mut self, ui: &mut egui::Ui, geo: &Systems) {
+    pub fn panel(&mut self, ui: &mut egui::Ui, geo: &Systems, holes: &[Wormhole]) {
+        let now = spai_core::clock::utc().timestamp();
         let name = |id: i64| geo.info_of(id).map_or_else(|| id.to_string(), |i| i.name.clone());
         if !self.active() {
             ui.label(egui::RichText::new("Drag from one system to another to plan a route, or right-click a system to start one.").weak());
@@ -1015,7 +1016,7 @@ impl RoutePlan {
                         ui.vertical(|ui| {
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(egui::RichText::new(&h.name).color(spai_ui::colors::security_color(h.security)).strong());
-                                let (tail, colour) = spai_ui::star_map::hop_tail(h, i == 0);
+                                let (tail, colour) = spai_ui::star_map::hop_tail(h, i.checked_sub(1).map(|p| o.hops[p].id), holes, now);
                                 let tail = egui::RichText::new(tail);
                                 ui.label(match colour {
                                     Some(c) => tail.color(c),
