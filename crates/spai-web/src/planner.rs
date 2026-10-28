@@ -30,6 +30,8 @@ pub struct PlanPrefs {
     pub wh_min_mass: String,
     pub wh_min_time: String,
     pub wh_min_size: String,
+    /// Routes may use holes only intel channels have reported.
+    pub wh_intel: bool,
     /// Holes, by uid, and systems whose holes routes never use.
     pub wh_off_holes: Vec<String>,
     pub wh_off_systems: Vec<i64>,
@@ -56,6 +58,7 @@ impl Default for PlanPrefs {
             wh_min_mass: String::new(),
             wh_min_time: String::new(),
             wh_min_size: String::new(),
+            wh_intel: false,
             wh_off_holes: Vec::new(),
             wh_off_systems: Vec::new(),
             ahead_hull: 0,
@@ -164,6 +167,7 @@ impl PlanPrefs {
             min_mass: Mass::from_code(&self.wh_min_mass),
             time_below: TimeLeft::ALL.into_iter().find(|t| t.code() == self.wh_min_time),
             min_size: ShipSize::from_code(&self.wh_min_size),
+            skip_intel_only: !self.wh_intel,
         }
     }
 
@@ -1167,6 +1171,12 @@ impl RoutePlan {
                     ],
                 );
                 ui.end_row();
+                ui.label("Intel");
+                changed |= ui
+                    .checkbox(&mut self.prefs.wh_intel, "Holes only intel reported")
+                    .on_hover_text("Off: a hole heard of in an intel channel waits for a scan, a jump or an edit before routes use it. Chat gets holes wrong often.")
+                    .changed();
+                ui.end_row();
             });
             let off = self.prefs.wh_off_holes.len() + self.prefs.wh_off_systems.len();
             if off > 0 {
@@ -1391,9 +1401,14 @@ mod tests {
     #[test]
     fn switched_off_and_filtered_holes_stay_off_routes() {
         let geo = spai_core::test_support::small_universe(&[]);
-        let hole = |uid: &str, a: i64, b: i64| Wormhole { uid: uid.into(), system_id: a, dest_system_id: Some(b), reported_at: spai_core::clock::utc().timestamp(), ..Default::default() };
+        let hole = |uid: &str, a: i64, b: i64| Wormhole { uid: uid.into(), system_id: a, dest_system_id: Some(b), reported_at: spai_core::clock::utc().timestamp(), source: spai_core::wormholes::Source::Manual, ..Default::default() };
         let holes = [hole("h1", 30_004_759, 30_000_142), hole("h2", 30_004_608, 30_002_187)];
         let now = spai_core::clock::utc().timestamp();
+        let heard = [Wormhole { source: spai_core::wormholes::Source::Intel, ..holes[0].clone() }];
+        let mut intel = PlanPrefs::default();
+        assert!(intel.hole_graph(&geo, &heard, now).is_empty(), "a hole only intel reported waits by default");
+        intel.wh_intel = true;
+        assert_eq!(intel.hole_graph(&geo, &heard, now).len(), 2);
         let mut p = PlanPrefs::default();
         assert_eq!(p.hole_graph(&geo, &holes, now).len(), 4, "both holes, both ways");
         p.wh_off_holes.push("h1".into());

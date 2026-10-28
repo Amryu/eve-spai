@@ -1670,7 +1670,15 @@ pub fn holes_table(
                         None => "expired".into(),
                     }
                 } else {
-                    crate::trf!("reported {ago} ago", ago = crate::widgets::human_ago(now - w.reported_at))
+                    // Open at least since it was reported, so its type's lifetime from then is the
+                    // most it has left.
+                    let ago = crate::widgets::human_ago(now - w.reported_at);
+                    let left = w.reported_at + w.lifetime_secs() - now;
+                    if left > 0 {
+                        crate::trf!("reported {ago} ago, {left} left at most", ago = ago, left = crate::widgets::human_ago(left))
+                    } else {
+                        crate::trf!("reported {ago} ago, likely closed", ago = ago)
+                    }
                 };
                 // The entry's origin first, then whoever else has seen it.
                 let mut source = match (&w.detected_by, w.source) {

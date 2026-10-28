@@ -722,6 +722,11 @@ pub struct Wormhole {
 }
 
 impl Wormhole {
+    /// Reported by intel channels and by nothing since: no scan, jump, feed or edit has confirmed it.
+    pub fn intel_only(&self) -> bool {
+        (self.seen_by | self.source.bit()) == Source::Intel.bit()
+    }
+
     pub fn max_life_secs(&self) -> i64 {
         if self.is_drifter {
             3600
@@ -988,10 +993,15 @@ pub struct RouteLimits {
     /// Holes this close to closing or closer are left out.
     pub time_below: Option<TimeLeft>,
     pub min_size: Option<ShipSize>,
+    /// Leave out holes only intel channels have reported: chat gets them wrong often enough.
+    pub skip_intel_only: bool,
 }
 
 impl RouteLimits {
     pub fn allows(&self, w: &Wormhole, now: i64) -> bool {
+        if self.skip_intel_only && w.intel_only() {
+            return false;
+        }
         let mass_rank = |m: Mass| Mass::ALL.iter().position(|x| *x == m);
         let size_rank = |s: ShipSize| ShipSize::ALL.iter().position(|x| *x == s);
         let mass_ok = match (self.min_mass, w.mass) {
@@ -1523,6 +1533,19 @@ pub fn metro_to_wormholes(systems: &[MetroSystem], now: i64, class: &dyn Fn(i64)
 #[cfg(test)]
 mod metro_tests {
     use super::*;
+
+    #[test]
+    fn routes_can_leave_out_holes_only_intel_has_reported() {
+        let now = 1_800_000_000;
+        let heard = Wormhole { system_id: 1, dest_system_id: Some(2), source: Source::Intel, reported_at: now, updated_at: now, ..Default::default() };
+        let scanned = Wormhole { seen_by: Source::Intel.bit() | Source::Manual.bit(), ..heard.clone() };
+        let jumped = Wormhole { source: Source::Auto, ..heard.clone() };
+        let strict = RouteLimits { skip_intel_only: true, ..Default::default() };
+        assert!(heard.intel_only() && !scanned.intel_only() && !jumped.intel_only());
+        assert!(!strict.allows(&heard, now));
+        assert!(strict.allows(&scanned, now) && strict.allows(&jumped, now), "confirmed holes stay");
+        assert!(RouteLimits::default().allows(&heard, now));
+    }
 
     const REPLY: &str = r#"{"access":true,"connections":[
         {"systemId":"30045328","systemName":"Ahtila","systemSecurityStatus":-1.0,"systemEdges":[

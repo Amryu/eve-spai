@@ -179,6 +179,7 @@ impl SpaiApp {
             min_mass: Mass::from_code(&self.settings.wh_route_min_mass),
             time_below: TimeLeft::ALL.into_iter().find(|t| t.code() == self.settings.wh_route_min_time),
             min_size: ShipSize::from_code(&self.settings.wh_route_min_size),
+            skip_intel_only: !self.settings.wh_route_intel,
         }
     }
 
@@ -386,6 +387,12 @@ impl SpaiApp {
                     (ShipSize::XLarge.code(), "XL", tr!("Holes a capital fits through. Holes of unknown size and type pass.")),
                 ],
             );
+            ui.end_row();
+            ui.label(tr!("Intel"));
+            changed |= ui
+                .checkbox(&mut self.settings.wh_route_intel, tr!("Holes only intel reported"))
+                .on_hover_text(tr!("Off: a hole heard of in an intel channel waits for a scan, a jump, a feed or an edit before routes use it. Chat gets holes wrong often."))
+                .changed();
             ui.end_row();
         });
         changed

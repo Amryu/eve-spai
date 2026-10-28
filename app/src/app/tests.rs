@@ -3004,7 +3004,16 @@ mod wh_routing_tests {
 
     fn hole(uid: &str, a: i64, b: i64) -> Wormhole {
         let now = crate::clock::utc().timestamp();
-        Wormhole { uid: uid.into(), system_id: a, dest_system_id: Some(b), reported_at: now, explicit_expiry: Some(now + 20 * 3600), ..Default::default() }
+        Wormhole { uid: uid.into(), system_id: a, dest_system_id: Some(b), reported_at: now, explicit_expiry: Some(now + 20 * 3600), source: crate::wormholes::Source::Manual, ..Default::default() }
+    }
+
+    #[test]
+    fn holes_only_intel_reported_stay_off_routes_until_allowed() {
+        let (_ctx, mut a) = app();
+        a.wh_cache = vec![Wormhole { source: crate::wormholes::Source::Intel, ..hole("i", 30_004_759, THERA) }];
+        assert!(a.wh_adjacency().is_empty(), "off by default");
+        a.settings.wh_route_intel = true;
+        assert!(a.wh_adjacency().contains_key(&30_004_759));
     }
 
     fn app() -> (egui::Context, SpaiApp) {

@@ -325,6 +325,9 @@ pub struct Settings {
     /// The kinds of hole routes may go through, by `HoleKind::code`.
     #[serde(default = "default_wh_route_kinds")]
     pub wh_route_kinds: Vec<String>,
+    /// Routes may use holes only intel channels have reported. Off: chat gets them wrong often.
+    #[serde(default)]
+    pub wh_route_intel: bool,
     /// Systems the wormhole map's Routes panel measures from the selected system.
     #[serde(default)]
     pub wh_route_pins: Vec<String>,
@@ -1700,6 +1703,7 @@ impl Default for Settings {
             evemetro_key: String::new(),
             evemetro_character: 0,
             wh_route_kinds: default_wh_route_kinds(),
+            wh_route_intel: false,
             wh_route_pins: Vec::new(),
             dashboard_tiles: default_dashboard_tiles(),
             dashboard_timeline: String::new(),
