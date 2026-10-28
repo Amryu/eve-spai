@@ -117,6 +117,8 @@ impl ShipSize {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Source {
     EveScout,
+    /// EVE Metro's subscriber feed of Pochven holes. Paid for, so it stays on this machine.
+    EveMetro,
     #[default]
     Intel,
     Manual,
@@ -128,6 +130,7 @@ impl Source {
     pub fn code(self) -> &'static str {
         match self {
             Source::EveScout => "eve-scout",
+            Source::EveMetro => "eve-metro",
             Source::Intel => "intel",
             Source::Manual => "manual",
             Source::Auto => "auto",
@@ -137,6 +140,7 @@ impl Source {
     pub fn from_code(code: &str) -> Source {
         match code {
             "eve-scout" => Source::EveScout,
+            "eve-metro" => Source::EveMetro,
             "manual" => Source::Manual,
             "auto" => Source::Auto,
             _ => Source::Intel,
@@ -150,14 +154,21 @@ impl Source {
             Source::Intel => 2,
             Source::Manual => 4,
             Source::Auto => 8,
+            Source::EveMetro => 16,
         }
     }
 
-    pub const ALL: [Source; 4] = [Source::EveScout, Source::Intel, Source::Manual, Source::Auto];
+    pub const ALL: [Source; 5] = [Source::EveScout, Source::EveMetro, Source::Intel, Source::Manual, Source::Auto];
+
+    /// A feed the app polls: its holes are kept in step with it, never shared to groups.
+    pub fn is_feed(self) -> bool {
+        matches!(self, Source::EveScout | Source::EveMetro)
+    }
 
     pub fn label(self) -> &'static str {
         match self {
             Source::EveScout => "EVE-Scout",
+            Source::EveMetro => "EVE Metro",
             Source::Intel => "Intel",
             Source::Manual => "Manual",
             Source::Auto => "Auto-detected",
@@ -665,7 +676,7 @@ pub static WH_TYPES: &[Wh] = &[
 /// that first reported it.
 fn rank(s: Source) -> u8 {
     match s {
-        Source::EveScout => 3,
+        Source::EveScout | Source::EveMetro => 3,
         Source::Manual => 2,
         Source::Auto => 1,
         Source::Intel => 0,
@@ -1399,4 +1410,158 @@ pub fn scout_to_wormhole(s: &ScoutSig, now: i64) -> Option<Wormhole> {
 
 fn parse_rfc3339(s: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp())
+}
+
+/// EVE Metro's subscriber API: the holes between Pochven and the rest of New Eden. It sends no CORS
+/// headers, so only the desktop app reads it.
+pub const METRO_URL: &str = "https://api.evemetro.com/connections";
+
+/// Who asks: EVE Metro grants access to a character, its corporation or its alliance.
+#[derive(serde::Serialize)]
+pub struct MetroAsk {
+    pub character_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corporation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alliance_id: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct MetroReply {
+    pub access: bool,
+    #[serde(default)]
+    pub connections: Vec<MetroSystem>,
+}
+
+/// A Pochven system and its holes out.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetroSystem {
+    #[serde(deserialize_with = "id_either")]
+    pub system_id: i64,
+    #[serde(default)]
+    pub system_edges: Vec<MetroEdge>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetroEdge {
+    #[serde(deserialize_with = "id_either")]
+    pub solar_system_id_dst: i64,
+    pub signature_src: Option<String>,
+    pub signature_dst: Option<String>,
+    pub wormhole_type_src: Option<String>,
+    pub wormhole_type_dst: Option<String>,
+    pub wormhole_mass: Option<String>,
+    pub wormhole_eol: Option<String>,
+    pub created_time: Option<serde_json::Value>,
+}
+
+/// The spec types ids as strings; Postgres hands some back as numbers.
+fn id_either<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
+    match <serde_json::Value as serde::Deserialize>::deserialize(d)? {
+        serde_json::Value::Number(n) => n.as_i64().ok_or_else(|| serde::de::Error::custom("id out of range")),
+        serde_json::Value::String(s) => s.trim().parse().map_err(serde::de::Error::custom),
+        _ => Err(serde::de::Error::custom("id is neither a number nor a string")),
+    }
+}
+
+fn metro_time(v: &serde_json::Value) -> Option<i64> {
+    match v {
+        serde_json::Value::String(s) => parse_rfc3339(s).or_else(|| s.trim().parse::<i64>().ok().map(epoch_secs)),
+        serde_json::Value::Number(n) => n.as_i64().map(epoch_secs),
+        _ => None,
+    }
+}
+
+/// Seconds, from seconds or milliseconds.
+fn epoch_secs(t: i64) -> i64 {
+    if t > 100_000_000_000 {
+        t / 1000
+    } else {
+        t
+    }
+}
+
+/// The feed's holes, each from its Pochven end. `class` tells what kind of space a far system is.
+pub fn metro_to_wormholes(systems: &[MetroSystem], now: i64, class: &dyn Fn(i64) -> DestClass) -> Vec<Wormhole> {
+    let clean = |s: &Option<String>| s.as_deref().map(str::trim).filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("unknown")).map(str::to_owned);
+    let mut out = Vec::new();
+    for sys in systems {
+        for e in &sys.system_edges {
+            if e.solar_system_id_dst <= 0 || e.solar_system_id_dst == sys.system_id {
+                continue;
+            }
+            let critical = |v: &Option<String>| v.as_deref().is_some_and(|v| v.eq_ignore_ascii_case("critical"));
+            let (mass_low, eol) = (critical(&e.wormhole_mass), critical(&e.wormhole_eol));
+            let reported = e.created_time.as_ref().and_then(metro_time).filter(|t| *t <= now).unwrap_or(now);
+            let mut w = Wormhole {
+                system_id: sys.system_id,
+                signature: clean(&e.signature_src),
+                wh_type: clean(&e.wormhole_type_src),
+                dest: class(e.solar_system_id_dst),
+                dest_system_id: Some(e.solar_system_id_dst),
+                dest_signature: clean(&e.signature_dst),
+                dest_wh_type: clean(&e.wormhole_type_dst),
+                reported_at: reported,
+                source: Source::EveMetro,
+                updated_at: now,
+                mass: mass_low.then_some(Mass::Critical),
+                life: eol.then_some(Life::Under4h),
+                observed_at: (mass_low || eol).then_some(now),
+                ..Default::default()
+            };
+            // Found at `reported`, so it closes of old age by then plus its type's life at the latest.
+            let aged = reported + w.lifetime_secs();
+            w.explicit_expiry = Some(if eol { aged.min(now + 4 * 3600) } else { aged });
+            out.push(w);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod metro_tests {
+    use super::*;
+
+    const REPLY: &str = r#"{"access":true,"connections":[
+        {"systemId":"30045328","systemName":"Ahtila","systemSecurityStatus":-1.0,"systemEdges":[
+            {"solarSystemIdDst":"30002652","solarSystemNameDst":"Ala","edgeSource":"trig-map","signatureSrc":"ABC-123","signatureDst":"XYZ-789",
+             "wormholeTypeSrc":"C729","wormholeTypeDst":"K162","wormholeMass":"stable","wormholeEol":"critical",
+             "createdTime":"2026-10-28T08:00:00.000Z","lastSeenTime":"2026-10-28T08:00:00.000Z"},
+            {"solarSystemIdDst":30000142,"signatureSrc":"DEF-456","wormholeTypeSrc":"C729","wormholeMass":"critical","wormholeEol":"stable","createdTime":1793174400000}
+        ]}]}"#;
+
+    #[test]
+    fn a_metro_reply_turns_into_holes_from_their_pochven_end() {
+        let reply: MetroReply = serde_json::from_str(REPLY).unwrap();
+        assert!(reply.access);
+        let now = parse_rfc3339("2026-10-28T10:00:00Z").unwrap();
+        let holes = metro_to_wormholes(&reply.connections, now, &|id| if id == 30000142 { DestClass::Highsec } else { DestClass::Lowsec });
+        assert_eq!(holes.len(), 2);
+        let (a, b) = (&holes[0], &holes[1]);
+        assert_eq!((a.system_id, a.dest_system_id, a.dest), (30045328, Some(30002652), DestClass::Lowsec));
+        assert_eq!((a.signature.as_deref(), a.dest_signature.as_deref()), (Some("ABC-123"), Some("XYZ-789")));
+        assert_eq!((a.wh_type.as_deref(), a.dest_wh_type.as_deref()), (Some("C729"), Some("K162")));
+        assert_eq!((a.source, a.life, a.mass), (Source::EveMetro, Some(Life::Under4h), None));
+        assert!(a.explicit_expiry.unwrap() <= now + 4 * 3600, "an end-of-life hole closes within four hours");
+        assert_eq!(a.reported_at, now - 2 * 3600);
+        assert_eq!((b.dest_system_id, b.dest, b.mass, b.life), (Some(30000142), DestClass::Highsec, Some(Mass::Critical), None));
+        assert_eq!(b.reported_at, 1793174400, "milliseconds read as seconds");
+        assert_eq!(b.explicit_expiry, Some(b.reported_at + b.lifetime_secs()));
+    }
+
+    #[test]
+    fn no_access_reads_without_connections() {
+        let reply: MetroReply = serde_json::from_str(r#"{"access":false}"#).unwrap();
+        assert!(!reply.access && reply.connections.is_empty());
+    }
+
+    #[test]
+    fn the_metro_source_round_trips_and_is_a_feed() {
+        assert_eq!(Source::from_code(Source::EveMetro.code()), Source::EveMetro);
+        assert!(Source::EveMetro.is_feed() && Source::EveScout.is_feed() && !Source::Intel.is_feed());
+        let bits: Vec<u8> = Source::ALL.iter().map(|s| s.bit()).collect();
+        assert!(bits.iter().enumerate().all(|(i, b)| !bits[i + 1..].contains(b)), "bits are distinct");
+    }
 }

@@ -314,6 +314,14 @@ pub struct Settings {
     /// Ask for the signature and more when one of them does.
     #[serde(default = "default_true")]
     pub wh_ask: bool,
+    /// Poll EVE Metro for its Pochven holes, with the key its team hands out.
+    #[serde(default)]
+    pub evemetro_enabled: bool,
+    #[serde(default)]
+    pub evemetro_key: String,
+    /// The character EVE Metro checks the subscription of, with its corporation and alliance.
+    #[serde(default)]
+    pub evemetro_character: i64,
     /// The kinds of hole routes may go through, by `HoleKind::code`.
     #[serde(default = "default_wh_route_kinds")]
     pub wh_route_kinds: Vec<String>,
@@ -1688,6 +1696,9 @@ impl Default for Settings {
             route_ahead_beacons: false,
             wh_detect: true,
             wh_ask: true,
+            evemetro_enabled: false,
+            evemetro_key: String::new(),
+            evemetro_character: 0,
             wh_route_kinds: default_wh_route_kinds(),
             wh_route_pins: Vec::new(),
             dashboard_tiles: default_dashboard_tiles(),

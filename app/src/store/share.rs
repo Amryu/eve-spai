@@ -34,7 +34,7 @@ impl Store {
 
     /// Marks the fields a local write changed and queues the hole for the groups.
     pub(crate) fn share_track(&self, before: Option<&Wormhole>, after: &Wormhole) {
-        if after.source == Source::EveScout || after.uid.is_empty() || !self.sharing() {
+        if after.source.is_feed() || after.uid.is_empty() || !self.sharing() {
             return;
         }
         let fields = hole::changed(before, after);
@@ -53,7 +53,7 @@ impl Store {
     }
 
     pub(crate) fn share_track_dead(&self, w: &Wormhole) {
-        if w.source != Source::EveScout && !w.uid.is_empty() && self.sharing() {
+        if !w.source.is_feed() && !w.uid.is_empty() && self.sharing() {
             self.queue("dead", Some(&w.uid), None, self.wormhole_group(&w.uid).as_deref());
         }
     }
@@ -139,7 +139,7 @@ impl Store {
     fn queue_holes_to(&self, group: &str) {
         let uids: Vec<String> = self
             .conn
-            .prepare("SELECT uid FROM wormholes WHERE dead = 0 AND source != 'eve-scout' AND uid IS NOT NULL AND (group_id IS NULL OR group_id = ?1)")
+            .prepare("SELECT uid FROM wormholes WHERE dead = 0 AND source NOT IN ('eve-scout', 'eve-metro') AND uid IS NOT NULL AND (group_id IS NULL OR group_id = ?1)")
             .and_then(|mut st| st.query_map(params![group], |r| r.get(0)).map(|rows| rows.flatten().collect()))
             .unwrap_or_default();
         let now = crate::clock::utc().timestamp();
@@ -212,7 +212,7 @@ impl Store {
     /// A hole as the group log carries it, local changes signed over to `me`.
     pub fn share_hole_state(&self, uid: &str, me: i64) -> Option<HoleState> {
         let w = self.wormhole_where("uid=?1", params![uid])?;
-        (w.source != Source::EveScout).then(|| hole::state(&w, &self.clocks(uid), me))
+        (!w.source.is_feed()).then(|| hole::state(&w, &self.clocks(uid), me))
     }
 
     /// After sending: local changes now carry `me` as their author.
@@ -366,7 +366,7 @@ impl Store {
         let (mut holes, mut dead, mut sigs) = (Vec::new(), Vec::new(), Vec::new());
         if g.prefs.send_holes {
             let live = self.strings(
-                "SELECT uid FROM wormholes WHERE dead = 0 AND source != 'eve-scout' AND uid IS NOT NULL AND (group_id IS NULL OR group_id = ?1)",
+                "SELECT uid FROM wormholes WHERE dead = 0 AND source NOT IN ('eve-scout', 'eve-metro') AND uid IS NOT NULL AND (group_id IS NULL OR group_id = ?1)",
                 params![g.id],
             );
             holes = live.iter().filter_map(|u| self.share_hole_state(u, g.char_id)).collect();
@@ -738,6 +738,20 @@ mod tests {
         let bogus = vec![SigRow { added_at: 1, ..rows[0].clone() }];
         b.share_apply_sigs(sys, &bogus, false, 90 * 86_400, "Pilot 1", "g");
         assert_eq!(b.system_sigs(sys)[0].added_at, 1_000, "a clock a month off is ignored");
+    }
+
+    #[test]
+    fn paid_feed_holes_never_reach_a_group() {
+        let a = Store::mem();
+        joined(&a);
+        let id = a.upsert_wormhole(&Wormhole { source: Source::EveMetro, ..hole() });
+        let uid = a.wormhole_by_id(id).unwrap().uid;
+        assert!(a.share_outbox(10).is_empty(), "an EVE Metro hole is not queued");
+        assert!(a.share_hole_state(&uid, 1).is_none());
+        let g = a.share_groups().remove(0);
+        assert!(a.share_snapshot(&g).0.is_empty(), "nor handed to a new member");
+        a.kill_wormhole(id);
+        assert!(a.share_outbox(10).is_empty(), "nor is closing it");
     }
 
     #[test]

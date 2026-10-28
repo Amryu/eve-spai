@@ -248,6 +248,7 @@ pub(crate) mod imperium_ui;
 pub(crate) mod wh_prompt;
 pub(crate) mod wh_graph;
 pub(crate) mod wh_share_ui;
+pub(crate) mod metro_ui;
 pub(crate) use alert_engine::*;
 #[cfg(test)]
 #[test]
@@ -730,6 +731,8 @@ pub struct SpaiApp {
     wh_info_query: String,
     pub(crate) wh_graph: crate::app::wh_graph::WhGraphView,
     pub(crate) wh_share: crate::app::wh_share_ui::ShareUi,
+    pub(crate) metro: crate::wormholes::SharedMetro,
+    pub(crate) metro_open: bool,
     /// The sharing group each hole came from, by uid.
     pub(crate) wh_group_of: std::collections::HashMap<String, String>,
     map_overlays: MapOverlays,
@@ -1205,8 +1208,10 @@ impl SpaiApp {
             SdeStatus::default()
         };
         let sde_status: SharedStatus = std::sync::Arc::new(std::sync::Mutex::new(initial));
+        let metro = crate::wormholes::SharedMetro::default();
         if !headless {
             crate::wormholes::spawn_scout(ctx.clone());
+            crate::wormholes::spawn_metro(metro.clone(), ctx.clone());
         }
         if let Some(store) = &store {
             if !headless && matches!(*sde_status.lock().unwrap(), SdeStatus::NotReady) {
@@ -1712,6 +1717,8 @@ impl SpaiApp {
             wh_info_query: String::new(),
             wh_graph: Default::default(),
             wh_share: Default::default(),
+            metro,
+            metro_open: false,
             wh_group_of: Default::default(),
             map_overlays: pv.overlays,
             ctx_menu_system: None,
@@ -3867,6 +3874,7 @@ impl SpaiApp {
         self.fleet_boost_detail_window(ctx);
         self.fleet_preset_rename_window(ctx);
         self.intel_channels_window(ctx);
+        self.metro_window(ctx);
         self.jump_bridges_window(ctx);
         self.sov_upgrades_window(ctx);
         self.coalitions_window(ctx);
@@ -4121,6 +4129,7 @@ impl eframe::App for SpaiApp {
         ft.mark("load_persisted_kills");
         self.reload_wormholes();
         ft.mark("reload_wormholes");
+        self.metro_sync();
         self.poll_update_check(&ctx);
         ft.mark("poll_update_check");
         self.update_dialog(&ctx);

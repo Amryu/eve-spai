@@ -2299,10 +2299,23 @@ mod tests {
         let a = s.upsert_wormhole(&a_hole(30_000_142, "AAA-1"));
         let b = s.upsert_wormhole(&a_hole(30_002_659, "BBB-2"));
 
-        s.retire_missing_evescout(&HashSet::from([a]));
+        s.retire_missing(crate::wormholes::Source::EveScout, &HashSet::from([a]));
         let live: Vec<i64> = s.wormholes().iter().map(|w| w.system_id).collect();
         assert_eq!(live, vec![30_000_142], "a hole gone from Scout must be dropped");
         let _ = b;
+    }
+
+    #[test]
+    fn each_feed_retires_only_its_own_holes() {
+        use crate::wormholes::Source;
+        use std::collections::HashSet;
+        let s = mem_store();
+        s.upsert_wormhole(&a_hole(30_000_142, "AAA-1"));
+        let metro = crate::wormholes::Wormhole { source: Source::EveMetro, dest: crate::wormholes::DestClass::Lowsec, dest_system_id: Some(30_002_652), ..a_hole(30_045_328, "MMM-1") };
+        s.upsert_wormhole(&metro);
+        s.retire_missing(Source::EveMetro, &HashSet::new());
+        let left: Vec<Source> = s.wormholes().iter().map(|w| w.source).collect();
+        assert_eq!(left, vec![Source::EveScout], "switching EVE Metro off leaves EVE-Scout's holes");
     }
 
     #[test]
@@ -2314,7 +2327,7 @@ mod tests {
         intel.source = Source::Intel;
         s.upsert_wormhole(&intel);
         // A fetch that lists nothing must not touch a hole EVE-Scout never sourced.
-        s.retire_missing_evescout(&HashSet::new());
+        s.retire_missing(crate::wormholes::Source::EveScout, &HashSet::new());
         assert_eq!(s.wormholes().len(), 1, "intel holes are not Scout's to retire");
     }
 

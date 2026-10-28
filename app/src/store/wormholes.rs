@@ -498,16 +498,16 @@ impl Store {
         }
     }
 
-    /// Delete EVE-Scout holes absent from its latest fetch (`keep` = ids just upserted): the source
+    /// Delete a feed's holes absent from its latest fetch (`keep` = ids just upserted): the source
     /// of truth dropped them. Deleted, not dead-marked, so a genuine re-scan re-adds cleanly.
-    pub fn retire_missing_evescout(&self, keep: &std::collections::HashSet<i64>) {
+    pub fn retire_missing(&self, feed: crate::wormholes::Source, keep: &std::collections::HashSet<i64>) {
         let live: Vec<i64> = {
-            let mut stmt = match self.conn.prepare("SELECT id FROM wormholes WHERE source = 'eve-scout'")
+            let mut stmt = match self.conn.prepare("SELECT id FROM wormholes WHERE source = ?1")
             {
                 Ok(s) => s,
                 Err(_) => return,
             };
-            let rows = stmt.query_map([], |r| r.get::<_, i64>(0));
+            let rows = stmt.query_map(params![feed.code()], |r| r.get::<_, i64>(0));
             match rows {
                 Ok(rows) => rows.flatten().collect(),
                 Err(_) => return,

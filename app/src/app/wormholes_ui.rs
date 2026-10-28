@@ -688,6 +688,10 @@ impl SpaiApp {
                     self.wh_share.open = true;
                     ui.close();
                 }
+                if ui.button(trf!("{icon}  EVE Metro…", icon = icon::TRAIN)).on_hover_text(tr!("Pochven holes from EVE Metro, for its subscribers")).clicked() {
+                    self.metro_open = true;
+                    ui.close();
+                }
             })
             .response
             .on_hover_text(tr!("Wormhole settings"));
@@ -734,7 +738,7 @@ impl SpaiApp {
                 ui.label(egui::RichText::new(tr!("No wormholes known yet.")).weak());
                 ui.label(
                     egui::RichText::new(
-                        tr!("Seeded from EVE-Scout (Thera/Turnur), intel channels, your own characters' jumps and what you add."),
+                        tr!("Seeded from EVE-Scout (Thera/Turnur), EVE Metro (Pochven, once set up), intel channels, your own characters' jumps and what you add."),
                     )
                     .weak(),
                 );

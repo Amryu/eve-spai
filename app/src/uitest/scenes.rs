@@ -1647,6 +1647,22 @@ fn assistant_scene(name: &'static str, size: [f32; 2], empty: bool, popped: bool
     })
 }
 
+/// The EVE Metro window, set up and polled: holes in, or no subscription.
+fn metro_scene(name: &'static str, refused: bool) -> Scene {
+    dialog_scene(name, [560.0, 420.0], move |a| {
+        a.settings.evemetro_enabled = true;
+        a.settings.evemetro_key = "3f6c1a2e-0000-4000-8000-000000000000".into();
+        a.characters = vec![crate::store::CharacterRow { id: 90_000_001, name: "Fixture Pilot With A Long Name".into(), expires_at: 0, scopes: String::new() }];
+        let status = if refused {
+            crate::wormholes::MetroStatus::NoAccess
+        } else {
+            crate::wormholes::MetroStatus::Holes { count: 23, at: crate::clock::utc().timestamp() - 140 }
+        };
+        a.metro.0.lock().unwrap().status = status;
+        a.metro_open = true;
+    })
+}
+
 fn dialog_scene(
     name: &'static str,
     size: [f32; 2],
@@ -3587,6 +3603,8 @@ pub(crate) fn all() -> Vec<Scene> {
         }
     }));
     v.push(wormholes_scene("view_wormholes_sharing", [1280.0, 800.0], false, None));
+    v.push(metro_scene("dialog_evemetro", false));
+    v.push(metro_scene("dialog_evemetro_nosub", true));
     v.push(wormholes_scene("view_wormholes_sharing_members", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_sharing_invite", [1280.0, 800.0], false, None));
     v.push(wormholes_scene("view_wormholes_sharing_delete", [1280.0, 800.0], false, None));
