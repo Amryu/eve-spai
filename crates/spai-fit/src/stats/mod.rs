@@ -1474,6 +1474,8 @@ pub struct ModuleStat {
     pub range: Option<ModuleRange>,
     /// A disintegrator's spool: its step a cycle, its most, and how far it is set (0..1 of that).
     pub spool: Option<(f64, f64, f64)>,
+    /// A command burst's buffs from its charge, with the attribute holding each value.
+    pub buffs: Vec<(crate::ids::BuffId, f64, AttrId)>,
 }
 
 /// A module's reach in metres.
@@ -1735,7 +1737,7 @@ pub fn module_stats(calc: &Calc, c: &Computed) -> Vec<ModuleStat> {
         let cap_per_s: f64 = cap.iter().filter(|(j, _)| *j == i).map(|(_, u)| u.average_per_s()).sum();
         let dps: f64 = c.weapons.iter().filter(|w| w.items.contains(&i)).map(|w| w.dps / w.items.len().max(1) as f64).sum();
         let (cpu, power) = if it.state >= State::Online { (calc.value(i, attr::CPU), calc.value(i, attr::POWER)) } else { (0.0, 0.0) };
-        out.push(ModuleStat { slot, index, cpu, power, cap_per_s, dps, cycle_s: cycle_of(calc, i), burnout_s: burnout_of(calc, i), info: module_info(calc, i), range: range_of(calc, c, i), spool: c.weapons.iter().find(|w| w.items.contains(&i) && w.spool_max > 0.0).map(|w| (w.spool_per_cycle, w.spool_max, w.spool_frac)) });
+        out.push(ModuleStat { slot, index, cpu, power, cap_per_s, dps, cycle_s: cycle_of(calc, i), burnout_s: burnout_of(calc, i), info: module_info(calc, i), range: range_of(calc, c, i), spool: c.weapons.iter().find(|w| w.items.contains(&i) && w.spool_max > 0.0).map(|w| (w.spool_per_cycle, w.spool_max, w.spool_frac)), buffs: crate::fleet::module_buffs(calc, i) });
     }
     out
 }

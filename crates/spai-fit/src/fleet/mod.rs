@@ -569,22 +569,29 @@ pub fn bursts_of(dogma: &Dogma, fit: &Fit, skills: &SkillSet) -> Vec<(BuffId, f6
         if it.state < State::Active || it.charge.is_none() {
             continue;
         }
-        if !calc.effect_names(i).any(|n| BurstKind::ALL.iter().any(|k| k.effect() == n)) {
-            continue;
-        }
-        for (id_attr, value_attr) in [
-            (attr::WARFARE_BUFF_1_ID, attr::WARFARE_BUFF_1_VALUE),
-            (attr::WARFARE_BUFF_2_ID, attr::WARFARE_BUFF_2_VALUE),
-            (attr::WARFARE_BUFF_3_ID, attr::WARFARE_BUFF_3_VALUE),
-            (attr::WARFARE_BUFF_4_ID, attr::WARFARE_BUFF_4_VALUE),
-        ] {
-            let id = calc.value(i, id_attr);
-            if id > 0.0 {
-                out.push((id as BuffId, calc.value(i, value_attr)));
-            }
-        }
+        out.extend(module_buffs(&calc, i).into_iter().map(|(id, v, _)| (id, v)));
     }
     out
+}
+
+/// The buffs a burst module's charge names, each with its value and the attribute that holds it.
+/// Empty for anything else, and for a burst with no charge.
+pub fn module_buffs(calc: &Calc, i: crate::calc::ItemIdx) -> Vec<(BuffId, f64, crate::ids::AttrId)> {
+    if calc.items()[i].charge.is_none() || !calc.effect_names(i).any(|n| BurstKind::ALL.iter().any(|k| k.effect() == n)) {
+        return Vec::new();
+    }
+    [
+        (attr::WARFARE_BUFF_1_ID, attr::WARFARE_BUFF_1_VALUE),
+        (attr::WARFARE_BUFF_2_ID, attr::WARFARE_BUFF_2_VALUE),
+        (attr::WARFARE_BUFF_3_ID, attr::WARFARE_BUFF_3_VALUE),
+        (attr::WARFARE_BUFF_4_ID, attr::WARFARE_BUFF_4_VALUE),
+    ]
+    .into_iter()
+    .filter_map(|(id_attr, value_attr)| {
+        let id = calc.value(i, id_attr);
+        (id > 0.0).then(|| (id as BuffId, calc.value(i, value_attr), value_attr))
+    })
+    .collect()
 }
 
 /// The kind whose bursts load the charge.

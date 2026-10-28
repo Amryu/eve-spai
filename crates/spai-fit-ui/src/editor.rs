@@ -239,6 +239,28 @@ pub fn next_state(dogma: &Dogma, type_id: TypeId, state: State) -> State {
     states[(i + 1) % states.len()]
 }
 
+/// A command burst's buffs as its Effect cell explains them: each one's strength, the charge's own
+/// figure, and every skill, implant and hull bonus that raised it.
+fn burst_tooltip(ui: &mut egui::Ui, rows: &[crate::details::BuffRow]) {
+    ui.set_max_width(420.0);
+    for (i, b) in rows.iter().enumerate() {
+        if i > 0 {
+            ui.add_space(6.0);
+        }
+        ui.label(egui::RichText::new(format!("{}  {}", b.name, b.value)).strong());
+        for st in &b.steps {
+            ui.horizontal(|ui| {
+                ui.add_space(10.0);
+                ui.label(egui::RichText::new(&st.what).monospace());
+                ui.label(&st.who);
+            });
+        }
+    }
+    if rows.is_empty() {
+        ui.label(tr!("Load a charge to give buffs"));
+    }
+}
+
 const SHIP_DETAILS: &str = "sim_ship_details_asked";
 
 /// The ship's details, at the foot of every menu over the fit: asked for here, opened once the
@@ -1048,8 +1070,10 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
                 // A disintegrator's cell is its spool, set by clicking it, in whole cycles: the
                 // bonus only ever grows a step at a time.
                 let spool = s.and_then(|m| m.spool);
+                let buffs: Vec<(spai_fit::ids::BuffId, f64)> = s.map(|m| m.buffs.iter().map(|(id, v, _)| (*id, *v)).collect()).unwrap_or_default();
                 let shown = match spool {
                     Some((_, max, frac)) => format!("+{:.0}% spool", frac * max * 100.0),
+                    None if !buffs.is_empty() => buffs.iter().map(|(id, v)| crate::details::buff_value(dogma, *id, *v)).collect::<Vec<_>>().join(" "),
                     None => shown,
                 };
                 let r = ui.allocate_ui_with_layout(egui::vec2(cols.info, ROW_H - 4.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1076,6 +1100,9 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
                             set_spool = Some(((f64::from(cycles) * per).min(max) / max) as f32);
                         }
                     });
+                } else if !buffs.is_empty() {
+                    let sim: &SimUi = sim;
+                    r.response.on_hover_ui(|ui| burst_tooltip(ui, &crate::details::burst_rows(sim, slot, index)));
                 } else if !hover.is_empty() {
                     r.response.on_hover_text(hover);
                 }

@@ -272,6 +272,62 @@ fn what(step: &spai_fit::calc::Step) -> String {
     }
 }
 
+/// What changed an attribute on its way from the data's value to the fit's, in order.
+fn step_rows(calc: &Calc, e: &spai_fit::calc::Explanation, high_is_good: bool) -> Vec<StepRow> {
+    e.steps
+        .iter()
+        .filter(|s| s.effect != 0.0 || matches!(s.op, Op::PreAssign | Op::PostAssign))
+        .map(|s| StepRow {
+            who: match s.source {
+                Some(i) => who(calc, i),
+                None => tr!("Fleet boost or built-in rule").to_owned(),
+            },
+            what: what(s),
+            good: s.raises().map(|up| up == high_is_good),
+            kept: s.penalised.then_some(s.weight),
+        })
+        .collect()
+}
+
+/// One buff of a command burst: what it reaches, how strong, and every charge, skill, implant and
+/// hull bonus that made it so.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BuffRow {
+    pub name: String,
+    pub value: String,
+    pub steps: Vec<StepRow>,
+}
+
+/// How a buff's value reads: most are percentages.
+pub fn buff_value(dogma: &Dogma, id: spai_fit::ids::BuffId, v: f64) -> String {
+    match dogma.buff(id).map(|b| b.op) {
+        Some(Op::PostMul | Op::PreMul) => format!("×{v:.3}"),
+        Some(Op::ModAdd | Op::ModSub) => format!("{v:+}"),
+        _ => format!("{v:+.1}%"),
+    }
+}
+
+/// The buffs of the burst at `slot`/`index` on the fit on screen, each with its breakdown.
+pub fn burst_rows(sim: &SimUi, slot: Slot, index: u8) -> Vec<BuffRow> {
+    let (Some(dogma), Some(s)) = (sim.dogma.as_ref(), sim.session()) else { return Vec::new() };
+    let (fit, env) = sim.outside().apply(dogma, &s.fit, sim.skills());
+    let calc = Calc::new(dogma, &fit, sim.skills(), &env);
+    let Some(item) = calc.module(slot, index) else { return Vec::new() };
+    spai_fit::fleet::module_buffs(&calc, item)
+        .into_iter()
+        .map(|(id, v, attr)| {
+            let e = calc.explain(item, attr);
+            BuffRow {
+                name: dogma.buff(id).map_or_else(|| format!("buff {id}"), |b| b.name.clone()),
+                value: buff_value(dogma, id, v),
+                // Uncoloured: the charge's multiplier turns the sign, so up and down say nothing
+                // of better or worse.
+                steps: step_rows(&calc, &e, true).into_iter().map(|st| StepRow { good: None, ..st }).collect(),
+            }
+        })
+        .collect()
+}
+
 /// Every attribute of a fitted item: the data's value, the fit's, and how it got there.
 pub fn rows_for_item(dogma: &Dogma, calc: &Calc, item: ItemIdx, all: bool) -> Vec<AttrRow> {
     // Skills reach attributes on every ship (jump drives, conduit passengers) that the hull itself
@@ -287,20 +343,7 @@ pub fn rows_for_item(dogma: &Dogma, calc: &Calc, item: ItemIdx, all: bool) -> Ve
             let def = dogma.attr(a);
             let unit = def.and_then(|d| d.unit);
             let high_is_good = def.is_none_or(|d| d.high_is_good);
-            let steps = e
-                .steps
-                .iter()
-                .filter(|s| s.effect != 0.0 || matches!(s.op, Op::PreAssign | Op::PostAssign))
-                .map(|s| StepRow {
-                    who: match s.source {
-                        Some(i) => who(calc, i),
-                        None => tr!("Fleet boost or built-in rule").to_owned(),
-                    },
-                    what: what(s),
-                    good: s.raises().map(|up| up == high_is_good),
-                    kept: s.penalised.then_some(s.weight),
-                })
-                .collect();
+            let steps = step_rows(calc, &e, high_is_good);
             AttrRow {
                 attr: a,
                 label: label_of(dogma, a),

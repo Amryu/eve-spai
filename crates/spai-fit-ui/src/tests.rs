@@ -2504,3 +2504,21 @@ fn the_ship_details_leave_out_what_the_hull_does_not_carry() {
     assert!(every.len() >= shown.len());
     assert!(calc.attrs(item).iter().all(|a| every.iter().any(|r| r.attr == *a)), "all of them under All");
 }
+
+
+#[test]
+fn a_bursts_effect_names_each_buff_and_what_made_it_that_strong() {
+    let mut d = dataset();
+    d.buffs.push(spai_fit::dogma::BuffDef { id: 12, name: "Shield HP".into(), aggregate: spai_fit::dogma::Aggregate::Max, op: spai_fit::dogma::Op::PostPercent, item: vec![spai_fit::dogma::attr::ARMOR_HP], location: vec![], location_group: vec![], location_skill: vec![] });
+    let d = Arc::new(d.finish());
+    let mut s = SimUi::default();
+    s.handle(HostEvent::Dogma(d.clone()));
+    s.new_fit(ids::SHIP, 0);
+    s.edit(EditKind::AddModule, 1, |f| f.modules.push(spai_fit::fit::Module::new(ids::BURST, Slot::High, 0).with_charge(ids::BURST_CHARGE).with_state(spai_fit::fit::State::Active)));
+    let rows = crate::details::burst_rows(&s, Slot::High, 0);
+    assert_eq!(rows.len(), 1);
+    assert_eq!((rows[0].name.as_str(), rows[0].value.as_str()), ("Shield HP", "+25.0%"));
+    assert!(rows[0].steps.iter().any(|st| st.who.contains("Shield Harmonizing Charge")), "{:?}", rows[0].steps);
+    s.edit(EditKind::AddModule, 1, |f| f.modules[0].charge = None);
+    assert!(crate::details::burst_rows(&s, Slot::High, 0).is_empty(), "no charge, no buffs");
+}
