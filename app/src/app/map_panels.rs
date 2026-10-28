@@ -1215,8 +1215,9 @@ impl SpaiApp {
                     });
             }
             let has_nearby = self.map_layout.is_threat();
-            let has_route = !self.map_route_anchors.is_empty();
-            if self.right_dock_open && (has_nearby || has_route || self.map_docked_system.is_some()) {
+            // The planner is the map's one way to route, so its tab is there with no route too.
+            let has_route = true;
+            if self.right_dock_open {
                 use egui_phosphor::regular as icon;
                 let mut pending: Option<(SystemInfoOut, i64)> = None;
                 egui::Panel::right("map_mode_dock")

@@ -1825,7 +1825,7 @@ impl SpaiApp {
             left_dock_open: true,
             right_dock_open: true,
             map_docked_system: None,
-            right_dock_tab: RightDockTab::System,
+            right_dock_tab: RightDockTab::Route,
             upgrade_kinds: [true; 4],
             map_highlight_upgrade: None,
             system_window: None,
@@ -3729,6 +3729,10 @@ impl SpaiApp {
                 let selected = nav::rail(ui, self.view, &mut expanded, badged, warned, &rows, &move |v| v.label_for(member));
                 if selected != self.view {
                     self.view = selected;
+                    if selected == nav::View::Map {
+                        self.right_dock_open = true;
+                        self.right_dock_tab = RightDockTab::Route;
+                    }
                 }
                 if expanded != self.settings.nav_expanded {
                     self.settings.nav_expanded = expanded;

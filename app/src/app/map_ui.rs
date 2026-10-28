@@ -1798,9 +1798,7 @@ impl SpaiApp {
                         });
                     });
             }
-            if (self.map_layout.is_threat() || self.map_docked_system.is_some() || !self.map_route_anchors.is_empty())
-                && !self.right_dock_open
-            {
+            if !self.right_dock_open {
                 egui::Area::new(ui.id().with("reopen_right"))
                     .fixed_pos(rect.right_top() + egui::vec2(-38.0, 6.0))
                     .order(egui::Order::Foreground)
