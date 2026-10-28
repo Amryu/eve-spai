@@ -3,7 +3,7 @@
 //! for where it would rather be.
 
 use super::ammo::{self, AmmoChoice};
-use super::ewar::{cutoffs, planned, planned_average, EwarOn};
+use super::ewar::{cutoffs, EwarOn};
 use super::geometry;
 use super::{Fleet, FleetStats, Role, SlotStats};
 use crate::fit::TargetProfile;
@@ -37,6 +37,16 @@ impl Side<'_> {
 
     fn ships(&self) -> Vec<(u32, &Computed)> {
         self.stats.slots.iter().filter(|s| s.count > 0).map(|s| (s.count, &s.computed)).collect()
+    }
+
+    /// This side's ewar on one of `other`'s ships at `distance`, its fire split `primaries` ways.
+    pub fn ewar_on(&self, other: &Side, distance: f64, primaries: u32, target: Option<&Computed>) -> EwarOn {
+        super::ewar::of_fleet(self.fleet, self.stats, distance, primaries, other.stats.ships, target)
+    }
+
+    /// This side's ewar over the whole of `other` at `distance`.
+    pub fn ewar_average(&self, other: &Side, distance: f64) -> EwarOn {
+        super::ewar::of_fleet_average(self.fleet, self.stats, distance, other.stats.ships)
     }
 }
 
@@ -118,8 +128,8 @@ pub fn weapons_on(a: &Side, b: &Side, k: usize, target: &SlotStats, distance: f6
 /// As `weapons_on`, with the applied share of every shooter and target pair, not their mean.
 pub fn shares_on(a: &Side, b: &Side, k: usize, target: &SlotStats, distance: f64) -> Vec<(WeaponGroup, Vec<f64>)> {
     let Some(slot) = a.stats.slots.get(k) else { return Vec::new() };
-    let on_target = planned(&a.ships(), distance, &a.fleet.ewar_plan, a.fleet.split_fire, b.stats.ships, Some(&target.computed));
-    let on_a = planned_average(&b.ships(), distance, &b.fleet.ewar_plan, b.fleet.split_fire, a.stats.ships, None);
+    let on_target = a.ewar_on(b, distance, a.fleet.split_fire, Some(&target.computed));
+    let on_a = b.ewar_average(a, distance);
     let pairs = geometry::engagement(a.fleet.formation, SAMPLES.min(a.stats.ships.max(1) as usize), a.speed(), f64::from(a.fleet.motion.1), b.fleet.formation, SAMPLES.min(b.stats.ships.max(1) as usize), b.speed() * on_target.speed, f64::from(b.fleet.motion.1), distance);
     let signature = target.computed.mobility.signature * on_target.signature;
     let velocity = b.speed() * on_target.speed;
@@ -183,7 +193,7 @@ fn landed(a: &Side, b: &Side, distance: f64) -> (f64, f64) {
 /// The other side's hold on this one at `distance`: webs, tackle, neutralising against recharge.
 fn held(own: &Side, other: &Side, distance: f64) -> (bool, bool, f64) {
     // As the other side lays its ewar: focused on what it shoots, or spread over this fleet.
-    let e = planned_average(&other.ships(), distance, &other.fleet.ewar_plan, other.fleet.split_fire, own.stats.ships, None);
+    let e = other.ewar_average(own, distance);
     let ships = f64::from(own.stats.ships.max(1));
     let regen: f64 = own.stats.slots.iter().map(|s| s.computed.cap.peak_regen * f64::from(s.count)).sum::<f64>() / ships;
     let pressure = if regen > 0.0 { e.neut / regen } else if e.neut > 0.0 { 1.0 } else { 0.0 };
@@ -274,7 +284,7 @@ pub fn ranges(a: &FleetStats, b: &FleetStats) -> Vec<f64> {
 /// The angular velocities of `a`'s ships on `b`'s ships at `distance`, ascending: how spread
 /// formations and motion widen what the guns must track.
 pub fn angular(a: &Side, b: &Side, distance: f64) -> Vec<f64> {
-    let on_b = planned(&a.ships(), distance, &a.fleet.ewar_plan, a.fleet.split_fire, b.stats.ships, None);
+    let on_b = a.ewar_on(b, distance, a.fleet.split_fire, None);
     let pairs = geometry::engagement(a.fleet.formation, SAMPLES.min(a.stats.ships.max(1) as usize), a.speed(), f64::from(a.fleet.motion.1), b.fleet.formation, SAMPLES.min(b.stats.ships.max(1) as usize), b.speed() * on_b.speed, f64::from(b.fleet.motion.1), distance);
     let mut v: Vec<f64> = pairs.iter().flatten().map(|p| p.angular).collect();
     v.sort_by(|x, y| x.total_cmp(y));
@@ -284,8 +294,8 @@ pub fn angular(a: &Side, b: &Side, distance: f64) -> Vec<f64> {
 /// The angular velocity at which each of `a`'s turret groups still hits `target` half the time,
 /// the other side's disruptors counted: (slot, the group, rad/s).
 pub fn half_hit_angular(a: &Side, b: &Side, target: &SlotStats, distance: f64) -> Vec<(usize, WeaponGroup, f64)> {
-    let on_a = planned_average(&b.ships(), distance, &b.fleet.ewar_plan, b.fleet.split_fire, a.stats.ships, None);
-    let on_target = planned(&a.ships(), distance, &a.fleet.ewar_plan, a.fleet.split_fire, b.stats.ships, Some(&target.computed));
+    let on_a = b.ewar_average(a, distance);
+    let on_target = a.ewar_on(b, distance, a.fleet.split_fire, Some(&target.computed));
     let signature = target.computed.mobility.signature * on_target.signature;
     let mut out = Vec::new();
     for (k, slot) in a.stats.slots.iter().enumerate().filter(|(_, s)| s.count > 0) {
@@ -358,8 +368,8 @@ pub fn ammo_picks(a: &Side, b: &Side, k: usize, target: &SlotStats, ranges: &[f6
     let at: Vec<(f64, Vec<TargetProfile>, EwarOn)> = ranges
         .iter()
         .map(|&d| {
-            let on_target = planned(&a.ships(), d, &a.fleet.ewar_plan, a.fleet.split_fire, b.stats.ships, Some(&target.computed));
-            let on_a = planned_average(&b.ships(), d, &b.fleet.ewar_plan, b.fleet.split_fire, a.stats.ships, None);
+            let on_target = a.ewar_on(b, d, a.fleet.split_fire, Some(&target.computed));
+            let on_a = b.ewar_average(a, d);
             let velocity = b.speed() * on_target.speed;
             let signature = (target.computed.mobility.signature * on_target.signature) as f32;
             let pairs = geometry::engagement(a.fleet.formation, SAMPLES.min(a.stats.ships.max(1) as usize), a.speed(), f64::from(a.fleet.motion.1), b.fleet.formation, SAMPLES.min(b.stats.ships.max(1) as usize), velocity, f64::from(b.fleet.motion.1), d);
@@ -418,8 +428,8 @@ pub struct ChargeOption {
 /// Every charge option of every charged weapon of `a` on `target` at `distance`, the way
 /// `application` works one out: pair by pair over both formations, ewar on both.
 pub fn charge_options(a: &Side, b: &Side, target: &SlotStats, distance: f64) -> Vec<ChargeOption> {
-    let on_target = planned(&a.ships(), distance, &a.fleet.ewar_plan, a.fleet.split_fire, b.stats.ships, Some(&target.computed));
-    let on_a = planned_average(&b.ships(), distance, &b.fleet.ewar_plan, b.fleet.split_fire, a.stats.ships, None);
+    let on_target = a.ewar_on(b, distance, a.fleet.split_fire, Some(&target.computed));
+    let on_a = b.ewar_average(a, distance);
     let pairs = geometry::engagement(a.fleet.formation, SAMPLES.min(a.stats.ships.max(1) as usize), a.speed(), f64::from(a.fleet.motion.1), b.fleet.formation, SAMPLES.min(b.stats.ships.max(1) as usize), b.speed() * on_target.speed, f64::from(b.fleet.motion.1), distance);
     let signature = target.computed.mobility.signature * on_target.signature;
     let velocity = b.speed() * on_target.speed;
@@ -495,7 +505,7 @@ pub fn summary_from(a: &Side, b: &Side, target: &SlotStats, distance: f64, apps:
         fleet.explosive += v.explosive * n;
     }
     let main = a.stats.slots.iter().position(|s| s.role == super::Role::Main).unwrap_or(0);
-    let on_target = planned(&a.ships(), distance, &a.fleet.ewar_plan, a.fleet.split_fire, b.stats.ships, Some(&target.computed));
+    let on_target = a.ewar_on(b, distance, a.fleet.split_fire, Some(&target.computed));
     let ehp = ehp_against(&target.computed.tank, &fleet);
     super::Against {
         applied_dps,

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use spai_fit::fit::{Fit, Slot, State, TargetProfile};
 use spai_fit::fleet::ammo::{self, AmmoChoice};
-use spai_fit::fleet::ewar::{parts_of, plan_targets, planned, EwarOn};
+use spai_fit::fleet::ewar::{parts_landing, plan_landing, planned_tuned, EwarOn};
 use spai_fit::stats::RemoteKind;
 use spai_fit::fleet::sweep::disrupted;
 use spai_fit::fleet::{FleetStats, SlotStats};
@@ -368,13 +368,15 @@ fn modules(ui: &mut egui::Ui, dogma: &Dogma, s: &SlotStats, d: f64, target: Opti
 
 /// A fleet's ships as sources of ewar, each module type at the number set for it: a ship with
 /// a type set apart flies it as a source of its own at that number, the rest at the ship's count.
-fn fleet_ewar(fleet: &FleetStats, theirs: bool, set: &HashMap<EwarSource, u32>, own: Option<usize>) -> Vec<(u32, Computed)> {
+/// Each entry with the fleet slot whose tunes it goes by; the modules set to a number here go by
+/// that alone.
+fn fleet_ewar(fleet: &FleetStats, theirs: bool, set: &HashMap<EwarSource, u32>, own: Option<usize>) -> Vec<(u32, Computed, Option<usize>)> {
     let mut out = Vec::new();
     for x in fleet.slots.iter().filter(|x| x.count > 0) {
         let key = |m: TypeId| EwarSource { theirs, slot: x.slot, module: m };
         let mut rest = x.computed.clone();
         rest.remote.modules.retain(|m| m.kind.is_assist() || !set.contains_key(&key(m.type_id)));
-        out.push((x.count, rest));
+        out.push((x.count, rest, Some(x.slot)));
         let mut types: Vec<TypeId> = x.computed.remote.modules.iter().filter(|m| set.contains_key(&key(m.type_id))).map(|m| m.type_id).collect();
         types.dedup();
         for t in types {
@@ -385,7 +387,7 @@ fn fleet_ewar(fleet: &FleetStats, theirs: bool, set: &HashMap<EwarSource, u32>, 
             }
             let mut only = x.computed.clone();
             only.remote.modules.retain(|m| m.type_id == t);
-            out.push((n, only));
+            out.push((n, only, None));
         }
     }
     out
@@ -423,6 +425,8 @@ struct Scene {
     /// How each fleet lays its ewar, and over how many primaries.
     our_plan: (spai_fit::fleet::ewar::EwarPlan, u32),
     their_plan: (spai_fit::fleet::ewar::EwarPlan, u32),
+    /// Each fleet's tunes by its slots; none while it goes by its plan.
+    tunes: [Vec<Vec<(RemoteKind, f32)>>; 2],
     /// What each side's slots go by, by index into their stats: hulls first (`ship_labels`).
     labels: [Vec<String>; 2],
     /// Per fleet slot, whether it flies swaps, and its split weapon stacks.
@@ -465,7 +469,9 @@ fn gather(sim: &mut SimUi) -> Option<Scene> {
         theirs.as_ref().map_or(0, |t| t.slots.iter().filter(|x| x.computed.remote.modules.iter().any(|m| matches!(m.kind, RemoteKind::ArmorRep | RemoteKind::ShieldRep | RemoteKind::HullRep))).map(|x| x.count).sum()),
         enemy.as_ref().map_or(1.0, |e| e.logi_efficiency),
     );
-    Some(Scene { mine, ammo, theirs, offered, range: fleet.range, motions, volley_efficiency: fleet.volley_efficiency, their_logi, our_plan: (fleet.ewar_plan.clone(), fleet.split_fire), their_plan, swapped, splits, labels })
+    let tunes_of = |f: &spai_fit::fleet::Fleet| if f.ewar_auto { Vec::new() } else { f.slots.iter().map(|s| s.ewar_tune.clone()).collect() };
+    let tunes = [tunes_of(&fleet), enemy.as_ref().map(tunes_of).unwrap_or_default()];
+    Some(Scene { mine, ammo, theirs, offered, range: fleet.range, motions, volley_efficiency: fleet.volley_efficiency, their_logi, our_plan: (fleet.ewar_plan.clone(), fleet.split_fire), their_plan, tunes, swapped, splits, labels })
 }
 
 fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
@@ -698,10 +704,15 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
         let theirs = scene.theirs.as_ref().map(|t| fleet_ewar(t, true, &set, None)).unwrap_or_default();
         let our_count: u32 = scene.mine.slots.iter().map(|x| x.count).sum();
         let their_count: u32 = scene.theirs.as_ref().map_or(1, |t| t.ships.max(1));
-        let on_target = target.as_ref().map_or_else(EwarOn::default, |t| planned(&ours.iter().map(|(n, c)| (*n, c)).collect::<Vec<_>>(), d, &scene.our_plan.0, scene.our_plan.1, their_count, Some(t)));
+        let tunes_of = |side: usize, entries: &[(u32, Computed, Option<usize>)]| -> Vec<Vec<(RemoteKind, f32)>> { entries.iter().map(|(_, _, k)| k.and_then(|k| scene.tunes[side].get(k).cloned()).unwrap_or_default()).collect() };
+        let (our_tunes, their_tunes) = (tunes_of(0, &ours), tunes_of(1, &theirs));
+        let our_t: Vec<&[(RemoteKind, f32)]> = our_tunes.iter().map(Vec::as_slice).collect();
+        let their_t: Vec<&[(RemoteKind, f32)]> = their_tunes.iter().map(Vec::as_slice).collect();
+        let our_ships: Vec<(u32, &Computed)> = ours.iter().map(|(n, c, _)| (*n, c)).collect();
+        let on_target = target.as_ref().map_or_else(EwarOn::default, |t| planned_tuned(&our_ships, d, &scene.our_plan.0, scene.our_plan.1, their_count, &our_t, Some(t)));
         // Each side's ewar as its fleet lays it: focused on what it shoots, or spread.
-        let their_ships: Vec<(u32, &Computed)> = theirs.iter().map(|(n, c)| (*n, c)).collect();
-        let on_us = planned(&their_ships, d, &scene.their_plan.0, scene.their_plan.1, our_count, Some(&s.computed));
+        let their_ships: Vec<(u32, &Computed)> = theirs.iter().map(|(n, c, _)| (*n, c)).collect();
+        let on_us = planned_tuned(&their_ships, d, &scene.their_plan.0, scene.their_plan.1, our_count, &their_t, Some(&s.computed));
         // The target at its share of its webbed top speed, the speed across the line of fire what
         // both ships' headings leave, this ship's own speed under their webs.
         let profile = target.as_ref().map(|t| {
@@ -748,9 +759,8 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
         };
         // Each side's ewar on its ship module by module, for the tooltips: over as many ships as
         // the side's plan shares the kind.
-        let our_ships: Vec<(u32, &Computed)> = ours.iter().map(|(n, c)| (*n, c)).collect();
-        let their_parts = |kind: RemoteKind, part: usize| parts_of(&their_ships, d, plan_targets(&scene.their_plan.0, kind, scene.their_plan.1, our_count), Some(&s.computed), kind, part);
-        let our_parts = |kind: RemoteKind, part: usize| parts_of(&our_ships, d, plan_targets(&scene.our_plan.0, kind, scene.our_plan.1, their_count), target.as_deref(), kind, part);
+        let their_parts = |kind: RemoteKind, part: usize| parts_landing(&their_ships, d, &|i, k| plan_landing(&their_ships, &scene.their_plan.0, scene.their_plan.1, our_count, &their_t, i, k), Some(&s.computed), kind, part);
+        let our_parts = |kind: RemoteKind, part: usize| parts_landing(&our_ships, d, &|i, k| plan_landing(&our_ships, &scene.our_plan.0, scene.our_plan.1, their_count, &our_t, i, k), target.as_deref(), kind, part);
         let flying_n = st.count.get(&k).copied().unwrap_or(s.count);
         // Their logistics on the target: that many of theirs, each slot shared out alike, what the
         // game lets land of it on one ship, the share that does good, what the hull takes in.
@@ -1504,7 +1514,7 @@ mod tests {
         let t = spai_fit::stats::compute(&d, &target, &SkillSet::all_v(), &spai_fit::calc::Env::default());
         let speed = |set: &HashMap<EwarSource, u32>| {
             let ships = fleet_ewar(&stats, false, set, None);
-            ewar_on(&ships.iter().map(|(n, c)| (*n, c)).collect::<Vec<_>>(), 1000.0, 1.0, Some(&t)).speed
+            ewar_on(&ships.iter().map(|(n, c, _)| (*n, c)).collect::<Vec<_>>(), 1000.0, 1.0, Some(&t)).speed
         };
         let src = EwarSource { theirs: false, slot: 0, module: ids::WEB };
         let all = speed(&HashMap::new());

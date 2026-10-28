@@ -244,7 +244,7 @@ fn fleets_ask_for_fit_documents_and_compute_once_they_arrive() {
     let f = s.fleet.as_mut().unwrap();
     f.fleet.size = 20;
     f.fleet.range = 1000.0;
-    f.fleet.slots.push(FleetSlot { fit_id: fit_id.clone(), rule: CountRule::Fill { min: 0, max: 100 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() });
+    f.fleet.slots.push(FleetSlot { fit_id: fit_id.clone(), rule: CountRule::Fill { min: 0, max: 100 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new(), ewar_tune: Vec::new() });
     let (mine, enemy) = s.fleet_stats_settled().unwrap();
     assert_eq!((mine.ships, mine.slots.len()), (20, 1), "the saved fit's document is already at hand");
     assert!(enemy.is_none());
@@ -2078,10 +2078,10 @@ fn real_data_fleet_frames_after_a_layout_change() {
     s.fleet.as_mut().unwrap().fleet.size = 250;
     s.fleet.as_mut().unwrap().enemy = Some(crate::fleet_panel::MIRROR.into());
     let ctx = egui::Context::default();
-    let mut frame = |s: &mut SimUi, label: &str| {
+    let frame = |s: &mut SimUi, label: &str| {
         let t = std::time::Instant::now();
-        let _ = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))), ..Default::default() }, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| s.show(ui));
+        let _ = ctx.run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))), ..Default::default() }, |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| s.show(ui));
         });
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         if ms > 30.0 {
@@ -2207,6 +2207,55 @@ fn the_logi_settings_and_the_race_length_redo_the_fight() {
         assert!(!Arc::ptr_eq(&next, &last), "change {i} worked the fight out again");
         last = next;
     }
+}
+
+/// A ship's ewar tuned in the fleet redoes the fight; a graph's own tune is worked out beside the
+/// fleet's, which stays as it was.
+#[test]
+fn a_tuned_ship_redoes_the_fight_and_a_graphs_tune_keeps_to_the_graph() {
+    use spai_fit::fleet::{CountRule, FleetSlot};
+    use spai_fit::stats::RemoteKind;
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    apply(&mut s, PickTarget::Charge(Slot::High, 0), ids::AMMO, 2);
+    s.save();
+    let reqs = s.take_requests();
+    let HostRequest::SaveFit { id: fit_id, .. } = &reqs[0] else { panic!("{reqs:?}") };
+    let fit_id = fit_id.clone();
+    s.handle(HostEvent::Saved(fit_id.clone()));
+    s.new_fleet(10);
+    let f = s.fleet.as_mut().unwrap();
+    f.fleet.size = 20;
+    f.fleet.slots.push(FleetSlot { fit_id, rule: CountRule::Fill { min: 0, max: 100 }, ..FleetSlot::default() });
+    f.enemy = Some(crate::fleet_panel::MIRROR.to_owned());
+    let first = s.fleet_analysis_settled().expect("the first analysis");
+    let stats_before = s.stats_key(&s.fleet.as_ref().unwrap().fleet);
+    {
+        let f = &mut s.fleet.as_mut().unwrap().fleet;
+        f.ewar_auto = false;
+        f.slots[0].ewar_tune = vec![(RemoteKind::Web, 0.0)];
+    }
+    assert_eq!(s.stats_key(&s.fleet.as_ref().unwrap().fleet), stats_before, "a tune leaves the ships' numbers be");
+    s.now_ms += 10_000;
+    let _ = s.fleet_analysis();
+    s.now_ms += 10_000;
+    let tuned = s.fleet_analysis_settled().unwrap();
+    assert!(!Arc::ptr_eq(&tuned, &first), "the tune worked the fight out again");
+    assert_eq!(tuned.fleet.slots[0].ewar_tune, vec![(RemoteKind::Web, 0.0)]);
+    let graph: [Option<crate::ewar_tune::SlotTunes>; 2] = [Some(vec![vec![(RemoteKind::Web, 1.0)]]), None];
+    let tweak = |a: &mut spai_fit::fleet::Fleet, _: &mut spai_fit::fleet::Fleet| crate::ewar_tune::apply(a, graph[0].as_ref().unwrap());
+    let mut own = None;
+    for _ in 0..1000 {
+        own = s.analysis(crate::fleet_panel::Run::Graph, &tweak).filter(|a| a.fleet.slots[0].ewar_tune == vec![(RemoteKind::Web, 1.0)]);
+        if own.is_some() {
+            break;
+        }
+        s.now_ms += 1_000;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(own.is_some(), "the graph's own analysis came in");
+    assert!(Arc::ptr_eq(&s.fleet_analysis().unwrap(), &tuned), "the fleet's stays as it was");
 }
 
 /// A worker in the test's own thread, every request and reply put through the bytes a web

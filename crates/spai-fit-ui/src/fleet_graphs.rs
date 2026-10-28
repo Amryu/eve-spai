@@ -6,9 +6,11 @@ use spai_ui::{tr, trf};
 
 use crate::fleet_panel::Analysis;
 use crate::plot::{series_color, Plot, PlotBand, PlotMarker, PlotSeries};
+use crate::ewar_tune::SlotTunes;
+use crate::fleet_panel::Run;
 use crate::{text, SimUi};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum FleetGraph {
     #[default]
     DamageByRange,
@@ -115,14 +117,19 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, place: Option<bool>) {
                 }
             }
         });
+        tune_button(sim, ui);
         if let Some(close) = place {
             place_buttons(sim, ui, close);
         }
     });
     ui.add_space(4.0);
-    let analysis = sim.fleet_analysis();
-    if sim.fleet_analysis_pending() {
-        crate::fleet_panel::working_badge(ui, sim.fleet_analysis_progress());
+    let tunes = sim.fleet_graph_tunes.get(&sim.fleet_graph).cloned().filter(|t| t.iter().any(Option::is_some));
+    let (analysis, run) = match &tunes {
+        Some(t) => (sim.analysis(Run::Graph, &|a, b| tweak(t, a, b)), Run::Graph),
+        None => (sim.fleet_analysis(), Run::Fleet),
+    };
+    if sim.analysis_pending(run) {
+        crate::fleet_panel::working_badge(ui, sim.analysis_progress(run));
     }
     let Some(an) = analysis else {
         ui.add_space(8.0);
@@ -150,6 +157,61 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, place: Option<bool>) {
     ui.allocate_ui_with_layout(egui::vec2(width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
         ui.set_max_width(width);
         plot.show(ui, height);
+    });
+}
+
+/// The fleets as a graph tunes their ewar, each side its own or the fleet's.
+fn tweak(tunes: &[Option<SlotTunes>; 2], mine: &mut spai_fit::fleet::Fleet, theirs: &mut spai_fit::fleet::Fleet) {
+    for (t, f) in tunes.iter().zip([mine, theirs]) {
+        if let Some(t) = t {
+            crate::ewar_tune::apply(f, t);
+        }
+    }
+}
+
+/// The button that tunes this graph's ewar ship by ship, apart from the fleets'.
+fn tune_button(sim: &mut SimUi, ui: &mut egui::Ui) {
+    let graph = sim.fleet_graph;
+    let tuned = sim.fleet_graph_tunes.get(&graph).is_some_and(|t| t.iter().any(Option::is_some));
+    let icon = egui::RichText::new(egui_phosphor::regular::SLIDERS_HORIZONTAL);
+    let r = ui.add(egui::Button::new(if tuned { icon.color(ui.visuals().selection.stroke.color) } else { icon }).min_size(egui::vec2(24.0, 22.0)));
+    let r = r.on_hover_text(if tuned { tr!("This graph's ewar is tuned ship by ship, apart from the fleets'") } else { tr!("Tune the ewar ship by ship for this graph alone") });
+    egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(360.0);
+        ui.set_max_width(520.0);
+        // The fleets as they are, not as this graph tunes them: what it starts from.
+        let Some((mine, Some((theirs, _, _)))) = sim.fleet_stats() else {
+            ui.label(egui::RichText::new(tr!("Pick a fleet under Against to compare.")).weak());
+            return;
+        };
+        let Some(fleet) = sim.fleet.as_ref().map(|f| f.fleet.clone()) else { return };
+        let Some(enemy) = fleet.enemy.as_ref().and_then(|id| sim.enemy_fleet(id)) else { return };
+        let labels = [sim.ship_labels(&fleet, &mine), sim.ship_labels(&enemy, &theirs)];
+        let mut tunes = sim.fleet_graph_tunes.get(&graph).cloned().unwrap_or_default();
+        let mut changed = false;
+        for (side, (f, stats, other, title)) in [(&fleet, &mine, theirs.ships, tr!("Our ewar")), (&enemy, &theirs, mine.ships, tr!("Their ewar"))].into_iter().enumerate() {
+            if side == 1 {
+                ui.separator();
+            }
+            ui.strong(title);
+            if !crate::ewar_tune::any(stats) {
+                ui.label(egui::RichText::new(tr!("No ship projects any.")).weak());
+                continue;
+            }
+            let mut on = tunes[side].is_some();
+            if ui.checkbox(&mut on, tr!("Tuned for this graph")).on_hover_text(tr!("Off, the graph shows the ewar as the fleet sets it")).changed() {
+                tunes[side] = on.then(|| if f.ewar_auto { Vec::new() } else { crate::ewar_tune::of(f) });
+                changed = true;
+            }
+            if let Some(t) = tunes[side].as_mut() {
+                let mut shown = f.clone();
+                crate::ewar_tune::apply(&mut shown, t);
+                changed |= crate::ewar_tune::editor(ui, &format!("graph{side}"), t, &shown, stats, &labels[side], other);
+            }
+        }
+        if changed {
+            sim.fleet_graph_tunes.insert(graph, tunes);
+        }
     });
 }
 

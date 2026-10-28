@@ -48,6 +48,10 @@ pub struct FleetSlot {
     /// Module states it flies with here, by slot and index, over its fit's.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub states: Vec<(crate::fit::Slot, u8, crate::fit::State)>,
+    /// Ships of the slot whose modules of a kind land on one target, set by hand over the fleet's
+    /// plan while it fine-tunes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ewar_tune: Vec<(RemoteKind, f32)>,
     /// Scripts it flies with here, by slot and index, over its fit's; none takes the script out.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub scripts: Vec<(crate::fit::Slot, u8, Option<TypeId>)>,
@@ -111,7 +115,7 @@ impl FleetSlot {
 
 impl Default for FleetSlot {
     fn default() -> Self {
-        FleetSlot { fit_id: String::new(), rule: CountRule::default(), override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() }
+        FleetSlot { fit_id: String::new(), rule: CountRule::default(), override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new(), ewar_tune: Vec::new() }
     }
 }
 
@@ -206,8 +210,9 @@ pub struct Fleet {
     pub range: f32,
     /// The share of a volley that lands in practice: mechanical failures, lacking skills.
     pub volley_efficiency: f32,
-    /// What this fleet keeps on the enemy, typed by hand; without it, what its ships project.
+    /// Counts once typed for the whole fleet; read by nothing now, kept so older fleets still load.
     pub ewar: Ewar,
+    /// The fleet's ewar by its plan alone; off, its slots' `ewar_tune` set what lands.
     #[serde(default = "default_true")]
     pub ewar_auto: bool,
     pub notes: String,
@@ -816,14 +821,6 @@ impl StatsRun {
     }
 }
 
-/// What the enemy's ewar does to a target: webs cut its speed, painters grow its signature, both
-/// stacking-penalised like the modules they stand for.
-pub fn ewar_on_target(ewar: &Ewar, velocity: f64, signature: f64) -> (f64, f64) {
-    let webs: Vec<(crate::dogma::Op, f64, bool)> = (0..ewar.webs).map(|_| (crate::dogma::Op::PostPercent, -60.0, true)).collect();
-    let painters: Vec<(crate::dogma::Op, f64, bool)> = (0..ewar.painters).map(|_| (crate::dogma::Op::PostPercent, 30.0, true)).collect();
-    (crate::calc::combine(velocity, true, &webs), crate::calc::combine(signature, true, &painters))
-}
-
 /// How one side's fire lands on the other's main hull.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Against {
@@ -904,19 +901,6 @@ pub fn reps_on_one_at(stats: &FleetStats, ships: &dyn Fn(usize, &SlotStats) -> u
     [rep_landing(&lists[0]), rep_landing(&lists[1]), rep_landing(&lists[2])]
 }
 
-fn ships(s: &FleetStats) -> Vec<(u32, &Computed)> {
-    s.slots.iter().filter(|x| x.count > 0).map(|x| (x.count, &x.computed)).collect()
-}
-
-/// The ewar a fleet keeps on the enemy: what its ships project unless typed by hand.
-pub fn ewar_of(fleet: &Fleet, stats: &FleetStats) -> Ewar {
-    if fleet.ewar_auto {
-        stats.projected
-    } else {
-        fleet.ewar
-    }
-}
-
 /// `a` shooting at `b`'s main hull at `a.range`, with `a`'s ewar on it and `b`'s on `a`'s guns.
 pub fn against(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b_stats: &FleetStats) -> Against {
     let main = b_stats.slots.iter().position(|s| s.role == Role::Main).unwrap_or(0);
@@ -928,24 +912,14 @@ pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b
     let mut out = Against::default();
     let Some(target) = b_stats.slots.get(slot).or_else(|| b_stats.main()) else { return out };
     let t = &target.computed;
-    let a_ewar = ewar_of(a, a_stats);
-    let b_ewar = ewar_of(b, b_stats);
     let range = f64::from(a.range);
-    // The ships' own modules by range, all on the main hull; counts typed by hand at full strength.
-    let (velocity, signature) = if a.ewar_auto {
-        let e = ewar::planned(&ships(a_stats), range, &a.ewar_plan, a.split_fire, b_stats.ships, Some(t));
-        (t.mobility.max_velocity * e.speed, t.mobility.signature * e.signature)
-    } else {
-        ewar_on_target(&a_ewar, t.mobility.max_velocity, t.mobility.signature)
-    };
+    let e = ewar::of_fleet(a, a_stats, range, a.split_fire, b_stats.ships, Some(t));
+    let (velocity, signature) = (t.mobility.max_velocity * e.speed, t.mobility.signature * e.signature);
     // As B lays its ewar on this fleet, in its plan.
-    let on_shooters = b.ewar_auto.then(|| ewar::planned_average(&ships(b_stats), range, &b.ewar_plan, b.split_fire, a_stats.ships, None));
+    let on_shooters = ewar::of_fleet_average(b, b_stats, range, a_stats.ships);
     out.target_velocity = velocity;
     out.target_signature = signature;
     let profile = TargetProfile { signature: signature as f32, velocity: velocity as f32, transversal: velocity as f32, distance: a.range, radius: 0.0, resist: [0.0; 4] };
-    // Tracking disruptors on the shooters: weaker range and tracking, penalised.
-    let td: Vec<(crate::dogma::Op, f64, bool)> = (0..b_ewar.tracking_disruptors).map(|_| (crate::dogma::Op::PostPercent, -17.19, true)).collect();
-    let td_factor = crate::calc::combine(1.0, true, &td);
     let mut main_volley_per_ship = 0.0;
     // The main slot's applied volley per ship by weapon group: (type, charge, modules, volley).
     let mut main_groups: Vec<(TypeId, Option<TypeId>, u32, f64)> = Vec::new();
@@ -954,15 +928,7 @@ pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b
         let mut dps = 0.0;
         let mut volley = 0.0;
         for w in &slot.computed.weapons {
-            let mut w = match &on_shooters {
-                Some(e) => sweep::disrupted(w, e),
-                None => w.clone(),
-            };
-            if on_shooters.is_none() && w.kind == WeaponKind::Turret {
-                w.optimal *= td_factor;
-                w.falloff *= td_factor;
-                w.tracking *= td_factor;
-            }
+            let w = sweep::disrupted(w, &on_shooters);
             let f = applied_factor(&w, f64::from(a.range), &profile, slot.computed.drone_speed.unwrap_or(0.0), slot.computed.drones.control_range);
             dps += w.dps * f;
             if w.alpha() {
@@ -1000,12 +966,8 @@ pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b
     // Split into groups, each target gets its share of the webs and painters.
     out.split_mass = (1..=SPLIT_GROUPS)
         .map(|g| {
-            let (v, sig) = if a.ewar_auto {
-                let e = ewar::planned(&ships(a_stats), range, &a.ewar_plan, g, b_stats.ships, Some(t));
-                (t.mobility.max_velocity * e.speed, t.mobility.signature * e.signature)
-            } else {
-                (velocity, signature)
-            };
+            let e = ewar::of_fleet(a, a_stats, range, g, b_stats.ships, Some(t));
+            let (v, sig) = (t.mobility.max_velocity * e.speed, t.mobility.signature * e.signature);
             let p = TargetProfile { signature: sig as f32, velocity: v as f32, transversal: v as f32, distance: a.range, radius: 0.0, resist: [0.0; 4] };
             let main = a_stats.slots.get(a_stats.main)?;
             let per_ship: f64 = main
@@ -1014,15 +976,7 @@ pub fn against_slot(dogma: &Dogma, a: &Fleet, a_stats: &FleetStats, b: &Fleet, b
                 .iter()
                 .filter(|w| w.alpha())
                 .map(|w| {
-                    let mut w = match &on_shooters {
-                        Some(e) => sweep::disrupted(w, e),
-                        None => w.clone(),
-                    };
-                    if on_shooters.is_none() && w.kind == WeaponKind::Turret {
-                        w.optimal *= td_factor;
-                        w.falloff *= td_factor;
-                        w.tracking *= td_factor;
-                    }
+                    let w = sweep::disrupted(w, &on_shooters);
                     w.volley.total() * applied_factor(&w, f64::from(a.range), &p, main.computed.drone_speed.unwrap_or(0.0), main.computed.drones.control_range)
                 })
                 .sum();
@@ -1144,7 +1098,7 @@ pub fn from_doctrine(dogma: &Dogma, name: &str, fits: &[(String, Fit)], _skills:
         if fleet.main.is_none() && matches!(rule, CountRule::Fill { .. }) {
             fleet.main = Some(fleet.slots.len());
         }
-        fleet.slots.push(FleetSlot { fit_id: id.clone(), rule, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() });
+        fleet.slots.push(FleetSlot { fit_id: id.clone(), rule, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new(), ewar_tune: Vec::new() });
     }
     let fits: Vec<&Fit> = fits.iter().map(|(_, f)| f).collect();
     fleet.boost_shortcuts = boosts_for(dogma, &fits);

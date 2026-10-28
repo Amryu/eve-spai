@@ -42,6 +42,8 @@ struct Source {
     optimal: f64,
     falloff: f64,
     count: f64,
+    /// Ships' worth of it landing on the ship looked at.
+    lands: f64,
 }
 
 /// Penalised percent changes on one figure, for `k` modules (fractional: the last counts in part).
@@ -117,15 +119,23 @@ pub fn plan_targets(plan: &EwarPlan, kind: RemoteKind, primaries: u32, fleet_siz
 /// ship (`targets` sharing them), and the percent each gives at `distance` after the ship's
 /// resistance to it. For a breakdown of `ewar_on`'s figure; `part` as in `RemoteModule::parts`.
 pub fn parts_of(ships: &[(u32, &Computed)], distance: f64, targets: f64, target: Option<&Computed>, kind: RemoteKind, part: usize) -> Vec<(crate::ids::TypeId, f64, f64)> {
+    parts_landing(ships, distance, &|i, _| (f64::from(ships[i].0), f64::from(ships[i].0) / targets.max(1.0)), target, kind, part)
+}
+
+/// As `parts_of`, with what lands of each entry given.
+pub fn parts_landing(ships: &[(u32, &Computed)], distance: f64, landing: Landing, target: Option<&Computed>, kind: RemoteKind, part: usize) -> Vec<(crate::ids::TypeId, f64, f64)> {
     let resist = target.map_or(1.0, |t| t.resist.of(kind));
     let mut out: Vec<(crate::ids::TypeId, f64, f64)> = Vec::new();
-    for (n, c) in ships {
+    for (i, (_, c)) in ships.iter().enumerate() {
+        let lands = landing(i, kind).1;
+        if lands <= 0.0 {
+            continue;
+        }
         for m in c.remote.modules.iter().filter(|m| m.kind == kind && m.parts[part] != 0.0) {
             let pct = m.parts[part] * range_factor(distance, m.optimal, m.falloff) * resist;
-            let landing = f64::from(*n) / targets.max(1.0);
             match out.iter_mut().find(|(t, _, p)| *t == m.type_id && (*p - pct).abs() < 1e-9) {
-                Some(e) => e.1 += landing,
-                None => out.push((m.type_id, landing, pct)),
+                Some(e) => e.1 += lands,
+                None => out.push((m.type_id, lands, pct)),
             }
         }
     }
@@ -137,37 +147,23 @@ pub fn parts_of(ships: &[(u32, &Computed)], distance: f64, targets: f64, target:
 /// shared over the `primaries` the fire is split over, a spread one over the share of the fleet
 /// it covers, this ship among them.
 pub fn planned(ships: &[(u32, &Computed)], distance: f64, plan: &EwarPlan, primaries: u32, fleet_size: u32, target: Option<&Computed>) -> EwarOn {
-    let covered = (f64::from(fleet_size.max(1)) * f64::from(plan.coverage.clamp(0.05, 1.0))).max(1.0);
-    let focused = ewar_on(ships, distance, f64::from(primaries.max(1)), target);
-    let spread = ewar_on(ships, distance, covered, target);
-    let pick = |kind: RemoteKind| if plan.spreads(kind) { &spread } else { &focused };
-    let web = pick(RemoteKind::Web);
-    let damp = pick(RemoteKind::Damp);
-    let td = pick(RemoteKind::TrackingDisruptor);
-    let gd = pick(RemoteKind::GuidanceDisruptor);
-    EwarOn {
-        speed: web.speed,
-        webbed: web.webbed,
-        signature: pick(RemoteKind::Painter).signature,
-        lock_range: damp.lock_range,
-        scan_resolution: damp.scan_resolution,
-        tracking: td.tracking,
-        optimal: td.optimal,
-        falloff: td.falloff,
-        explosion_radius: gd.explosion_radius,
-        explosion_velocity: gd.explosion_velocity,
-        missile_velocity: gd.missile_velocity,
-        flight_time: gd.flight_time,
-        neut: pick(RemoteKind::Neut).neut,
-        scrammed: focused.scrammed,
-        pointed: focused.pointed,
-    }
+    planned_tuned(ships, distance, plan, primaries, fleet_size, &[], target)
+}
+
+/// As `planned`, the entries `tunes` sets landing as many ships' modules as it says.
+pub fn planned_tuned(ships: &[(u32, &Computed)], distance: f64, plan: &EwarPlan, primaries: u32, fleet_size: u32, tunes: Tunes, target: Option<&Computed>) -> EwarOn {
+    ewar_with(ships, distance, &|i, kind| plan_landing(ships, plan, primaries, fleet_size, tunes, i, kind), target)
 }
 
 /// As `planned`, averaged over the whole fleet: the spread kinds on the share of it they cover,
 /// nothing on the rest. What fleet-wide figures go by.
 pub fn planned_average(ships: &[(u32, &Computed)], distance: f64, plan: &EwarPlan, primaries: u32, fleet_size: u32, target: Option<&Computed>) -> EwarOn {
-    let on = planned(ships, distance, plan, primaries, fleet_size, target);
+    planned_average_tuned(ships, distance, plan, primaries, fleet_size, &[], target)
+}
+
+/// As `planned_average`, with `tunes` as `planned_tuned` takes them.
+pub fn planned_average_tuned(ships: &[(u32, &Computed)], distance: f64, plan: &EwarPlan, primaries: u32, fleet_size: u32, tunes: Tunes, target: Option<&Computed>) -> EwarOn {
+    let on = planned_tuned(ships, distance, plan, primaries, fleet_size, tunes, target);
     let share = f64::from(plan.coverage.clamp(0.05, 1.0));
     let mix = |kind: RemoteKind, f: f64| if plan.spreads(kind) { 1.0 + (f - 1.0) * share } else { f };
     EwarOn {
@@ -187,6 +183,48 @@ pub fn planned_average(ships: &[(u32, &Computed)], distance: f64, plan: &EwarPla
     }
 }
 
+/// How many of a ship entry's modules of a kind fly and land on the ship looked at:
+/// (copies to stack from, ships' worth landing).
+pub type Landing<'a> = &'a dyn Fn(usize, RemoteKind) -> (f64, f64);
+
+/// A fleet's tunes, by its ships' entries: how many ships of each kind's modules land on one
+/// target, set by hand over the plan. Empty while the fleet goes by its plan.
+pub type Tunes<'a> = &'a [&'a [(RemoteKind, f32)]];
+
+fn tuned(tunes: Tunes, i: usize, kind: RemoteKind) -> Option<f64> {
+    tunes.get(i).and_then(|t| t.iter().find(|(k, _)| *k == kind)).map(|(_, n)| f64::from(n.max(0.0)))
+}
+
+/// What the plan lands of ship entry `i`'s modules of `kind`, or its tune.
+pub fn plan_landing(ships: &[(u32, &Computed)], plan: &EwarPlan, primaries: u32, fleet_size: u32, tunes: Tunes, i: usize, kind: RemoteKind) -> (f64, f64) {
+    let n = f64::from(ships[i].0);
+    match tuned(tunes, i, kind) {
+        Some(t) => (t, t.min(n)),
+        None => (n, n / plan_targets(plan, kind, primaries, fleet_size)),
+    }
+}
+
+/// The ships of a fleet its ewar comes from, each with its slot's tunes; none while it goes by
+/// its plan.
+pub fn fleet_ships<'a>(fleet: &'a super::Fleet, stats: &'a super::FleetStats) -> (Vec<(u32, &'a Computed)>, Vec<&'a [(RemoteKind, f32)]>) {
+    let slots: Vec<&super::SlotStats> = stats.slots.iter().filter(|s| s.count > 0).collect();
+    let ships = slots.iter().map(|s| (s.count, &s.computed)).collect();
+    let tunes = if fleet.ewar_auto { Vec::new() } else { slots.iter().map(|s| fleet.slots.get(s.slot).map_or(&[][..], |x| x.ewar_tune.as_slice())).collect() };
+    (ships, tunes)
+}
+
+/// What `fleet` puts on one ship of a fleet of `fleet_size`: its plan, its slots' tunes over it.
+pub fn of_fleet(fleet: &super::Fleet, stats: &super::FleetStats, distance: f64, primaries: u32, fleet_size: u32, target: Option<&Computed>) -> EwarOn {
+    let (ships, tunes) = fleet_ships(fleet, stats);
+    planned_tuned(&ships, distance, &fleet.ewar_plan, primaries, fleet_size, &tunes, target)
+}
+
+/// As `of_fleet`, averaged over the other fleet as `planned_average` does.
+pub fn of_fleet_average(fleet: &super::Fleet, stats: &super::FleetStats, distance: f64, fleet_size: u32) -> EwarOn {
+    let (ships, tunes) = fleet_ships(fleet, stats);
+    planned_average_tuned(&ships, distance, &fleet.ewar_plan, fleet.split_fire, fleet_size, &tunes, None)
+}
+
 /// The ewar `ships` (each a fit with how many fly) put on the other side at `distance`, spread
 /// over `targets` ships: 1 for everything on the primary, the enemy's count to share it out.
 pub fn ewar_at(ships: &[(u32, &Computed)], distance: f64, targets: f64) -> EwarOn {
@@ -197,12 +235,23 @@ pub fn ewar_at(ships: &[(u32, &Computed)], distance: f64, targets: f64) -> EwarO
 /// through, and painters stacked with its own penalised signature modifiers, a running
 /// microwarpdrive's bloom first among them, as the game stacks them.
 pub fn ewar_on(ships: &[(u32, &Computed)], distance: f64, targets: f64, target: Option<&Computed>) -> EwarOn {
+    let targets = targets.max(1.0);
+    ewar_with(ships, distance, &|i, _| (f64::from(ships[i].0), f64::from(ships[i].0) / targets), target)
+}
+
+/// As `ewar_on`, with what lands of each entry's modules given by kind. The strongest of the
+/// copies stack first.
+pub fn ewar_with(ships: &[(u32, &Computed)], distance: f64, landing: Landing, target: Option<&Computed>) -> EwarOn {
     let resist = |kind: RemoteKind| target.map_or(1.0, |t| t.resist.of(kind));
     let sources: Vec<Source> = ships
         .iter()
-        .flat_map(|(n, c)| c.remote.modules.iter().map(move |m| Source { kind: m.kind, parts: m.parts, amount: m.amount, optimal: m.optimal, falloff: m.falloff, count: f64::from(*n) }))
+        .enumerate()
+        .flat_map(|(i, (_, c))| c.remote.modules.iter().map(move |m| (i, m)))
+        .filter_map(|(i, m)| {
+            let (copies, lands) = landing(i, m.kind);
+            (lands > 0.0).then_some(Source { kind: m.kind, parts: m.parts, amount: m.amount, optimal: m.optimal, falloff: m.falloff, count: copies, lands })
+        })
         .collect();
-    let targets = targets.max(1.0);
     let mut out = EwarOn::default();
     // Per figure, the percent each module gives at this distance, as many times as it flies.
     let figure = |kind: RemoteKind, part: usize| -> (Vec<f64>, f64) {
@@ -216,9 +265,9 @@ pub fn ewar_on(ships: &[(u32, &Computed)], distance: f64, targets: f64, target: 
             for _ in 0..(s.count.ceil() as usize).max(1) {
                 list.push(s.parts[part] * f * resist(kind));
             }
-            total += s.count;
+            total += s.lands;
         }
-        (list, total / targets)
+        (list, total)
     };
     let apply = |kind: RemoteKind, part: usize| -> f64 {
         let (list, k) = figure(kind, part);
@@ -254,7 +303,7 @@ pub fn ewar_on(ships: &[(u32, &Computed)], distance: f64, targets: f64, target: 
     out.explosion_velocity = apply(RemoteKind::GuidanceDisruptor, 1);
     out.missile_velocity = apply(RemoteKind::GuidanceDisruptor, 2);
     out.flight_time = apply(RemoteKind::GuidanceDisruptor, 3);
-    out.neut = sources.iter().filter(|s| s.kind == RemoteKind::Neut).map(|s| s.amount * s.count * range_factor(distance, s.optimal, s.falloff)).sum::<f64>() / targets * resist(RemoteKind::Neut);
+    out.neut = sources.iter().filter(|s| s.kind == RemoteKind::Neut).map(|s| s.amount * s.lands * range_factor(distance, s.optimal, s.falloff)).sum::<f64>() * resist(RemoteKind::Neut);
     // Tackle holds or not: within its optimal, it has no falloff.
     let reaches = |kind: RemoteKind| sources.iter().any(|s| s.kind == kind && distance <= s.optimal);
     out.scrammed = reaches(RemoteKind::Scram);

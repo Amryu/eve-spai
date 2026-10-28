@@ -585,9 +585,9 @@ fn fleet_fixture(sim: &mut spai_fit_ui::SimUi) {
         name: "Alpha fleet".into(),
         size: 120,
         slots: vec![
-            FleetSlot { fit_id: "f-dps".into(), rule: CountRule::Fill { min: 20, max: 500 }, override_count: None, profile: None, variation: Some(1), charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() },
-            FleetSlot { fit_id: "f-logi".into(), rule: CountRule::Percent(15.0), override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() },
-            FleetSlot { fit_id: "f-boost".into(), rule: CountRule::Fixed(2), override_count: Some(3), profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() },
+            FleetSlot { fit_id: "f-dps".into(), rule: CountRule::Fill { min: 20, max: 500 }, override_count: None, profile: None, variation: Some(1), charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new(), ewar_tune: Vec::new() },
+            FleetSlot { fit_id: "f-logi".into(), rule: CountRule::Percent(15.0), override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new(), ewar_tune: Vec::new() },
+            FleetSlot { fit_id: "f-boost".into(), rule: CountRule::Fixed(2), override_count: Some(3), profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new(), ewar_tune: Vec::new() },
         ],
         boosters: vec![(BurstKind::Shield, "f-boost".into())],
         boost_shortcuts: vec![spai_fit::fit::BoostShortcut { kind: BurstKind::Armor, mindlink: true, ..Default::default() }],
@@ -595,7 +595,7 @@ fn fleet_fixture(sim: &mut spai_fit_ui::SimUi) {
         range: 6_000.0,
         ..Fleet::default()
     };
-    let enemy = Fleet { id: "fl-2".into(), name: "Hostile fleet".into(), size: 80, formation: spai_fit::fleet::Formation::Flock { sigma_m: 4000.0 }, motion: (0.8, 60.0), range: 10_000.0, slots: vec![FleetSlot { fit_id: "e-dps".into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() }], ..Fleet::default() };
+    let enemy = Fleet { id: "fl-2".into(), name: "Hostile fleet".into(), size: 80, formation: spai_fit::fleet::Formation::Flock { sigma_m: 4000.0 }, motion: (0.8, 60.0), range: 10_000.0, slots: vec![FleetSlot { fit_id: "e-dps".into(), rule: CountRule::Fill { min: 0, max: 500 }, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new(), ewar_tune: Vec::new() }], ..Fleet::default() };
     sim.handle(spai_fit_ui::HostEvent::Fleets(vec![spai_fit_ui::FleetSummary { id: "fl-1".into(), name: mine.name.clone(), updated_at: 0 }, spai_fit_ui::FleetSummary { id: "fl-2".into(), name: enemy.name.clone(), updated_at: 0 }]));
     sim.handle(spai_fit_ui::HostEvent::FleetDoc { id: "fl-2".into(), doc: serde_json::to_string(&enemy).unwrap() });
     sim.handle(spai_fit_ui::HostEvent::Fleet { id: "fl-1".into(), doc: serde_json::to_string(&mine).unwrap() });
@@ -3062,6 +3062,7 @@ pub(crate) fn all() -> Vec<Scene> {
     for (name, size, narrow_pane, graph) in [
         ("imperium_fleet_wide", [1440.0, 900.0], spai_fit_ui::Pane::Fit, None),
         ("imperium_fleet_narrow", [720.0, 900.0], spai_fit_ui::Pane::Fit, None),
+        ("imperium_fleet_ewar_tuned", [720.0, 2000.0], spai_fit_ui::Pane::Fit, None),
         ("imperium_fleet_narrow_results", [720.0, 900.0], spai_fit_ui::Pane::Stats, None),
         ("imperium_fleet_engagement", [720.0, 1500.0], spai_fit_ui::Pane::Stats, None),
         ("imperium_fleet_graphs_range", [1440.0, 900.0], spai_fit_ui::Pane::Graphs, Some(FleetGraph::DamageByRange)),
@@ -3091,6 +3092,11 @@ pub(crate) fn all() -> Vec<Scene> {
                 };
             }
             fleet_fixture(sim);
+            if name == "imperium_fleet_ewar_tuned" {
+                let f = &mut sim.fleet.as_mut().unwrap().fleet;
+                f.ewar_auto = false;
+                f.slots[1].ewar_tune = vec![(spai_fit::stats::RemoteKind::Web, 3.0)];
+            }
             if name.starts_with("imperium_fleet_ships") {
                 sim.center = spai_fit_ui::Center::Ships;
                 use spai_fit::test_support::ids;

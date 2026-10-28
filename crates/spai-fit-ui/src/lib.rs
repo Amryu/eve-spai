@@ -21,6 +21,7 @@ pub mod details;
 pub mod mutation;
 pub mod dock;
 pub mod editor;
+pub mod ewar_tune;
 
 /// What a fit's base is called beside its variations.
 pub fn base_label(fit: &Fit) -> String {
@@ -537,6 +538,8 @@ pub struct SimUi {
     /// Ewar kinds left off the by-range graphs, to thin them out.
     /// The ewar kinds drawn on the range graphs; none until picked, they crowd the graph.
     pub fleet_graph_ewar_shown: Vec<spai_fit::stats::RemoteKind>,
+    /// Per graph, each side's ewar tuned for it alone; none goes by the fleet's.
+    pub(crate) fleet_graph_tunes: std::collections::HashMap<fleet_graphs::FleetGraph, [Option<ewar_tune::SlotTunes>; 2]>,
     /// Whether the range graphs mark the primary weapons' charges.
     pub fleet_graph_ammo: bool,
     /// Whether the race graphs mark each side's primaries, and where each loses critical mass.
@@ -595,7 +598,6 @@ pub struct SimUi {
     /// Fleets by library id, for the one compared against.
     pub fleet_docs: std::collections::HashMap<String, spai_fit::fleet::Fleet>,
     /// The engagement analysis of the open fleet against its opponent, with what it was for.
-    pub(crate) fleet_analysis: Option<(u64, std::sync::Arc<fleet_panel::Analysis>)>,
     pub(crate) fleet_cache: std::cell::RefCell<fleet_panel::FleetCache>,
     /// Where the host runs fleet work off the frame where it has no threads: a web worker.
     pub(crate) off_frame: Option<std::rc::Rc<dyn offload::OffFrame>>,
@@ -656,6 +658,7 @@ impl Default for SimUi {
             graph_in_window: false,
             fleet_graph: fleet_graphs::FleetGraph::default(),
             fleet_graph_ewar_shown: Vec::new(),
+            fleet_graph_tunes: std::collections::HashMap::new(),
             fleet_graph_ammo: true,
             fleet_graph_primaries: true,
             fleet_graph_critical: true,
@@ -694,7 +697,6 @@ impl Default for SimUi {
             fit_docs: std::collections::HashMap::new(),
             fit_docs_asked: std::collections::HashSet::new(),
             fleet_docs: std::collections::HashMap::new(),
-            fleet_analysis: None,
             fleet_cache: Default::default(),
             off_frame: None,
             fleet_edit: None,

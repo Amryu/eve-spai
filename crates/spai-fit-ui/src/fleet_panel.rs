@@ -200,7 +200,9 @@ impl SimUi {
     pub(crate) fn stats_key(&self, f: &Fleet) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        serde_json::to_string(&(&f.name, f.size, &f.slots, &f.boosters, &f.boost_shortcuts, f.main, f.drones)).unwrap_or_default().hash(&mut h);
+        // Tunes say where the ewar lands, not what the ships are: the fight reads them.
+        let slots: Vec<spai_fit::fleet::FleetSlot> = f.slots.iter().map(|s| spai_fit::fleet::FleetSlot { ewar_tune: Vec::new(), ..s.clone() }).collect();
+        serde_json::to_string(&(&f.name, f.size, &slots, &f.boosters, &f.boost_shortcuts, f.main, f.drones)).unwrap_or_default().hash(&mut h);
         for id in f.slots.iter().map(|s| &s.fit_id).chain(f.boosters.iter().map(|(_, id)| id)) {
             id.hash(&mut h);
             if let Some(doc) = self.fit_docs.get(id) {
@@ -375,23 +377,42 @@ pub struct FleetCache {
     ammo: Vec<(u64, Arc<Vec<spai_fit::fleet::ammo::AmmoChoice>>)>,
     /// Enemy doctrine groups built into fleets, by what they were built from.
     doctrine: Vec<(u64, Fleet)>,
-    /// An analysis asked for but not yet worked out, and since when.
+    /// An analysis asked for but not yet worked out, and since when; fleets' numbers on their
+    /// way hold it too, so the host keeps drawing.
     pending: Option<(u64, u64)>,
     /// Fleets' numbers being worked out on their own threads, by content key.
     stats_jobs: Vec<(u64, std::sync::mpsc::Receiver<FleetStats>)>,
     /// Each fleet's last numbers, by which fleet it is, shown while new ones are worked out.
     last_of: HashMap<String, Arc<FleetStats>>,
-    /// An analysis being worked out on its own thread, by what it is of, and how far along it is
-    /// in thousandths.
-    job: Option<(u64, std::sync::mpsc::Receiver<(Analysis, Vec<(u64, Arc<Choices>)>)>, Arc<std::sync::atomic::AtomicU32>)>,
-    /// The web build's run, taken a few steps a frame.
-    local: Option<(u64, FightJob)>,
+    /// The fight as the fleets have it, and as a graph has its own ewar tuned.
+    runs: [AnalysisRun; 2],
     /// Slots' charge options being worked out on their own threads, by `ammo_key`.
     ammo_jobs: Vec<(u64, std::sync::mpsc::Receiver<Arc<Choices>>)>,
     /// The web build has slots' options still to work out, one a frame.
     ammo_waiting: bool,
     /// Per burst kind the fits carrying it, by the fits and documents at hand.
     boosting: Option<(u64, Vec<(BurstKind, Vec<(String, String)>)>)>,
+}
+
+/// One analysis kept and worked out: a graph's own runs beside the fleet's, so neither undoes the
+/// other.
+#[derive(Default)]
+struct AnalysisRun {
+    /// The one shown, by its key.
+    shown: Option<(u64, Arc<Analysis>)>,
+    /// Asked for but not yet worked out, and since when.
+    pending: Option<(u64, u64)>,
+    /// Being worked out on its own thread, by what it is of, and how far along in thousandths.
+    job: Option<(u64, std::sync::mpsc::Receiver<(Analysis, Vec<(u64, Arc<Choices>)>)>, Arc<std::sync::atomic::AtomicU32>)>,
+    /// The web build's run, taken a few steps a frame.
+    local: Option<(u64, FightJob)>,
+}
+
+/// Which analysis: the fleets' own, or the open graph's with its ewar tuned.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Run {
+    Fleet,
+    Graph,
 }
 
 /// The fight between the open fleet and its opponent: ammo per range, the sweep over ranges, and
@@ -416,36 +437,50 @@ impl SimUi {
     /// fight's settings change and then rest for `SETTLE_MS`; until then the last one is given,
     /// so dragging a knob stays smooth.
     pub(crate) fn fleet_analysis(&mut self) -> Option<Arc<Analysis>> {
+        self.analysis(Run::Fleet, &|_, _| {})
+    }
+
+    /// As `fleet_analysis`, the fleets as `tweak` leaves them, kept apart from it under `run`.
+    pub(crate) fn analysis(&mut self, run: Run, tweak: &dyn Fn(&mut Fleet, &mut Fleet)) -> Option<Arc<Analysis>> {
         use std::hash::{Hash, Hasher};
         let _t = spai_ui::timing::span("sim: fleet analysis");
+        let r = run as usize;
         let (dogma, f) = (self.dogma.clone()?, self.fleet.as_ref()?);
         let mut enemy = f.enemy.as_ref().and_then(|id| self.enemy_fleet(id))?;
         // Placed in the scene, the opponent moves as it was placed.
         if let Some(scene) = &f.fleet.scene {
             enemy.motion = scene.read().2;
         }
-        let (mine_key, theirs_key) = (self.stats_key(&f.fleet), self.stats_key(&enemy));
+        let mut fleet = f.fleet.clone();
+        tweak(&mut fleet, &mut enemy);
+        let (mine_key, theirs_key) = (self.stats_key(&fleet), self.stats_key(&enemy));
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (mine_key, theirs_key).hash(&mut h);
-        for x in [&f.fleet, &enemy] {
+        for x in [&fleet, &enemy] {
             // Everything the sweep and the race read off the fleet: a knob left out here changed
             // nothing on screen, the last analysis kept as if it were still the one.
             let logi = (x.logi_efficiency, x.logi_prelock, x.logi_reaction_s, x.logi_spread_s, x.race_length_s);
-            serde_json::to_string(&(x.range, x.motion, x.formation, &x.target_order, x.adc, x.volley_efficiency, x.ewar_auto, &x.ewar, &x.ewar_plan, x.split_fire, logi)).unwrap_or_default().hash(&mut h);
+            serde_json::to_string(&(x.range, x.motion, x.formation, &x.target_order, x.adc, x.volley_efficiency, x.ewar_auto, &x.ewar_plan, x.split_fire, logi)).unwrap_or_default().hash(&mut h);
+            if !x.ewar_auto {
+                serde_json::to_string(&x.slots.iter().map(|s| &s.ewar_tune).collect::<Vec<_>>()).unwrap_or_default().hash(&mut h);
+            }
         }
         let key = h.finish();
         let now = self.now_ms;
-        let cached = self.fleet_analysis.as_ref().map(|(k, a)| (*k, a.clone()));
+        let cached = self.fleet_cache.get_mut().runs[r].shown.as_ref().map(|(k, a)| (*k, a.clone()));
         if cached.as_ref().is_some_and(|(k, _)| *k == key) {
-            self.fleet_cache.get_mut().pending = None;
+            self.fleet_cache.get_mut().runs[r].pending = None;
+            if run == Run::Fleet {
+                self.fleet_cache.get_mut().pending = None;
+            }
             return cached.map(|(_, a)| a);
         }
         // The web build's run under way: a few more of its steps this frame.
-        if self.fleet_cache.get_mut().local.as_ref().is_some_and(|(k, _)| *k == key) {
-            return self.step_local(key).or_else(|| cached.map(|(_, a)| a));
+        if self.fleet_cache.get_mut().runs[r].local.as_ref().is_some_and(|(k, _)| *k == key) {
+            return self.step_local(run, key).or_else(|| cached.map(|(_, a)| a));
         }
         // A run under way: its result once it is in, the last one until then.
-        let done = match &self.fleet_cache.get_mut().job {
+        let done = match &self.fleet_cache.get_mut().runs[r].job {
             Some((k, rx, _)) if *k == key => match rx.try_recv() {
                 Ok((out, fresh)) => {
                     let cache = self.fleet_cache.get_mut();
@@ -462,16 +497,17 @@ impl SimUi {
         match done {
             Some(Some(out)) => {
                 let cache = self.fleet_cache.get_mut();
-                cache.job = None;
-                cache.pending = None;
-                self.fleet_analysis = Some((key, out.clone()));
+                cache.runs[r] = AnalysisRun { shown: Some((key, out.clone())), ..AnalysisRun::default() };
+                if run == Run::Fleet {
+                    cache.pending = None;
+                }
                 return Some(out);
             }
             None => return cached.map(|(_, a)| a),
             Some(None) => {}
         }
         if let Some((_, a)) = &cached {
-            let pending = &mut self.fleet_cache.get_mut().pending;
+            let pending = &mut self.fleet_cache.get_mut().runs[r].pending;
             match pending {
                 Some((pk, since)) if *pk == key => {
                     if now.saturating_sub(*since) < SETTLE_MS {
@@ -484,14 +520,13 @@ impl SimUi {
                 }
             }
         }
-        let mine = self.cached_stats(&f.fleet);
+        let mine = self.cached_stats(&fleet);
         let theirs = self.cached_stats(&enemy);
         // Not on the numbers shown while new ones are worked out: they would be kept as the new.
         let ready = |k: u64| self.fleet_cache.borrow().stats.iter().any(|(x, _)| *x == k);
         if !ready(mine_key) || !ready(theirs_key) {
             return cached.map(|(_, a)| a);
         }
-        let fleet = self.fleet.as_ref()?.fleet.clone();
         let known = self.fleet_cache.borrow().ammo.clone();
         if let Some(worker) = self.off_frame.clone().filter(|w| w.alive()) {
             let (tx, rx) = std::sync::mpsc::channel();
@@ -504,7 +539,7 @@ impl SimUi {
                 }
                 _ => {}
             }));
-            let cache = self.fleet_cache.get_mut();
+            let cache = &mut self.fleet_cache.get_mut().runs[r];
             cache.job = Some((key, rx, progress));
             cache.pending = Some((key, now));
             return cached.map(|(_, a)| a);
@@ -513,10 +548,10 @@ impl SimUi {
         // Everything dear off the frame, the charges' options too: a big fight held the window
         // still for seconds. The web build has no threads: it takes the steps a few a frame.
         if cfg!(target_arch = "wasm32") {
-            let cache = self.fleet_cache.get_mut();
+            let cache = &mut self.fleet_cache.get_mut().runs[r];
             cache.local = Some((key, job));
             cache.pending = Some((key, now));
-            return self.step_local(key).or_else(|| cached.map(|(_, a)| a));
+            return self.step_local(run, key).or_else(|| cached.map(|(_, a)| a));
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let progress = Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -528,7 +563,7 @@ impl SimUi {
                 let _ = tx.send(job.run(&report));
             })
             .ok()?;
-        let cache = self.fleet_cache.get_mut();
+        let cache = &mut self.fleet_cache.get_mut().runs[r];
         cache.job = Some((key, rx, progress));
         // Kept pending, so the host keeps drawing until the result is in.
         cache.pending = Some((key, now));
@@ -537,11 +572,11 @@ impl SimUi {
 
     /// The web build's run, a frame's worth further: steps for a few milliseconds, then the page
     /// is drawn. The analysis once it is done.
-    fn step_local(&mut self, key: u64) -> Option<Arc<Analysis>> {
+    fn step_local(&mut self, run: Run, key: u64) -> Option<Arc<Analysis>> {
         const BUDGET_MS: u128 = 12;
         let started = web_time::Instant::now();
         let cache = self.fleet_cache.get_mut();
-        let (k, job) = cache.local.as_mut()?;
+        let (k, job) = cache.runs[run as usize].local.as_mut()?;
         if *k != key {
             return None;
         }
@@ -552,14 +587,16 @@ impl SimUi {
         if !done {
             return None;
         }
-        let (_, job) = cache.local.take()?;
+        let (_, job) = cache.runs[run as usize].local.take()?;
         let (analysis, fresh) = job.finish();
         cache.ammo.extend(fresh);
         let over = cache.ammo.len().saturating_sub(CACHED_SLOTS);
         cache.ammo.drain(..over);
-        cache.pending = None;
+        if run == Run::Fleet {
+            cache.pending = None;
+        }
         let out = Arc::new(analysis);
-        self.fleet_analysis = Some((key, out.clone()));
+        cache.runs[run as usize] = AnalysisRun { shown: Some((key, out.clone())), ..AnalysisRun::default() };
         Some(out)
     }
 
@@ -580,8 +617,19 @@ impl SimUi {
 
     /// How far along the analysis being worked out is, 0 to 1; none when none is running.
     pub fn fleet_analysis_progress(&self) -> Option<f32> {
+        self.analysis_progress(Run::Fleet)
+    }
+
+    pub(crate) fn analysis_progress(&self, run: Run) -> Option<f32> {
         let cache = self.fleet_cache.borrow();
-        cache.job.as_ref().map(|(_, _, p)| p.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0).or_else(|| cache.local.as_ref().map(|(_, j)| j.progress()))
+        let r = &cache.runs[run as usize];
+        r.job.as_ref().map(|(_, _, p)| p.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0).or_else(|| r.local.as_ref().map(|(_, j)| j.progress()))
+    }
+
+    /// Whether `run` has an analysis on its way.
+    pub(crate) fn analysis_pending(&self, run: Run) -> bool {
+        let cache = self.fleet_cache.borrow();
+        cache.runs[run as usize].pending.is_some() || (run == Run::Fleet && cache.pending.is_some()) || !cache.stats_jobs.is_empty() || !cache.ammo_jobs.is_empty() || cache.ammo_waiting
     }
 
     /// The analysis once the run it starts is in, for tests.
@@ -589,7 +637,7 @@ impl SimUi {
     pub(crate) fn fleet_analysis_settled(&mut self) -> Option<Arc<Analysis>> {
         for _ in 0..1000 {
             let out = self.fleet_analysis();
-            if out.is_some() && self.fleet_cache.borrow().job.is_none() {
+            if out.is_some() && self.fleet_cache.borrow().runs[0].job.is_none() {
                 return out;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -599,7 +647,7 @@ impl SimUi {
 
     pub fn fleet_analysis_pending(&self) -> bool {
         let cache = self.fleet_cache.borrow();
-        cache.pending.is_some() || !cache.stats_jobs.is_empty() || !cache.ammo_jobs.is_empty() || cache.ammo_waiting
+        cache.pending.is_some() || cache.runs.iter().any(|r| r.pending.is_some()) || !cache.stats_jobs.is_empty() || !cache.ammo_jobs.is_empty() || cache.ammo_waiting
     }
 
     /// Every slot's charge options, from those already worked out; a slot not yet has none, and
@@ -749,7 +797,14 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
     let profiles: Vec<(String, String)> = sim.profiles.iter().map(|p| (p.id.clone(), p.name.clone())).collect();
     let fleets: Vec<FleetSummary> = sim.fleets.clone();
     let my_id = sim.fleet.as_ref().map(|f| f.id.clone()).unwrap_or_default();
-    let projected = sim.fleet_stats().map(|(mine, _)| mine.projected).unwrap_or_default();
+    let stats_now = sim.fleet_stats();
+    let projected = stats_now.as_ref().map(|(mine, _)| mine.projected).unwrap_or_default();
+    // What the ewar tunes read: the fleet's ships, and how many the enemy flies.
+    let tuning = stats_now.as_ref().map(|(mine, e)| (mine.clone(), e.as_ref().map_or(mine.ships, |(t, _, _)| t.ships)));
+    let tuning_labels = match (&tuning, sim.fleet.as_ref()) {
+        (Some((mine, _)), Some(f)) => sim.ship_labels(&f.fleet, mine),
+        _ => Vec::new(),
+    };
     let doctrine_fits = sim.doctrine_fit_names();
     let dogma = sim.dogma.clone();
     // Per slot fit, its variations' refit keys: the fleet swaps them all at once.
@@ -1162,22 +1217,16 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                         ui.end_row();
                     });
                     let mut tune = !f.ewar_auto;
-                    if ui.checkbox(&mut tune, tr!("Fine-tune")).on_hover_text(tr!("Type how many land on one target instead of counting every module fitted")).changed() {
+                    if ui.checkbox(&mut tune, tr!("Fine-tune")).on_hover_text(tr!("Set ship by ship how many land each kind of their ewar on one target, over what the plan shares out")).changed() {
                         f.ewar_auto = !tune;
-                        if tune {
-                            f.ewar = p;
-                        }
                         changed = true;
                     }
-                    if tune {
-                        ui.horizontal(|ui| {
-                            for (n, label, have) in [(&mut f.ewar.webs, tr!("Webs"), p.webs > 0), (&mut f.ewar.painters, tr!("Painters"), p.painters > 0), (&mut f.ewar.tracking_disruptors, tr!("Tracking disruptors"), p.tracking_disruptors > 0)] {
-                                if have || *n > 0 {
-                                    ui.label(label);
-                                    changed |= ui.add(egui::DragValue::new(n).range(0..=50)).changed();
-                                }
-                            }
-                        });
+                    if let (true, Some((mine, theirs))) = (tune, &tuning) {
+                        let mut tunes = crate::ewar_tune::of(f);
+                        if crate::ewar_tune::editor(ui, "fleet", &mut tunes, f, mine, &tuning_labels, *theirs) {
+                            crate::ewar_tune::apply(f, &tunes);
+                            changed = true;
+                        }
                     }
                 });
             egui::Grid::new("sim_fleet_skills").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {

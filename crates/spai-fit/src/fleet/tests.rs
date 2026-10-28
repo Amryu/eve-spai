@@ -7,7 +7,7 @@ fn fleet(size: u32, slots: Vec<FleetSlot>) -> Fleet {
 }
 
 fn slot(fit: &str, rule: CountRule) -> FleetSlot {
-    FleetSlot { fit_id: fit.into(), rule, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new() }
+    FleetSlot { fit_id: fit.into(), rule, override_count: None, profile: None, variation: None, charges: Vec::new(), mode: None, splits: Vec::new(), states: Vec::new(), scripts: Vec::new(), ewar_tune: Vec::new() }
 }
 
 #[test]
@@ -105,25 +105,11 @@ fn a_fleet_against_another_lands_less_at_range_and_more_with_ewar() {
     a.range = 20_000.0;
     let far = against(&d, &a, &sa, &b, &sb);
     assert!(far.applied_dps < close.applied_dps * 0.2, "{} vs {}", far.applied_dps, close.applied_dps);
-    let mut b_fast = b.clone();
-    b_fast.ewar.tracking_disruptors = 2;
-    b_fast.ewar_auto = false;
-    let disrupted = against(&d, &a, &sa, &b_fast, &sb);
-    assert!(disrupted.applied_dps < far.applied_dps);
     a.range = 500.0;
     let mut moving = sb.clone();
     moving.slots[0].computed.mobility.max_velocity = 2000.0;
     let fast = against(&d, &a, &sa, &b, &moving);
     assert!(fast.applied_dps < close.applied_dps, "a fast target takes less");
-    a.ewar.webs = 2;
-    a.ewar.painters = 1;
-    a.ewar_auto = false;
-    let webbed = against(&d, &a, &sa, &b, &moving);
-    assert!(webbed.applied_dps > fast.applied_dps);
-    let (v, sig) = ewar_on_target(&a.ewar, 2000.0, 100.0);
-    assert!((v - 2000.0 * 0.4 * (1.0 - 0.6 * crate::calc::PENALTY_FACTOR)).abs() < 1e-6);
-    assert!((sig - 130.0).abs() < 1e-9);
-    assert_eq!(webbed.target_velocity, v);
     a.volley_efficiency = 1.0;
     let full = against(&d, &a, &sa, &b, &sb);
     assert!(full.critical_mass.unwrap() <= close.critical_mass.unwrap());
@@ -131,24 +117,34 @@ fn a_fleet_against_another_lands_less_at_range_and_more_with_ewar() {
     assert_eq!(serde_json::from_str::<Fleet>(&json).unwrap(), a);
 }
 
+/// Fine-tuned, each slot says how many of its ships' modules land on one target: the webbers
+/// can be taken off the target without touching the plan, and a tune is set aside, not lost,
+/// while the fleet goes by its plan again.
 #[test]
-fn a_fleets_ewar_comes_from_its_ships_unless_typed() {
+fn a_fleets_ewar_comes_from_its_ships_and_each_slot_can_be_tuned() {
     let d = dataset();
     let lib = library();
     let mut a = fleet(30, vec![slot("brawler", CountRule::Fill { min: 1, max: 100 }), slot("webber", CountRule::Fixed(4))]);
     let b = fleet(30, vec![slot("kiter", CountRule::Fill { min: 1, max: 100 })]);
     let (sa, mut sb) = (stats(&d, &a, &lookup(&lib), &|_| SkillSet::all_v()), stats(&d, &b, &lookup(&lib), &|_| SkillSet::all_v()));
     assert_eq!(sa.projected, Ewar { webs: 4, painters: 0, tracking_disruptors: 0 }, "four webbers, one web each");
-    assert_eq!(ewar_of(&a, &sa), sa.projected);
     sb.slots[0].computed.mobility.max_velocity = 2000.0;
     a.range = 500.0;
     let auto = against(&d, &a, &sa, &b, &sb);
-    assert!(auto.target_velocity < 2000.0 * 0.5, "{}: the fleet's webs slow the target without being typed", auto.target_velocity);
+    assert!(auto.target_velocity < 2000.0 * 0.5, "{}: the fleet's webs slow the target", auto.target_velocity);
     a.ewar_auto = false;
-    let typed = against(&d, &a, &sa, &b, &sb);
-    assert_eq!(typed.target_velocity, 2000.0, "typed ewar, none typed: nothing on the target");
-    a.ewar.webs = 1;
-    assert_eq!(ewar_of(&a, &sa).webs, 1);
+    assert_eq!(against(&d, &a, &sa, &b, &sb).target_velocity, auto.target_velocity, "nothing tuned: the plan");
+    a.slots[1].ewar_tune = vec![(RemoteKind::Web, 0.0)];
+    assert_eq!(against(&d, &a, &sa, &b, &sb).target_velocity, 2000.0, "the webbers tuned off");
+    a.slots[1].ewar_tune = vec![(RemoteKind::Web, 1.0)];
+    let one = against(&d, &a, &sa, &b, &sb).target_velocity;
+    assert!(one < 2000.0 && one > auto.target_velocity, "{one}: one web lands, fewer than four");
+    let spread = sweep::Side { fleet: &a, stats: &sa, ammo: &[] }.ewar_on(&sweep::Side { fleet: &b, stats: &sb, ammo: &[] }, 500.0, 1, None);
+    assert!((spread.speed * 2000.0 - one).abs() < 1e-6, "the sweep reads the same tune");
+    a.ewar_auto = true;
+    assert_eq!(against(&d, &a, &sa, &b, &sb).target_velocity, auto.target_velocity, "back on the plan");
+    let json = serde_json::to_string(&a).unwrap();
+    assert_eq!(serde_json::from_str::<Fleet>(&json).unwrap(), a);
 }
 
 #[test]
