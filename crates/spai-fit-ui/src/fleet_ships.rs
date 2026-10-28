@@ -554,8 +554,11 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
             let modes = dogma.modes_of(s.ship);
             let swapped = scene.swapped.get(k).copied().unwrap_or(false);
             let title = trf!("{name} · {fit}", name = label(pos, s), fit = s.name);
-            let others = if wide { 0.0 } else { 160.0 } + if modes.is_empty() { 0.0 } else { 150.0 } + 2.0 * 30.0 + 90.0;
-            let title_w = (ui.available_width() - others).max(120.0);
+            let others = if wide { 0.0 } else { 160.0 } + if modes.is_empty() { 0.0 } else { 140.0 } + 64.0 + 96.0 + 4.0 * ui.spacing().item_spacing.x;
+            // As wide as the name, the count right behind it.
+            let font = egui::FontId::proportional(16.0);
+            let text_w = ui.painter().layout_no_wrap(title.clone(), font, ui.visuals().strong_text_color()).size().x + 4.0;
+            let title_w = text_w.min((ui.available_width() - others).max(120.0));
             ui.allocate_ui_with_layout(egui::vec2(title_w, 30.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.set_width(title_w);
                 ui.add(egui::Label::new(egui::RichText::new(&title).strong().size(16.0)).truncate()).on_hover_text(&title);
@@ -569,9 +572,6 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
                 } else {
                     st.count.insert(k, n);
                 }
-            }
-            if reset_button(ui, st.count.contains_key(&k), &trf!("The fleet's count, {n}", n = s.count)) {
-                st.count.remove(&k);
             }
             if !modes.is_empty() {
                 let flying = s.fit.mode.or(modes.first().copied());
@@ -588,9 +588,19 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui) {
                     }
                 });
             }
-            if reset_button(ui, swapped, tr!("Its fit's charges and mode again")) {
-                changes.push(Change::Reset(k));
-            }
+            // One reset for the ship, there whether or not anything is set so nothing moves.
+            let counted = st.count.contains_key(&k);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let tip = trf!("The fleet's count, {n}, and its fit's charges and mode", n = s.count);
+                let label = trf!("{icon} Reset", icon = egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE);
+                let r = ui.add_enabled(counted || swapped, egui::Button::new(label).min_size(egui::vec2(90.0, 26.0))).on_hover_text(&tip).on_disabled_hover_text(&tip);
+                if r.clicked() {
+                    st.count.remove(&k);
+                    if swapped {
+                        changes.push(Change::Reset(k));
+                    }
+                }
+            });
         });
         // What it fights: the target, how far, how fast, and whose ewar counts.
         ui.horizontal_wrapped(|ui| {
