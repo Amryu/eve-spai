@@ -76,6 +76,18 @@ pub fn request(ctx: &egui::Context, ids: &[TypeId]) {
     ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<TypeId>>(egui::Id::new(REQUEST)).extend_from_slice(ids));
 }
 
+/// An item's details asked for from a menu that cannot reach the simulator, opened next frame.
+const DETAILS: &str = "sim_details_request";
+
+/// "Details…" over "Compare" and "Compare variants", for a picker's item.
+pub fn menu_with_details(ui: &mut egui::Ui, dogma: &Dogma, type_id: TypeId) {
+    if ui.button(tr!("Details…")).clicked() {
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(DETAILS), type_id));
+        ui.close();
+    }
+    menu(ui, dogma, type_id);
+}
+
 /// "Compare" and "Compare variants" for an item's menu.
 pub fn menu(ui: &mut egui::Ui, dogma: &Dogma, type_id: TypeId) {
     if ui.button(tr!("Compare")).on_hover_text(tr!("Add it to the compare window")).clicked() {
@@ -144,6 +156,9 @@ pub fn columns(dogma: &Dogma, rows: &[TypeId], all: bool, only_diff: bool) -> Ve
 
 /// Moves what the menus asked for into the window, opening it when needed.
 fn take_requests(sim: &mut SimUi, ctx: &egui::Context) {
+    if let Some(id) = ctx.data_mut(|d| d.remove_temp::<TypeId>(egui::Id::new(DETAILS))) {
+        sim.open_details(crate::details::DetailsTarget::Type(id));
+    }
     let asked: Vec<TypeId> = ctx.data_mut(|d| d.remove_temp::<Vec<TypeId>>(egui::Id::new(REQUEST))).unwrap_or_default();
     if asked.is_empty() {
         return;

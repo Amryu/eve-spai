@@ -542,7 +542,7 @@ fn tree_rows(ui: &mut egui::Ui, dogma: &Dogma, tree: &crate::browser::Tree, take
                 cost_cells(ui, costs(dogma, id), base, false);
             }
         });
-        r.context_menu(|ui| crate::compare::menu(ui, dogma, id));
+        r.context_menu(|ui| crate::compare::menu_with_details(ui, dogma, id));
         if r.clicked() {
             *chosen = Some(id);
         }
@@ -717,6 +717,7 @@ pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
                             let w = ui.available_width();
                             crate::rows::cell(ui, w, egui::RichText::new(t.name.as_str()), "").on_hover_ui(|ui| crate::details::type_tip(ui, &dogma, id, ""));
                         });
+                        r.context_menu(|ui| crate::compare::menu_with_details(ui, &dogma, id));
                         if r.clicked() {
                             chosen = Some(id);
                         }
@@ -762,7 +763,7 @@ pub fn show_window(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
                         cost_cells(ui, row_figures(&dogma, id, subsystem), base, subsystem);
                     }
                 });
-                r.context_menu(|ui| crate::compare::menu(ui, &dogma, id));
+                r.context_menu(|ui| crate::compare::menu_with_details(ui, &dogma, id));
                 if r.clicked() {
                     chosen = Some(id);
                 }

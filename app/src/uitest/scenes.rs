@@ -10131,3 +10131,41 @@ fn uitest_a_graph_tunes_its_own_ewar_from_its_button() {
 fn uitest_screenshots_graph_tune() {
     graph_tune_harness(true, |h| harness::shot(h, "imperium_fleet_graph_tune"));
 }
+
+fn press_at(h: &egui_kittest::Harness<'_>, pos: egui::Pos2, button: egui::PointerButton) {
+    h.event(egui::Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::default() });
+    }
+}
+
+/// Over the fit, what no row takes falls to the fit itself: a right click offers the ship's
+/// details, a left click lets go of the selection; a module's menu still offers the ship's too.
+#[test]
+fn uitest_the_fit_offers_its_ship_and_lets_go_of_the_selection() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = imperium_scene_with("imperium_fit_background", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        use spai_fit::fit::Slot;
+        sim.selection = vec![(Slot::High, 0), (Slot::High, 1)];
+    });
+    let mut h = harness::build(&mut scene, false);
+    let heading = h.get_by_label("High slots").rect().center();
+    // The rack's row, not the same name in the stats beside it.
+    let module = h.get_all_by_label_contains("200mm AutoCannon").map(|n| n.rect().center()).min_by(|a, b| a.x.total_cmp(&b.x)).expect("a gun row");
+    press_at(&h, module, egui::PointerButton::Secondary);
+    h.run_steps(3);
+    assert!(h.query_by_label("2 modules").is_some(), "both guns selected to begin with");
+    assert!(h.query_by_label("Ship details…").is_some(), "a module's menu offers the ship too");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    press_at(&h, heading, egui::PointerButton::Secondary);
+    h.run_steps(3);
+    assert!(h.query_by_label("Ship details…").is_some(), "the heading's right click offers the ship");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    press_at(&h, heading, egui::PointerButton::Primary);
+    h.run_steps(3);
+    press_at(&h, module, egui::PointerButton::Secondary);
+    h.run_steps(3);
+    assert!(h.query_by_label("2 modules").is_none(), "a click on nothing let go of the selection");
+}

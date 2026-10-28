@@ -239,6 +239,20 @@ pub fn next_state(dogma: &Dogma, type_id: TypeId, state: State) -> State {
     states[(i + 1) % states.len()]
 }
 
+const SHIP_DETAILS: &str = "sim_ship_details_asked";
+
+/// The ship's details, at the foot of every menu over the fit: asked for here, opened once the
+/// frame's borrows are done.
+fn ship_details_item(ui: &mut egui::Ui, separate: bool) {
+    if separate {
+        ui.separator();
+    }
+    if ui.button(tr!("Ship details…")).clicked() {
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(SHIP_DETAILS), true));
+        ui.close();
+    }
+}
+
 pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let Some(dogma) = sim.dogma.clone() else { return };
     if !sim.has_hull() {
@@ -277,6 +291,13 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     }
     egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
         let out = egui::ScrollArea::vertical().id_salt("sim_editor").auto_shrink([false, false]).show(ui, |ui| {
+            // Behind everything on the fit, inside the scroll area so its drag does not take the
+            // clicks: what no row or button takes falls through to it.
+            let bg = ui.interact(ui.clip_rect(), egui::Id::new("sim_editor_bg"), egui::Sense::click());
+            if bg.clicked() {
+                sim.selection.clear();
+            }
+            bg.context_menu(|ui| ship_details_item(ui, false));
             ui.spacing_mut().item_spacing.y = 2.0;
             fit_tabs(sim, ui);
             ui.add_space(4.0);
@@ -288,6 +309,9 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         });
         rows::note_scrolled(ui.ctx(), &out);
     });
+    if ui.ctx().data_mut(|d| d.remove_temp::<bool>(egui::Id::new(SHIP_DETAILS))).is_some() {
+        sim.open_details(DetailsTarget::Ship);
+    }
 }
 
 /// One tab per open fit, the way the Jabber tab bar works: a click shows it, the X closes the one
@@ -400,7 +424,7 @@ fn header(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
                 pick_ship = true;
             }
             r.context_menu(|ui| {
-                if ui.button(tr!("Hull details…")).clicked() {
+                if ui.button(tr!("Ship details…")).clicked() {
                     hull_details = true;
                     ui.close();
                 }
@@ -517,6 +541,7 @@ fn variation_tabs(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
                         delete = Some(*id);
                         ui.close();
                     }
+                    ship_details_item(ui, true);
                 });
             }
         });
@@ -548,6 +573,7 @@ fn variation_tabs(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
                     edit_clicked = Some(Some(BASE_ID));
                     ui.close();
                 }
+                ship_details_item(ui, true);
             });
         }
         for (id, name, key, on) in &list {
@@ -588,6 +614,7 @@ fn variation_tabs(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
                     delete = Some(*id);
                     ui.close();
                 }
+                ship_details_item(ui, true);
             });
         }
         if recording {
@@ -785,6 +812,7 @@ fn empty_row(sim: &mut SimUi, ui: &mut egui::Ui, slot: Slot, index: u8, now_ms: 
             picker::open(sim, PickTarget::Module(slot, index));
             ui.close();
         }
+        ship_details_item(ui, true);
     });
     browser::accept_drop(sim, &r, DropTarget::Module(slot, index), now_ms);
     accept_module_drop(sim, ui, &r, slot, index, now_ms);
@@ -1198,6 +1226,7 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
             remove = true;
             ui.close();
         }
+        ship_details_item(ui, true);
     });
     browser::accept_drop(sim, &r, DropTarget::Module(slot, index), now_ms);
     if let Some(t) = details {
