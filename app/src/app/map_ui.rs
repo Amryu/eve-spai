@@ -2236,6 +2236,49 @@ impl SpaiApp {
         self.map_overlay_mode = false;
     }
 
+    /// One compact button for the kind of map the overlay shows, each kind a menu entry.
+    fn overlay_kind_button(&mut self, ui: &mut egui::Ui) {
+        use egui_phosphor::regular as icon;
+        use spai_ui::widgets::SteadySelect as _;
+        let now = overlay_kind(self.map_layout, self.map_view);
+        let glyph = |k: OverlayKind| match k {
+            OverlayKind::Flat => icon::MAP_TRIFOLD,
+            OverlayKind::Region => icon::SQUARES_FOUR,
+            OverlayKind::Space => icon::CUBE,
+            OverlayKind::Rings => icon::TARGET,
+            OverlayKind::Tree => icon::TREE_STRUCTURE,
+        };
+        let label = |k: OverlayKind| match k {
+            OverlayKind::Flat => tr!("2D, as in game"),
+            OverlayKind::Region => tr!("One region, the character's while following"),
+            OverlayKind::Space => tr!("3D, as in space"),
+            OverlayKind::Rings => tr!("Rings of jumps around you"),
+            OverlayKind::Tree => tr!("Tree of jumps from you"),
+        };
+        let mut pick = None;
+        ui.menu_button(glyph(now), |ui| {
+            for k in OverlayKind::ALL {
+                if ui.menu_label(k == now, format!("{}  {}", glyph(k), label(k))).clicked() {
+                    pick = Some(k);
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_hover_text(label(now));
+        let Some(k) = pick.filter(|k| *k != now) else { return };
+        let region = match self.map_view {
+            MapView::Region(r) => Some(r),
+            MapView::Universe => self.player_system().or(self.map_selected).and_then(|s| self.store.as_ref().and_then(|st| st.region_of_system(s))),
+        };
+        let (layout, view) = overlay_target(k, self.map_view, region);
+        self.map_layout = layout;
+        if view != self.map_view {
+            self.map_go(view);
+        }
+        self.needs_save = true;
+    }
+
     pub(crate) fn map_overlay_controls(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         use egui_phosphor::regular as icon;
         // Shown while the pointer is anywhere over the overlay, the bar itself included: the map's
@@ -2263,6 +2306,18 @@ impl SpaiApp {
                         {
                             self.map_follow = !self.map_follow;
                         }
+                        self.overlay_kind_button(ui);
+                        if self.map_layout.is_threat() {
+                            ui.add(egui::DragValue::new(&mut self.map_threat_jumps).range(1..=15).suffix(tr!(" j")))
+                                .on_hover_text(tr!("Jumps around you the rings or tree reach"));
+                            if ui
+                                .add(egui::Button::new(icon::ARROWS_LEFT_RIGHT).selected(self.threat_include_bridges))
+                                .on_hover_text(tr!("Count jump bridges"))
+                                .clicked()
+                            {
+                                self.threat_include_bridges = !self.threat_include_bridges;
+                            }
+                        }
                         ui.spacing_mut().slider_width = 80.0;
                         if ui
                             .add(egui::Slider::new(&mut self.settings.map_overlay_opacity, 0.2..=1.0).show_value(false))
@@ -2286,6 +2341,66 @@ impl SpaiApp {
                     });
                 });
             });
+    }
+}
+
+use crate::map::MapView;
+
+/// The kinds of map the overlay switches between: the map's layouts, with the flat one split into
+/// the whole map and one region.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OverlayKind {
+    Flat,
+    Region,
+    Space,
+    Rings,
+    Tree,
+}
+
+impl OverlayKind {
+    const ALL: [OverlayKind; 5] = [OverlayKind::Flat, OverlayKind::Region, OverlayKind::Space, OverlayKind::Rings, OverlayKind::Tree];
+}
+
+pub(crate) fn overlay_kind(layout: crate::map::MapLayout, view: MapView) -> OverlayKind {
+    use crate::map::MapLayout;
+    match (layout, view) {
+        (MapLayout::Spaced, MapView::Region(_)) => OverlayKind::Region,
+        (MapLayout::Spaced, MapView::Universe) => OverlayKind::Flat,
+        (MapLayout::Geographic, _) => OverlayKind::Space,
+        (MapLayout::Radial, _) => OverlayKind::Rings,
+        (MapLayout::Tree, _) => OverlayKind::Tree,
+    }
+}
+
+/// The layout and view a kind asks for. `region` is the one to show for the region kind: the one
+/// on screen, else the character's.
+pub(crate) fn overlay_target(k: OverlayKind, view: MapView, region: Option<i64>) -> (crate::map::MapLayout, MapView) {
+    use crate::map::MapLayout;
+    match k {
+        OverlayKind::Flat => (MapLayout::Spaced, MapView::Universe),
+        OverlayKind::Region => (MapLayout::Spaced, region.map_or(view, MapView::Region)),
+        OverlayKind::Space => (MapLayout::Geographic, view),
+        OverlayKind::Rings => (MapLayout::Radial, view),
+        OverlayKind::Tree => (MapLayout::Tree, view),
+    }
+}
+
+#[cfg(test)]
+mod overlay_kind_tests {
+    use super::*;
+    use crate::map::MapLayout;
+
+    #[test]
+    fn the_overlays_kinds_split_the_flat_map_into_the_whole_and_one_region() {
+        assert_eq!(overlay_kind(MapLayout::Spaced, MapView::Universe), OverlayKind::Flat);
+        assert_eq!(overlay_kind(MapLayout::Spaced, MapView::Region(7)), OverlayKind::Region);
+        assert_eq!(overlay_target(OverlayKind::Region, MapView::Universe, Some(7)), (MapLayout::Spaced, MapView::Region(7)));
+        assert_eq!(overlay_target(OverlayKind::Flat, MapView::Region(7), Some(7)), (MapLayout::Spaced, MapView::Universe));
+        assert_eq!(overlay_target(OverlayKind::Rings, MapView::Region(7), None), (MapLayout::Radial, MapView::Region(7)));
+        for k in OverlayKind::ALL {
+            let (l, v) = overlay_target(k, MapView::Universe, Some(7));
+            assert_eq!(overlay_kind(l, v), if k == OverlayKind::Flat { OverlayKind::Flat } else { k }, "{k:?} round-trips");
+        }
     }
 }
 

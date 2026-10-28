@@ -9444,6 +9444,43 @@ fn uitest_overlay_toolbar_stays_while_hovered_and_docking_leaves_overlay_mode() 
     drop(harness);
 }
 
+/// In rings or tree mode the bar carries the range and the bridge switch, and still fits a small
+/// overlay; its kind button switches the map from there.
+#[test]
+fn uitest_overlay_bar_switches_the_map_kind_and_holds_the_ranges_options() {
+    use egui_kittest::kittest::Queryable as _;
+    harness::scratch_profile();
+    let app = std::rc::Rc::new(std::cell::RefCell::new(None::<crate::app::SpaiApp>));
+    let held = app.clone();
+    let mut scene = Scene::ui("overlay_bar_rings", [520.0, 420.0], move |ui| {
+        let mut slot = held.borrow_mut();
+        let a = slot.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.map_overlay_mode = true;
+            a.map_popped = true;
+            a.map_layout = crate::map::MapLayout::Radial;
+            a
+        });
+        let rect = ui.max_rect();
+        ui.allocate_rect(rect, egui::Sense::hover());
+        a.map_overlay_controls(ui, rect);
+    });
+    let mut harness = harness::build(&mut scene, false);
+    harness.event(egui::Event::PointerMoved(egui::pos2(260.0, 300.0)));
+    harness.run_steps(3);
+    let bridges = harness.get_by_label(egui_phosphor::regular::ARROWS_LEFT_RIGHT).rect();
+    let exit = harness.get_by_label(egui_phosphor::regular::SIGN_OUT).rect();
+    assert!(exit.max.x <= 520.0 && bridges.max.x < exit.min.x, "the bar fits: {bridges:?} {exit:?}");
+    harness.get_by_label(egui_phosphor::regular::TARGET).click();
+    harness.run_steps(3);
+    harness.get_by_label_contains("2D, as in game").click();
+    harness.run_steps(3);
+    drop(harness);
+    let a = app.borrow();
+    let a = a.as_ref().unwrap();
+    assert_eq!((a.map_layout, a.map_view), (crate::map::MapLayout::Spaced, crate::map::MapView::Universe));
+}
+
 #[test]
 fn docking_the_map_leaves_overlay_mode() {
     harness::scratch_profile();
