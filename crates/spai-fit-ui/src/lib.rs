@@ -226,6 +226,8 @@ pub struct Session {
     pub save_sent: bool,
     /// The module the pilot last set: when a group limit has to put one offline, this one stays.
     touched: Option<(spai_fit::fit::Slot, u8)>,
+    /// The doctrine fit this tab is a copy of, so opening that fit again comes back to it.
+    pub origin: Option<String>,
 }
 
 /// How long a fit sits unchanged before it is saved.
@@ -238,7 +240,7 @@ impl Session {
     }
 
     pub fn new(id: String, fit: Fit) -> Self {
-        Session { id, fit, history: History::default(), rev: 0, computed_for: None, computed: None, warnings: Vec::new(), missing: Vec::new(), module_stats: Vec::new(), dirty: false, edited_at: 0, save_sent: false, touched: None }
+        Session { id, fit, history: History::default(), rev: 0, computed_for: None, computed: None, warnings: Vec::new(), missing: Vec::new(), module_stats: Vec::new(), dirty: false, edited_at: 0, save_sent: false, touched: None, origin: None }
     }
 
     fn refresh(&mut self, dogma: &Dogma, profile: usize, skills: &SkillSet, outside: &Outside, into_variation: bool) {
@@ -869,6 +871,10 @@ impl SimUi {
 
     /// Opens a copy of the doctrine as a new fit of the library.
     pub fn open_doctrine(&mut self, id: &str, now_ms: u64) {
+        let origin = format!("doctrine:{id}");
+        if self.show_origin(&origin) {
+            return;
+        }
         let Some(d) = self.doctrines.iter().find(|d| d.id == id) else { return };
         match spai_fit::doc::from_json(&d.doc.to_string()) {
             Ok(mut fit) => {
@@ -877,6 +883,7 @@ impl SimUi {
                 // A copy to look at is not a library entry; the first edit makes it one.
                 if let Some(s) = self.session_mut() {
                     s.dirty = false;
+                    s.origin = Some(origin);
                 }
             }
             Err(e) => self.status(trf!("Could not read the fit: {e}", e = e)),
@@ -974,6 +981,17 @@ impl SimUi {
         };
         fit.name = trf!("{name} (copy)", name = fit.name);
         self.open_fit(fit, now_ms);
+    }
+
+    /// Brings up the tab copied from `origin`, if one is open.
+    pub(crate) fn show_origin(&mut self, origin: &str) -> bool {
+        match self.sessions.iter().position(|s| s.origin.as_deref() == Some(origin)) {
+            Some(i) => {
+                self.activate(i);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Opens an imported fit as a new library entry.

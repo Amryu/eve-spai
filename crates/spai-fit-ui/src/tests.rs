@@ -208,6 +208,16 @@ fn doctrines_open_as_copies_and_admins_publish_the_open_fit() {
     assert_ne!(open.id, "d1", "a copy with its own id");
     assert_eq!(open.fit.modules.len(), 1);
     assert!(!open.dirty, "a copy to look at is not a library entry until it is edited");
+    let tabs = s.sessions().len();
+    s.new_fit(ids::SHIP, 5);
+    s.open_doctrine("d1", 5);
+    assert_eq!(s.sessions().len(), tabs + 1, "opening it again comes back to its tab");
+    assert_eq!(s.session().unwrap().fit.name, "Alpha Rifter");
+    let sup = Fit::new(ids::SHIP, "Supplied");
+    s.open_doctrine_fit("Fleet/f1", sup.clone(), 5);
+    s.open_doctrine_fit("Fleet/f1", sup, 5);
+    assert_eq!(s.sessions().len(), tabs + 2, "a supplied fit too");
+    s.open_doctrine("d1", 5);
     s.edit(EditKind::Other, 6, |f| f.name.push('!'));
     assert!(s.session().unwrap().dirty);
     s.handle(HostEvent::Access { signed_in: true, imperium: true, admin: true });

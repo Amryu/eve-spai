@@ -483,7 +483,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         Action::OpenFit(at, fit) => {
             let f = all[at].doctrine.fits[fit].clone();
             match &f.fit {
-                Some(inline) => sim.open_doctrine_fit(inline.clone(), now_ms),
+                Some(inline) => sim.open_doctrine_fit(&format!("{}/{}", all[at].doctrine.name, f.fit_id), inline.clone(), now_ms),
                 None if sim.session().is_some_and(|s| s.id == f.fit_id) => {}
                 None => {
                     if let Some(i) = sim.sessions().iter().position(|s| s.id == f.fit_id) {
@@ -818,10 +818,15 @@ impl SimUi {
     }
 
     /// A supplied fit opened to look at: a copy, saved to the library on its first edit.
-    pub fn open_doctrine_fit(&mut self, fit: Fit, now_ms: u64) {
+    pub fn open_doctrine_fit(&mut self, key: &str, fit: Fit, now_ms: u64) {
+        let origin = format!("supplied:{key}");
+        if self.show_origin(&origin) {
+            return;
+        }
         self.open_fit(fit, now_ms);
         if let Some(s) = self.session_mut() {
             s.dirty = false;
+            s.origin = Some(origin);
         }
     }
 
