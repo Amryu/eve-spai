@@ -3203,6 +3203,10 @@ pub(crate) fn all() -> Vec<Scene> {
         use spai_fit::test_support::ids;
         sim.compare = Some(spai_fit_ui::compare::CompareWindow { items: vec![ids::GUN, ids::WEB, ids::DC, ids::LAUNCHER, ids::CAP_BOOSTER], all: true, ..Default::default() });
     }));
+    v.push(imperium_dialog_scene("imperium_compare_by_item", [960.0, 560.0], |sim| {
+        use spai_fit::test_support::ids;
+        sim.compare = Some(spai_fit_ui::compare::CompareWindow { items: vec![ids::GUN, ids::WEB, ids::DC, ids::LAUNCHER, ids::CAP_BOOSTER], all: true, by_attribute: false, ..Default::default() });
+    }));
     v.push(imperium_dialog_scene("imperium_import", [520.0, 440.0], |sim| {
         sim.import = Some(spai_fit_ui::ImportDialog { text: "[Rifter, pasted]\nDamage Control II\nNope Module\n".into(), error: Some("Unknown: Nope Module".into()) });
     }));

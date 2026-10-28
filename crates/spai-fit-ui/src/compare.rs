@@ -15,6 +15,8 @@ const REQUEST: &str = "sim_compare_request";
 
 const NAME_W: f32 = 230.0;
 const COL_W: f32 = 104.0;
+/// An item's column when the items stand side by side: room for most of a module's name.
+const ITEM_W: f32 = 150.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompareWindow {
@@ -28,11 +30,15 @@ pub struct CompareWindow {
     pub only_diff: bool,
     /// The column sorted on, and whether highest first.
     pub sort: Option<(AttrId, bool)>,
+    /// Items side by side as columns, an attribute a row; off, an item a row.
+    pub by_attribute: bool,
+    /// Attributes left out by hand.
+    pub hidden_attrs: BTreeSet<AttrId>,
 }
 
 impl Default for CompareWindow {
     fn default() -> Self {
-        CompareWindow { items: Vec::new(), hidden_meta: BTreeSet::new(), meta_levels: (0, u8::MAX), all: false, only_diff: true, sort: None }
+        CompareWindow { items: Vec::new(), hidden_meta: BTreeSet::new(), meta_levels: (0, u8::MAX), all: false, only_diff: true, sort: None, by_attribute: true, hidden_attrs: BTreeSet::new() }
     }
 }
 
@@ -223,6 +229,42 @@ fn body(ui: &mut egui::Ui, dogma: &Dogma, w: &mut CompareWindow) {
         }
         ui.checkbox(&mut w.only_diff, tr!("Only differences"));
         ui.checkbox(&mut w.all, tr!("All attributes"));
+        ui.separator();
+        if ui.menu_label(w.by_attribute, tr!("Side by side")).on_hover_text(tr!("An item a column, an attribute a row")).clicked() {
+            w.by_attribute = true;
+        }
+        if ui.menu_label(!w.by_attribute, tr!("An item a row")).on_hover_text(tr!("An item a row, an attribute a column")).clicked() {
+            w.by_attribute = false;
+        }
+        let shown_rows = visible(dogma, w);
+        let every = columns(dogma, &shown_rows, w.all, w.only_diff);
+        let hidden = every.iter().filter(|a| w.hidden_attrs.contains(a)).count();
+        let label = if hidden > 0 { trf!("Attributes ({n} hidden)", n = hidden) } else { tr!("Attributes").to_owned() };
+        let r = ui.button(label).on_hover_text(tr!("Pick the attributes shown"));
+        egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            ui.set_min_width(240.0);
+            ui.horizontal(|ui| {
+                if ui.button(tr!("All")).clicked() {
+                    w.hidden_attrs.clear();
+                }
+                if ui.button(tr!("None")).clicked() {
+                    w.hidden_attrs.extend(every.iter().copied());
+                }
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().id_salt("sim_compare_attrs").max_height(360.0).show(ui, |ui| {
+                for a in &every {
+                    let mut on = !w.hidden_attrs.contains(a);
+                    if ui.checkbox(&mut on, label_of(dogma, *a)).changed() {
+                        if on {
+                            w.hidden_attrs.remove(a);
+                        } else {
+                            w.hidden_attrs.insert(*a);
+                        }
+                    }
+                }
+            });
+        });
         if ui.button(tr!("Clear")).clicked() {
             w.items.clear();
         }
@@ -233,77 +275,147 @@ fn body(ui: &mut egui::Ui, dogma: &Dogma, w: &mut CompareWindow) {
         ui.label(egui::RichText::new(tr!("Nothing left under these filters.")).weak());
         return;
     }
-    let cols = columns(dogma, &rows, w.all, w.only_diff);
-    let mut remove: Option<TypeId> = None;
-    egui::ScrollArea::both().id_salt("sim_compare_table").auto_shrink([false, false]).show(ui, |ui| {
-        ui.spacing_mut().item_spacing.x = crate::rows::GAP;
-        ui.horizontal(|ui| {
-            crate::rows::head_cell(ui, NAME_W, trf!("{n} items", n = rows.len()).as_str(), false);
-            for a in &cols {
-                let label = label_of(dogma, *a);
-                let arrow = match w.sort {
-                    Some((s, true)) if s == *a => egui_phosphor::regular::CARET_DOWN,
-                    Some((s, false)) if s == *a => egui_phosphor::regular::CARET_UP,
-                    _ => "",
-                };
-                let r = ui
-                    .allocate_ui_with_layout(egui::vec2(COL_W, 18.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.set_min_width(COL_W);
-                        ui.set_max_width(COL_W);
-                        ui.add(egui::Label::new(egui::RichText::new(format!("{label} {arrow}")).weak()).truncate().selectable(false).sense(egui::Sense::click()).show_tooltip_when_elided(false))
-                    })
-                    .inner
-                    .on_hover_text(trf!("{label}: click to sort", label = label));
-                if r.clicked() {
-                    w.sort = match w.sort {
-                        Some((s, true)) if s == *a => Some((*a, false)),
-                        Some((s, false)) if s == *a => None,
-                        _ => Some((*a, true)),
-                    };
+    let cols: Vec<AttrId> = columns(dogma, &rows, w.all, w.only_diff).into_iter().filter(|a| !w.hidden_attrs.contains(a)).collect();
+    // The best of each attribute, where the items differ.
+    let best: Vec<Option<f64>> = cols
+        .iter()
+        .map(|a| {
+            let high = dogma.attr(*a).is_none_or(|d| d.high_is_good);
+            let vals: Vec<f64> = rows.iter().filter_map(|id| dogma.type_(*id).and_then(|t| t.attr(*a))).map(f64::from).collect();
+            let differ = vals.iter().any(|v| (*v - vals[0]).abs() > 1e-9);
+            differ.then(|| vals.iter().copied().fold(if high { f64::MIN } else { f64::MAX }, |m, v| if high { m.max(v) } else { m.min(v) }))
+        })
+        .collect();
+    let value = |ui: &mut egui::Ui, width: f32, id: TypeId, k: usize| {
+        let a = cols[k];
+        match dogma.type_(id).and_then(|t| t.attr(a)).map(f64::from) {
+            Some(v) => {
+                let text = value_text(dogma, v, dogma.attr(a).and_then(|d| d.unit));
+                match best[k] {
+                    Some(b) if (v - b).abs() < 1e-9 => crate::rows::num_cell_colored(ui, width, text, GOOD),
+                    _ => crate::rows::num_cell(ui, width, text, false),
                 }
             }
-        });
-        // The best of each column, where the rows differ.
-        let best: Vec<Option<f64>> = cols
-            .iter()
-            .map(|a| {
-                let high = dogma.attr(*a).is_none_or(|d| d.high_is_good);
-                let vals: Vec<f64> = rows.iter().filter_map(|id| dogma.type_(*id).and_then(|t| t.attr(*a))).map(f64::from).collect();
-                let differ = vals.iter().any(|v| (*v - vals[0]).abs() > 1e-9);
-                differ.then(|| vals.iter().copied().fold(if high { f64::MIN } else { f64::MAX }, |m, v| if high { m.max(v) } else { m.min(v) }))
+            None => crate::rows::num_cell(ui, width, "-", true),
+        }
+    };
+    let mut remove: Option<TypeId> = None;
+    let mut sort_on: Option<AttrId> = None;
+    let item_menu = |ui: &mut egui::Ui, id: TypeId, remove: &mut Option<TypeId>| {
+        if ui.button(tr!("Details…")).clicked() {
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(DETAILS), id));
+            ui.close();
+        }
+        if ui.button(tr!("Remove from the comparison")).clicked() {
+            *remove = Some(id);
+            ui.close();
+        }
+    };
+    let gap = crate::rows::GAP;
+    egui::ScrollArea::both().id_salt("sim_compare_table").auto_shrink([false, false]).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+        // Laid out at the table's own width, so the scroll area scrolls across it.
+        let fixed = |ui: &mut egui::Ui, w: f32, add: &mut dyn FnMut(&mut egui::Ui) -> egui::Response| -> egui::Response {
+            ui.allocate_ui_with_layout(egui::vec2(w, crate::rows::ROW_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.set_width(w);
+                add(ui)
             })
-            .collect();
-        for id in &rows {
-            let Some(t) = dogma.type_(*id) else { continue };
-            let r = crate::rows::row(ui, "compare", ("sim_compare_row", *id), crate::rows::ROW_H, false, |ui| {
-                crate::icons::type_icon(ui, *id, 18.0);
-                let tag = meta_name(meta_of(t));
-                let name = match t.meta_level {
-                    Some(m) => format!("{}  ({tag}, {m})", t.name),
-                    None => format!("{}  ({tag})", t.name),
-                };
-                crate::rows::cell(ui, NAME_W - 18.0 - crate::rows::GAP, egui::RichText::new(&name), &name).on_hover_ui(|ui| crate::details::type_tip(ui, dogma, *id, ""));
-                for (a, b) in cols.iter().zip(&best) {
-                    match t.attr(*a).map(f64::from) {
-                        Some(v) => {
-                            let text = value_text(dogma, v, dogma.attr(*a).and_then(|d| d.unit));
-                            match b {
-                                Some(b) if (v - b).abs() < 1e-9 => crate::rows::num_cell_colored(ui, COL_W, text, GOOD),
-                                _ => crate::rows::num_cell(ui, COL_W, text, false),
-                            }
-                        }
-                        None => crate::rows::num_cell(ui, COL_W, "-", true),
+            .inner
+        };
+        let sort_arrow = |a: AttrId| match w.sort {
+            Some((s, true)) if s == a => egui_phosphor::regular::CARET_DOWN,
+            Some((s, false)) if s == a => egui_phosphor::regular::CARET_UP,
+            _ => "",
+        };
+        let item_name = |t: &spai_fit::dogma::TypeDef| {
+            let tag = meta_name(meta_of(t));
+            match t.meta_level {
+                Some(m) => format!("{}  ({tag}, {m})", t.name),
+                None => format!("{}  ({tag})", t.name),
+            }
+        };
+        if w.by_attribute {
+            let total = NAME_W + rows.len() as f32 * (ITEM_W + gap) + 8.0;
+            fixed(ui, total, &mut |ui| {
+                ui.horizontal(|ui| {
+                    crate::rows::head_cell(ui, NAME_W, trf!("{n} items", n = rows.len()).as_str(), false);
+                    for id in &rows {
+                        let Some(t) = dogma.type_(*id) else { continue };
+                        let name = item_name(t);
+                        let r = ui
+                            .allocate_ui_with_layout(egui::vec2(ITEM_W, 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.set_width(ITEM_W);
+                                ui.set_max_width(ITEM_W);
+                                crate::icons::type_icon(ui, *id, 18.0);
+                                ui.add(egui::Label::new(egui::RichText::new(&t.name).strong()).truncate().selectable(false).show_tooltip_when_elided(false));
+                            })
+                            .response
+                            .interact(egui::Sense::click());
+                        let r = r.on_hover_ui(|ui| crate::details::type_tip(ui, dogma, *id, &name));
+                        r.context_menu(|ui| item_menu(ui, *id, &mut remove));
                     }
-                }
+                })
+                .response
             });
-            r.context_menu(|ui| {
-                if ui.button(tr!("Remove from the comparison")).clicked() {
-                    remove = Some(*id);
-                    ui.close();
+            for (k, a) in cols.iter().enumerate() {
+                let label = label_of(dogma, *a);
+                let r = fixed(ui, total, &mut |ui| {
+                    crate::rows::row(ui, "compare", ("sim_compare_attr", *a), crate::rows::ROW_H, false, |ui| {
+                        crate::rows::cell(ui, NAME_W - gap, egui::RichText::new(format!("{label} {}", sort_arrow(*a))), &label);
+                        for id in &rows {
+                            value(ui, ITEM_W, *id, k);
+                        }
+                    })
+                });
+                if r.on_hover_text(trf!("{label}: click to sort the items by it", label = label)).clicked() {
+                    sort_on = Some(*a);
                 }
+            }
+        } else {
+            let total = NAME_W + cols.len() as f32 * (COL_W + gap) + 8.0;
+            fixed(ui, total, &mut |ui| {
+                ui.horizontal(|ui| {
+                    crate::rows::head_cell(ui, NAME_W, trf!("{n} items", n = rows.len()).as_str(), false);
+                    for a in &cols {
+                        let label = label_of(dogma, *a);
+                        let r = ui
+                            .allocate_ui_with_layout(egui::vec2(COL_W, 18.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.set_min_width(COL_W);
+                                ui.set_max_width(COL_W);
+                                ui.add(egui::Label::new(egui::RichText::new(format!("{label} {}", sort_arrow(*a))).weak()).truncate().selectable(false).sense(egui::Sense::click()).show_tooltip_when_elided(false))
+                            })
+                            .inner
+                            .on_hover_text(trf!("{label}: click to sort", label = label));
+                        if r.clicked() {
+                            sort_on = Some(*a);
+                        }
+                    }
+                })
+                .response
             });
+            for id in &rows {
+                let Some(t) = dogma.type_(*id) else { continue };
+                let r = fixed(ui, total, &mut |ui| {
+                    crate::rows::row(ui, "compare", ("sim_compare_row", *id), crate::rows::ROW_H, false, |ui| {
+                        crate::icons::type_icon(ui, *id, 18.0);
+                        let name = item_name(t);
+                        crate::rows::cell(ui, NAME_W - 18.0 - gap, egui::RichText::new(&name), &name).on_hover_ui(|ui| crate::details::type_tip(ui, dogma, *id, ""));
+                        for k in 0..cols.len() {
+                            value(ui, COL_W, *id, k);
+                        }
+                    })
+                });
+                r.context_menu(|ui| item_menu(ui, *id, &mut remove));
+            }
         }
     });
+    if let Some(a) = sort_on {
+        w.sort = match w.sort {
+            Some((s, true)) if s == a => Some((a, false)),
+            Some((s, false)) if s == a => None,
+            _ => Some((a, true)),
+        };
+    }
     if let Some(id) = remove {
         w.items.retain(|x| *x != id);
     }
