@@ -273,6 +273,10 @@ fn ship_details_item(ui: &mut egui::Ui, separate: bool) {
         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(SHIP_DETAILS), true));
         ui.close();
     }
+    if ui.button(tr!("Hull skills…")).on_hover_text(tr!("The skills the hull needs and its bonuses scale with")).clicked() {
+        crate::skill_profiles::ask(ui, crate::skill_profiles::SkillTarget::Ship);
+        ui.close();
+    }
 }
 
 pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
@@ -448,6 +452,10 @@ fn header(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
             r.context_menu(|ui| {
                 if ui.button(tr!("Ship details…")).clicked() {
                     hull_details = true;
+                    ui.close();
+                }
+                if ui.button(tr!("Hull skills…")).clicked() {
+                    crate::skill_profiles::ask(ui, crate::skill_profiles::SkillTarget::Ship);
                     ui.close();
                 }
             });
@@ -1232,6 +1240,10 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
         }
         if single && ui.button(tr!("Details…")).clicked() {
             details = Some(DetailsTarget::Module(slot, index));
+            ui.close();
+        }
+        if single && ui.button(tr!("Skills…")).on_hover_text(tr!("Every skill it and its charge need, and every skill that changes them")).clicked() {
+            crate::skill_profiles::ask(ui, crate::skill_profiles::SkillTarget::Module(slot, index));
             ui.close();
         }
         if let (true, Some(t)) = (single, types.first()) {

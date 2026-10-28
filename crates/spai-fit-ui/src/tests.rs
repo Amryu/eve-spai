@@ -87,14 +87,14 @@ fn profiles_change_the_numbers_and_survive_a_refresh() {
     apply(&mut s, PickTarget::Charge(Slot::High, 0), ids::AMMO, 2);
     let all_v = s.computed().unwrap().dps();
     s.handle(HostEvent::Profiles(vec![Profile { id: "c1".into(), name: "Newbro".into(), skills: SkillSet::none() }]));
-    assert_eq!(s.profiles.len(), 2);
-    s.profile = 1;
+    assert_eq!(s.profiles.len(), 3, "all V, all 0 and the character");
+    s.profile = 2;
     let newbro = s.computed().unwrap().dps();
     assert!(newbro < all_v, "{newbro} vs {all_v}");
     assert!(!s.session().unwrap().missing.is_empty());
     assert!(s.session().unwrap().warnings.iter().any(|w| matches!(w.kind, spai_fit::warnings::WarningKind::MissingSkills { .. })));
     s.handle(HostEvent::Profiles(vec![Profile { id: "c1".into(), name: "Newbro".into(), skills: SkillSet::none() }, Profile { id: "c2".into(), name: "Vet".into(), skills: SkillSet::all_v() }]));
-    assert_eq!(s.profile, 1, "the chosen profile is kept by id across a refresh");
+    assert_eq!(s.profile, 2, "the chosen profile is kept by id across a refresh");
 }
 
 #[test]
@@ -2522,3 +2522,60 @@ fn a_bursts_effect_names_each_buff_and_what_made_it_that_strong() {
     s.edit(EditKind::AddModule, 1, |f| f.modules[0].charge = None);
     assert!(crate::details::burst_rows(&s, Slot::High, 0).is_empty(), "no charge, no buffs");
 }
+
+#[test]
+fn editing_a_profile_not_ones_own_edits_a_copy_that_can_be_dropped_or_kept() {
+    use crate::skill_profiles::{is_custom, StoredProfile};
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    apply(&mut s, PickTarget::Charge(Slot::High, 0), ids::AMMO, 2);
+    let all_v = s.computed().unwrap().dps();
+    s.set_skill(ids::SKILL_SPT, 0);
+    assert!(s.temp_profile.is_some(), "all V itself is not changed");
+    assert_eq!(s.profiles[0].skills.level(ids::SKILL_SPT), 5);
+    assert_eq!(s.profile_label(), "All skills V (edited)");
+    let edited = s.computed().unwrap().dps();
+    assert!(edited < all_v, "{edited} vs {all_v}");
+    s.discard_temp_profile();
+    assert_eq!(s.computed().unwrap().dps(), all_v, "back to all V");
+
+    s.set_skill(ids::SKILL_SPT, 2);
+    s.keep_temp_profile("Gunner");
+    let i = s.profile;
+    assert!(is_custom(&s.profiles[i]) && s.profiles[i].name == "Gunner" && s.temp_profile.is_none());
+    s.set_skill(ids::SKILL_SPT, 3);
+    assert!(s.temp_profile.is_none(), "one's own profile is edited in place");
+    assert_eq!(s.profiles[i].skills.level(ids::SKILL_SPT), 3);
+
+    // Kept with the layout, and kept when the host sends its characters again.
+    let json = serde_json::to_string(&s.layout()).unwrap();
+    s.handle(HostEvent::Profiles(vec![Profile { id: "c1".into(), name: "Pilot".into(), skills: SkillSet::none() }]));
+    assert!(s.profiles.iter().any(|p| p.name == "Gunner"), "the host's list does not drop one's own");
+    let mut t = sim();
+    t.handle(HostEvent::Layout(json));
+    let back = t.profiles.iter().find(|p| p.name == "Gunner").expect("restored");
+    assert_eq!(back.skills.level(ids::SKILL_SPT), 3);
+    assert_eq!(StoredProfile::of(back).profile(), back.clone());
+    t.delete_profile(&back.id.clone());
+    assert!(!t.profiles.iter().any(|p| p.name == "Gunner"));
+}
+
+#[test]
+fn a_modules_skills_and_the_hulls_are_the_ones_that_matter_to_them() {
+    use crate::skill_profiles::{sections, SkillTarget};
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, 1);
+    let d = s.dogma.clone().unwrap();
+    let skills = |t: SkillTarget| sections(&s, &d, t, "").into_iter().flat_map(|(_, r)| r).map(|r| (r.skill, r.needed)).collect::<Vec<_>>();
+    let gun = skills(SkillTarget::Module(Slot::High, 0));
+    assert!(gun.contains(&(ids::SKILL_SPT, Some(1))), "{gun:?}");
+    assert!(!gun.iter().any(|(sk, _)| *sk == ids::SKILL_DRONES), "drones have nothing to do with it");
+    let hull = skills(SkillTarget::Ship);
+    assert!(hull.contains(&(ids::SKILL_MF, Some(1))), "{hull:?}");
+    assert!(!hull.iter().any(|(sk, _)| *sk == ids::SKILL_SPT), "not the skills the hull does not need");
+    let all = sections(&s, &d, SkillTarget::All, "cruise");
+    assert!(all.iter().flat_map(|(_, r)| r).all(|r| d.type_(r.skill).unwrap().name.to_lowercase().contains("cruise")));
+}
+

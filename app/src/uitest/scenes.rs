@@ -2823,6 +2823,21 @@ pub(crate) fn all() -> Vec<Scene> {
         sim.graph = spai_fit::graphs::GraphKind::CapacitorOverTime;
         sim.dock_graphs(true);
     }));
+    v.push(imperium_dialog_scene("imperium_module_skills", [900.0, 640.0], |sim| {
+        use spai_fit::fit::{Module, Slot, State};
+        use spai_fit::test_support::ids;
+        sim.edit(spai_fit::history::EditKind::AddModule, 1, |f| f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active)));
+        sim.set_skill(ids::SKILL_SPT, 0);
+        sim.skills_for = Some(spai_fit_ui::skill_profiles::SkillsWindow::new(spai_fit_ui::skill_profiles::SkillTarget::Module(Slot::High, 0)));
+    }));
+    v.push(imperium_dialog_scene("imperium_skill_profiles", [900.0, 640.0], |sim| {
+        use spai_fit::test_support::ids;
+        sim.add_profile("Gunnery alt with a much longer name than fits", spai_fit::skills::SkillSet::all_v());
+        sim.add_profile("Newbro", spai_fit::skills::SkillSet::none());
+        sim.profile = 0;
+        sim.set_skill(ids::SKILL_SPT, 3);
+        sim.profiles_dialog = Some(Default::default());
+    }));
     v.push(imperium_dialog_scene("imperium_graphs_effective_window", [1200.0, 700.0], |sim| {
         use spai_fit::fit::{Module, Slot, State};
         use spai_fit::test_support::ids;

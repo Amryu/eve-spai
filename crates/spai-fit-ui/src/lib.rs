@@ -38,6 +38,7 @@ pub mod offload;
 pub mod picker;
 pub mod plot;
 pub mod rows;
+pub mod skill_profiles;
 pub mod stats_panel;
 pub mod text;
 pub mod doctrine_panel;
@@ -61,6 +62,10 @@ pub struct Profile {
 impl Profile {
     pub fn all_v() -> Self {
         Profile { id: "all-v".into(), name: tr!("All skills V").to_owned(), skills: SkillSet::all_v() }
+    }
+
+    pub fn all_0() -> Self {
+        Profile { id: "all-0".into(), name: tr!("All skills 0").to_owned(), skills: SkillSet::none() }
     }
 }
 
@@ -354,6 +359,8 @@ pub struct SimLayout {
     pub fleet_graph_open: Option<bool>,
     pub fleet_graph_place: Option<u8>,
     pub fleet_graph_size: Option<f32>,
+    /// The user's own skill profiles.
+    pub custom_profiles: Option<Vec<skill_profiles::StoredProfile>>,
 }
 
 /// ESI's market price list: every type's average price across the market, public, no sign-in.
@@ -525,6 +532,11 @@ pub struct SimUi {
     /// The width the user dragged the left column to; read from egui's memory on first use.
     left_w: Option<f32>,
     pub skills_window: bool,
+    /// Skills edited on top of a profile that is not the user's own; what the fit computes with
+    /// while it is there.
+    pub temp_profile: Option<skill_profiles::TempProfile>,
+    pub skills_for: Option<skill_profiles::SkillsWindow>,
+    pub profiles_dialog: Option<skill_profiles::ProfilesDialog>,
     pub traits_window: bool,
     pub graph_window: bool,
     /// The graphs docked beside the fit, above the bottom dock, rather than in a window.
@@ -623,7 +635,7 @@ impl Default for SimUi {
             sessions: Vec::new(),
             active: 0,
             library: Vec::new(),
-            profiles: vec![Profile::all_v()],
+            profiles: vec![Profile::all_v(), Profile::all_0()],
             profile: 0,
             picker: None,
             compare: None,
@@ -652,6 +664,9 @@ impl Default for SimUi {
             prices_asked: false,
             left_w: None,
             skills_window: false,
+            temp_profile: None,
+            skills_for: None,
+            profiles_dialog: None,
             traits_window: false,
             graph_window: false,
             graph_docked: false,
@@ -760,7 +775,8 @@ impl SimUi {
             },
             HostEvent::Profiles(p) => {
                 let current = self.profiles.get(self.profile).map(|p| p.id.clone());
-                self.profiles = std::iter::once(Profile::all_v()).chain(p).collect();
+                let own: Vec<Profile> = self.profiles.iter().filter(|p| skill_profiles::is_custom(p)).cloned().collect();
+                self.profiles = [Profile::all_v(), Profile::all_0()].into_iter().chain(p).chain(own).collect();
                 self.profile = current.and_then(|id| self.profiles.iter().position(|p| p.id == id)).unwrap_or(0);
                 for s in &mut self.sessions {
                     s.computed_for = None;
@@ -931,6 +947,9 @@ impl SimUi {
 
     pub fn skills(&self) -> &SkillSet {
         static ALL_V: std::sync::OnceLock<SkillSet> = std::sync::OnceLock::new();
+        if let Some(t) = &self.temp_profile {
+            return &t.skills;
+        }
         self.profiles.get(self.profile).map_or_else(|| ALL_V.get_or_init(SkillSet::all_v), |p| &p.skills)
     }
 
@@ -1214,6 +1233,7 @@ impl SimUi {
                 GraphPlace::Right => 3,
             }),
             fleet_graph_size: self.fleet_graph_size,
+            custom_profiles: Some(self.stored_profiles()),
             grouping: Some(match self.library_state.grouping {
                 library_panel::Grouping::Hull => 0,
                 library_panel::Grouping::Tag => 1,
@@ -1225,6 +1245,9 @@ impl SimUi {
     /// Takes back a kept arrangement; what it does not say stays as it is.
     pub fn apply_layout(&mut self, json: &str) {
         let Ok(l) = serde_json::from_str::<SimLayout>(json) else { return };
+        if let Some(p) = &l.custom_profiles {
+            self.restore_profiles(p);
+        }
         if let Some(w) = l.left_w {
             self.left_w = Some(w);
         }
@@ -1757,6 +1780,9 @@ impl SimUi {
         }
         details::windows(self, ctx);
         compare::window(self, ctx);
+        skill_profiles::take_ask(self, ctx);
+        skill_profiles::skills_window(self, ctx);
+        skill_profiles::profiles_dialog(self, ctx);
         details::side_effects_window(self, ctx, now_ms);
         mutation::window(self, ctx, now_ms);
         editor::traits_window(self, ctx);
@@ -1921,15 +1947,39 @@ impl SimUi {
                 if !narrow {
                     ui.label(tr!("Skills"));
                 }
-                let name = self.profiles.get(self.profile).map_or(String::new(), |p| p.name.clone());
+                let name = self.profile_label();
                 let width = if narrow { 110.0 } else { 180.0 };
+                let was = self.profile;
+                let mut picked = false;
                 crate::combo::combo(ui, "sim_profile", width, &name, |ui| {
                     use spai_ui::widgets::SteadySelect as _;
                     for i in 0..self.profiles.len() {
+                        if i > 0 && skill_profiles::is_custom(&self.profiles[i]) && !skill_profiles::is_custom(&self.profiles[i - 1]) {
+                            ui.separator();
+                        }
                         let label = self.profiles[i].name.clone();
-                        ui.menu_value(&mut self.profile, i, label);
+                        let on = i == self.profile && self.temp_profile.is_none();
+                        if ui.menu_label(on, label).clicked() {
+                            self.profile = i;
+                            picked = true;
+                        }
                     }
                 });
+                if picked && (self.profile != was || self.temp_profile.is_some()) {
+                    self.temp_profile = None;
+                    self.skills_changed();
+                }
+                if let Some(t) = &self.temp_profile {
+                    if icon_button(ui, icon::ARROW_COUNTER_CLOCKWISE).on_hover_text(trf!("Back to {name}, dropping the edits", name = t.base_name)).clicked() {
+                        self.discard_temp_profile();
+                    }
+                }
+                if icon_button(ui, icon::USER_GEAR).on_hover_text(tr!("Skill profiles: make your own, keep edited skills")).clicked() {
+                    self.profiles_dialog = match self.profiles_dialog {
+                        Some(_) => None,
+                        None => Some(Default::default()),
+                    };
+                }
                 if icon_button(ui, icon::ARROWS_CLOCKWISE).on_hover_text(tr!("Fetch skills from EVE")).clicked() {
                     self.requests.push(HostRequest::FetchSkills);
                 }
