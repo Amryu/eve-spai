@@ -516,6 +516,7 @@ impl SpaiApp {
             self.map_initialized = true;
         }
 
+        self.map_follow &= keeps_following(self.map_focus, self.map_focus_ids.is_some(), player_sys);
         if self.map_follow {
             if let (MapView::Region(r), Some(psys)) = (self.map_view, player_sys) {
                 let pr = match self.map_follow_region {
@@ -2393,3 +2394,21 @@ fn wh_tip_line(id: i64, info: &crate::geo::SystemInfo) -> Option<String> {
 /// Room a system's hole icon takes, in icon widths: one, and a half more when blue and pink both
 /// show.
 use spai_ui::star_map::{hole_mark_slots, paint_hole_mark};
+
+/// Whether following the character survives a pending jump of the view: going to another system or
+/// group (a search, a link) lets go of it, which would otherwise pull the view straight back.
+fn keeps_following(focus: Option<i64>, fitting_group: bool, player: Option<i64>) -> bool {
+    !fitting_group && focus.is_none_or(|f| Some(f) == player)
+}
+
+#[cfg(test)]
+mod follow_tests {
+    #[test]
+    fn going_to_another_system_lets_go_of_the_character() {
+        assert!(super::keeps_following(None, false, Some(1)), "nothing pending");
+        assert!(super::keeps_following(Some(1), false, Some(1)), "going to where the character is");
+        assert!(!super::keeps_following(Some(2), false, Some(1)), "a searched system");
+        assert!(!super::keeps_following(None, true, Some(1)), "a searched region");
+        assert!(!super::keeps_following(Some(2), false, None));
+    }
+}
