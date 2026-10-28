@@ -145,11 +145,15 @@ impl Plot {
         if strip_h > 0.0 {
             zoom = self.overview(ui, strip, zoom_id, zoom, (full_min, full_max));
         }
-        // On the plot: Ctrl+wheel or a pinch zooms about the pointer, a drag pans, a double click
+        // On the plot: the wheel or a pinch zooms about the pointer, a drag pans, a double click
         // shows it all.
         let span = full_max - full_min;
         if let Some(p) = response.hover_pos() {
-            let z = ui.input(|i| i.zoom_delta());
+            // Taken, so a scroll area around the graph stays put.
+            let z = ui.input_mut(|i| {
+                let wheel = std::mem::take(&mut i.smooth_scroll_delta);
+                i.zoom_delta() * ((wheel.x + wheel.y) * 0.004).exp()
+            });
             if (z - 1.0).abs() > 1e-3 {
                 let at = zoom.0 + ((p.x - rect.min.x - 58.0) / (rect.width() - 68.0)).clamp(0.0, 1.0) as f64 * (zoom.1 - zoom.0);
                 let w = ((zoom.1 - zoom.0) / f64::from(z)).clamp(MIN_ZOOM, 1.0);
@@ -425,7 +429,7 @@ impl Plot {
                 let near_edge = (p.x - window.min.x).abs() <= 6.0 || (p.x - window.max.x).abs() <= 6.0;
                 ui.ctx().set_cursor_icon(if near_edge { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::Grab });
             }
-            response.on_hover_text(spai_ui::tr!("Drag the frame to move what the graph shows, its edges to zoom; Ctrl+wheel on the graph zooms too, a double click shows it all."));
+            response.on_hover_text(spai_ui::tr!("Drag the frame to move what the graph shows, its edges to zoom; the wheel on the graph zooms too, a double click shows it all."));
         }
         zoom
     }
@@ -522,5 +526,28 @@ mod tests {
         frame(&ctx, vec![]);
         let shown = ctx.data(|d| d.get_temp::<f64>(egui::Id::new(LAST_SPAN)));
         assert_eq!(shown, Some(1.0), "a double click shows it all");
+    }
+
+    /// The wheel over the graph zooms in, about the pointer; turned back it zooms out again.
+    #[test]
+    fn the_wheel_over_the_graph_zooms() {
+        let ctx = egui::Context::default();
+        frame(&ctx, vec![]);
+        let rect = last_rect(&ctx).expect("drawn");
+        let at = Pos2::new(rect.center().x, rect.min.y + 60.0);
+        let wheel = |y: f32| egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: Vec2::new(0.0, y), phase: egui::TouchPhase::Move, modifiers: Default::default() };
+        frame(&ctx, vec![egui::Event::PointerMoved(at)]);
+        frame(&ctx, vec![wheel(120.0)]);
+        for _ in 0..30 {
+            frame(&ctx, vec![]);
+        }
+        let shown = ctx.data(|d| d.get_temp::<f64>(egui::Id::new(LAST_SPAN)));
+        assert!(shown.is_some_and(|w| w < 0.9), "zoomed in: {shown:?}");
+        frame(&ctx, vec![wheel(-400.0)]);
+        for _ in 0..30 {
+            frame(&ctx, vec![]);
+        }
+        let shown = ctx.data(|d| d.get_temp::<f64>(egui::Id::new(LAST_SPAN)));
+        assert_eq!(shown, Some(1.0), "zoomed back out");
     }
 }

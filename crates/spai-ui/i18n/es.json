@@ -763,7 +763,7 @@
   "Drag fighter squadrons here.": "Arrastra escuadrones de cazas aquí.",
   "Drag from one system to another on the map, or right-click a system to start a route.": "Arrastra de un sistema a otro en el mapa, o clic derecho en un sistema para iniciar una ruta.",
   "Drag onto another squad to move this pilot.": "Arrastra a otro escuadrón para mover a este piloto.",
-  "Drag the frame to move what the graph shows, its edges to zoom; Ctrl+wheel on the graph zooms too, a double click shows it all.": "Arrastra el marco para mover lo que muestra el gráfico y sus bordes para hacer zoom; Ctrl+rueda sobre el gráfico también hace zoom, un doble clic lo muestra todo.",
+  "Drag the frame to move what the graph shows, its edges to zoom; the wheel on the graph zooms too, a double click shows it all.": "Arrastra el marco para mover lo que muestra el gráfico y sus bordes para hacer zoom; la rueda sobre el gráfico también hace zoom, un doble clic lo muestra todo.",
   "Drag to another slot to move it, with Shift to copy it": "Arrastra a otro slot para moverlo, con Mayús para copiarlo",
   "Drag to move the overlay": "Arrastra para mover la superposición",
   "Drag to move this tile": "Arrastra para mover este panel",
