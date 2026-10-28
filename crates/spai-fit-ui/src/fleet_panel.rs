@@ -818,6 +818,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
     refit_keys.dedup();
     let boosting = sim.boosting_fits();
     let mut want_all_docs = false;
+    let mut add_ship = false;
     let enemy_doctrines: Vec<String> = sim.doctrine_groups_of(Some(crate::DoctrineSide::Enemy)).into_iter().map(|(g, _)| g).collect();
     // Each fit's variations, to fly a slot with one of them.
     let variations: HashMap<String, Vec<(u32, String)>> = sim.fit_docs.iter().map(|(id, f)| (id.clone(), f.variations.iter().map(|v| (v.id, v.full_name())).collect())).collect();
@@ -996,8 +997,7 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
                 changed = true;
             }
             if ui.small_button(trf!("{icon} Add ship", icon = icon::PLUS)).clicked() {
-                f.slots.push(FleetSlot { rule: if f.slots.is_empty() { CountRule::Fill { min: 0, max: 1000 } } else { CountRule::Fixed(1) }, ..FleetSlot::default() });
-                changed = true;
+                add_ship = true;
             }
             }),
             1 => card(ui, tr!("Boosters"), |ui| {
@@ -1257,6 +1257,9 @@ pub fn editor(sim: &mut SimUi, ui: &mut egui::Ui, _now_ms: u64) {
     crate::rows::note_scrolled(ui.ctx(), &out);
     if changed {
         session.dirty = true;
+    }
+    if add_ship {
+        sim.add_ship = Some(crate::library_panel::LibraryState::default());
     }
     if want_all_docs {
         let all: Vec<String> = sim.library.iter().map(|x| x.id.clone()).chain(sim.doctrines.iter().map(|d| d.id.clone())).collect();
@@ -1720,6 +1723,70 @@ fn fleet_card(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, s: &FleetStats, names:
 /// generic booster on a hull with its skills, mindlink and charges. (changed, wants every fit's
 /// document to look through).
 #[allow(clippy::too_many_arguments)]
+/// The fits a fleet can fly, as the dialog lists them: the library's, the doctrine presets and
+/// the supplied doctrines' fits.
+pub(crate) fn fleet_fit_entries(sim: &SimUi) -> Vec<crate::library_panel::Entry> {
+    let mut all = crate::library_panel::entries(sim);
+    for s in &sim.supplied {
+        for f in &s.doctrine.fits {
+            if let Some(fit) = &f.fit {
+                all.push(crate::library_panel::Entry { id: f.fit_id.clone(), name: fit.name.clone(), ship: fit.ship, tags: vec![s.doctrine.name.clone()], doctrine: Some(s.side) });
+            }
+        }
+    }
+    all
+}
+
+/// The doctrines the open fleet flies fits of, each with all its fits: offered before the rest.
+pub(crate) fn fleet_doctrines(sim: &SimUi, all: &[crate::library_panel::Entry]) -> Vec<(String, Vec<crate::library_panel::Entry>)> {
+    let Some(f) = sim.fleet.as_ref() else { return Vec::new() };
+    let flown = |id: &str| f.fleet.slots.iter().any(|s| s.fit_id == id);
+    let doctrines = sim.supplied.iter().map(|s| &s.doctrine).chain(sim.own_doctrines.iter());
+    let mut out: Vec<(String, Vec<crate::library_panel::Entry>)> = Vec::new();
+    for d in doctrines.filter(|d| d.fits.iter().any(|x| flown(&x.fit_id))) {
+        let fits: Vec<crate::library_panel::Entry> = d.fits.iter().filter_map(|x| all.iter().find(|e| e.id == x.fit_id).cloned()).collect();
+        if !fits.is_empty() && !out.iter().any(|(t, _)| *t == d.name) {
+            out.push((d.name.clone(), fits));
+        }
+    }
+    out
+}
+
+/// The dialog that adds a ship to the open fleet: the fits of the doctrines it flies first, then
+/// every fit by hull, tag or name.
+pub fn add_ship_dialog(sim: &mut SimUi, ctx: &egui::Context) {
+    if sim.add_ship.is_none() {
+        return;
+    }
+    if sim.fleet.is_none() {
+        sim.add_ship = None;
+        return;
+    }
+    let all = fleet_fit_entries(sim);
+    let first: Vec<(String, Vec<crate::library_panel::Entry>)> = fleet_doctrines(sim, &all).into_iter().map(|(name, fits)| (trf!("Doctrine: {name}", name = name), fits)).collect();
+    let dogma = sim.dogma.clone();
+    let mut open = true;
+    let mut chosen: Option<String> = None;
+    let state = sim.add_ship.as_mut().expect("checked above");
+    let size = egui::vec2(440.0, 520.0);
+    egui::Window::new(tr!("Add a ship")).id(egui::Id::new("sim_add_ship")).open(&mut open).collapsible(false).resizable(true).default_size(size).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
+        let empty = if all.is_empty() { tr!("No saved fits yet.") } else { tr!("Nothing matches.") };
+        chosen = crate::library_panel::pick_list(ui, "add_ship", state, &all, &first, dogma.as_deref(), empty);
+    });
+    if let Some(id) = chosen {
+        if let Some(f) = sim.fleet.as_mut() {
+            let rule = if f.fleet.slots.is_empty() { CountRule::Fill { min: 0, max: 1000 } } else { CountRule::Fixed(1) };
+            f.fleet.slots.push(FleetSlot { fit_id: id.clone(), rule, ..FleetSlot::default() });
+            f.dirty = true;
+        }
+        sim.want_fit_docs(std::iter::once(id));
+        open = false;
+    }
+    if !open {
+        sim.add_ship = None;
+    }
+}
+
 pub(crate) fn boosters_ui(ui: &mut egui::Ui, boosters: &mut Vec<(BurstKind, String)>, shortcuts: &mut Vec<spai_fit::fit::BoostShortcut>, boosting: &[(BurstKind, Vec<(String, String)>)], dogma: Option<&Arc<spai_fit::Dogma>>, library: &[FitSummary], doctrine_fits: &[(String, String)], salt: &str) -> (bool, bool) {
     let mut changed = false;
     let mut want_all_docs = false;
@@ -1744,14 +1811,13 @@ pub(crate) fn boosters_ui(ui: &mut egui::Ui, boosters: &mut Vec<(BurstKind, Stri
                         if ui.menu_label(current.is_none() && shortcut.is_none(), tr!("none")).clicked() {
                             pick = Some(None);
                         }
-                        for (id, n) in fits {
-                            if ui.menu_label(current.as_deref() == Some(id.as_str()), n.clone()).clicked() {
+                        // Generic boosters only, simpler to pick from; a fit set before stays offered.
+                        if let Some((id, n)) = fits.iter().find(|(id, _)| current.as_deref() == Some(id.as_str())) {
+                            if ui.menu_label(true, n.clone()).clicked() {
                                 pick = Some(Some(Ok(id.clone())));
                             }
                         }
                         if let Some(d) = dogma {
-                            ui.separator();
-                            ui.label(egui::RichText::new(tr!("Booster, in no slot")).weak());
                             let on_hull = |h: Option<spai_fit::ids::TypeId>| shortcut.is_some_and(|i| shortcuts[i].hull == h);
                             if ui.menu_label(on_hull(None), tr!("A hull without burst bonuses")).clicked() {
                                 pick = Some(Some(Err(None)));

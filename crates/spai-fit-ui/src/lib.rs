@@ -500,6 +500,8 @@ pub struct SimUi {
     pub library_state: library_panel::LibraryState,
     /// The window that picks a fit to project, with its own grouping and search.
     pub project_picker: Option<library_panel::LibraryState>,
+    /// The dialog that adds a ship to the open fleet.
+    pub add_ship: Option<library_panel::LibraryState>,
     pub dock: dock::DockState,
     pub warnings_expanded: bool,
     /// The modules picked in the racks, for a menu that acts on all of them at once.
@@ -636,6 +638,7 @@ impl Default for SimUi {
             browser: browser::Browser::default(),
             library_state: Default::default(),
             project_picker: None,
+            add_ship: None,
             dock: dock::DockState::default(),
             warnings_expanded: false,
             selection: Vec::new(),
@@ -1758,6 +1761,9 @@ impl SimUi {
         mutation::window(self, ctx, now_ms);
         editor::traits_window(self, ctx);
         library_panel::project_picker(self, ctx, now_ms);
+        if self.mode == Mode::Fleets {
+            fleet_panel::add_ship_dialog(self, ctx);
+        }
         self.import_ask_window(ctx, now_ms);
         self.confirm_delete_window(ctx);
         rows::drag_ghost(ctx);

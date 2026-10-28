@@ -646,10 +646,11 @@ fn fits_group_by_hull_or_tag_with_the_doctrines_among_them() {
     let all = entries(&s);
     assert_eq!(all.len(), 3, "the doctrine sits among the fits");
     assert!(all.iter().any(|e| e.doctrine.is_some() && e.tags.iter().any(|t| t.contains("doctrine"))), "pre-tagged as a doctrine");
-    let name = |_t: u32| "Rifter".to_owned();
+    let name = |_t: u32| crate::library_panel::HullPath { class: (0, "Frigate".into()), group: "Frigate".into(), hull: "Rifter".into() };
     let none = std::collections::BTreeSet::new();
     let by_hull = lines(&all, &name, Grouping::Hull, "", &none);
-    assert!(matches!(&by_hull[0], Line::Group { n: 3, .. }), "one hull, three fits");
+    assert!(matches!(&by_hull[0], Line::Group { n: 3, depth: 0, .. }), "one class, three fits");
+    assert!(matches!(&by_hull[2], Line::Group { n: 3, depth: 2, title, .. } if title == "Rifter"), "then its group, then the hull");
     let by_tag = lines(&all, &name, Grouping::Tag, "", &none);
     let alpha = by_tag.iter().find_map(|l| match l { Line::Group { title, n, .. } if title == "Alpha" => Some(*n), _ => None });
     assert_eq!(alpha, Some(2), "a fit and a doctrine both tagged Alpha");
@@ -658,7 +659,9 @@ fn fits_group_by_hull_or_tag_with_the_doctrines_among_them() {
     assert_eq!(found.len(), 1, "the search reads tags as well as names");
     let mut shut = std::collections::BTreeSet::new();
     shut.insert(format!("hull:{}", ids::SHIP));
-    assert_eq!(lines(&all, &name, Grouping::Hull, "", &shut).len(), 1, "a folded group shows its header only");
+    assert_eq!(lines(&all, &name, Grouping::Hull, "", &shut).len(), 3, "a folded hull shows its header only, under its class and group");
+    shut.insert("class:0".into());
+    assert_eq!(lines(&all, &name, Grouping::Hull, "", &shut).len(), 1, "a folded class hides all under it");
     assert_eq!(parse_tags(" kiting, Alpha ,alpha,, "), vec!["kiting".to_owned(), "Alpha".to_owned()]);
     s.set_fit_tags("a", vec!["solo".into()], 9);
     assert!(matches!(s.take_requests().iter().find(|r| matches!(r, HostRequest::SaveFit { .. })), Some(HostRequest::SaveFit { id, doc, .. }) if id == "a" && doc.contains("solo")));
@@ -1936,6 +1939,23 @@ fn supplied_sim() -> SimUi {
     s
 }
 
+/// Adding a ship offers every fit, supplied ones too, and the doctrine the fleet already flies
+/// first; a fleet of no doctrine's fits has none to put first.
+#[test]
+fn adding_a_ship_puts_the_fleets_own_doctrine_first() {
+    let mut s = supplied_sim();
+    let rifters = s.supplied.iter().find(|x| x.doctrine.name == "Rifters").unwrap().doctrine.clone();
+    s.new_fleet(1);
+    let all = crate::fleet_panel::fleet_fit_entries(&s);
+    assert!(rifters.fits.iter().all(|f| all.iter().any(|e| e.id == f.fit_id)), "the supplied fits are offered");
+    assert!(crate::fleet_panel::fleet_doctrines(&s, &all).is_empty(), "an empty fleet flies no doctrine");
+    s.fleet.as_mut().unwrap().fleet.slots.push(spai_fit::fleet::FleetSlot { fit_id: rifters.fits[0].fit_id.clone(), ..Default::default() });
+    let first = crate::fleet_panel::fleet_doctrines(&s, &all);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].0, "Rifters");
+    assert_eq!(first[0].1.len(), rifters.fits.iter().filter(|f| f.fit.is_some()).count(), "all of its fits");
+}
+
 #[test]
 fn the_server_list_reads_into_supplied_doctrines_and_their_fits_reach_the_fleet_screen() {
     let d = supplied_doctrine("gsf-1", "Goonswarm Federation", "Strategic", "Rifters");
@@ -2256,6 +2276,32 @@ fn a_tuned_ship_redoes_the_fight_and_a_graphs_tune_keeps_to_the_graph() {
     }
     assert!(own.is_some(), "the graph's own analysis came in");
     assert!(Arc::ptr_eq(&s.fleet_analysis().unwrap(), &tuned), "the fleet's stays as it was");
+}
+
+/// The Hull tree goes class by size, then group with the class's own first, then hull, then fit.
+#[test]
+fn the_hull_tree_goes_by_class_group_hull_and_fit() {
+    use crate::library_panel::{lines, Entry, Grouping, HullPath, Line};
+    let path = |t: u32| match t {
+        1 => HullPath { class: (0, "Frigate".into()), group: "Interceptor".into(), hull: "Taranis".into() },
+        2 => HullPath { class: (0, "Frigate".into()), group: "Frigate".into(), hull: "Rifter".into() },
+        3 => HullPath { class: (2, "Cruiser".into()), group: "Logistics".into(), hull: "Scimitar".into() },
+        _ => HullPath { class: (0, "Frigate".into()), group: "Interceptor".into(), hull: "Malediction".into() },
+    };
+    let fit = |id: &str, name: &str, ship: u32| Entry { id: id.into(), name: name.into(), ship, tags: Vec::new(), doctrine: None };
+    let all = vec![fit("a", "Logi", 3), fit("b", "Zeta tackle", 1), fit("c", "Alpha tackle", 1), fit("d", "Brawl", 2), fit("e", "Fast", 4)];
+    let shown: Vec<String> = lines(&all, &path, Grouping::Hull, "", &Default::default())
+        .iter()
+        .map(|l| match l {
+            Line::Group { title, depth, .. } => format!("{}{title}", "  ".repeat(usize::from(*depth))),
+            Line::Fit(e) => format!("      {}", e.name),
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        ["Frigate", "  Frigate", "    Rifter", "      Brawl", "  Interceptor", "    Malediction", "      Fast", "    Taranis", "      Alpha tackle", "      Zeta tackle", "Cruiser", "  Logistics", "    Scimitar", "      Logi"]
+    );
+    assert_eq!(lines(&all, &path, Grouping::Flat, "intercep", &Default::default()).len(), 3, "the search reads the hull's group");
 }
 
 /// A worker in the test's own thread, every request and reply put through the bytes a web

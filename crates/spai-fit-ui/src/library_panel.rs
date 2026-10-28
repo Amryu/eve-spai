@@ -42,11 +42,79 @@ pub struct Entry {
     pub doctrine: Option<DoctrineSide>,
 }
 
-/// One line of the list: a group header or a fit under it.
+/// One line of the list: a group header, `depth` levels in, or a fit under it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Line {
-    Group { key: String, title: String, n: usize },
+    Group { key: String, title: String, n: usize, depth: u8 },
     Fit(Entry),
+}
+
+/// Where a hull sits in the Hull tree: its class (by size, then its name), its group, its name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HullPath {
+    pub class: (u8, String),
+    pub group: String,
+    pub hull: String,
+}
+
+/// The class a hull's size puts it in, its group (Interceptor, Logistics) and its name.
+pub fn hull_path(dogma: Option<&spai_fit::Dogma>, t: TypeId) -> HullPath {
+    use spai_fit::fleet::HullClass as C;
+    let Some(d) = dogma else { return HullPath { class: (u8::MAX, String::new()), group: String::new(), hull: trf!("Type {id}", id = t) } };
+    let hull = d.type_(t).map_or_else(|| trf!("Type {id}", id = t), |x| x.name.clone());
+    let group = d.type_(t).and_then(|x| d.group(x.group)).map_or_else(String::new, |g| g.name.clone());
+    let class = spai_fit::fleet::hull_class(d, t);
+    let name = match class {
+        C::Frigate => tr!("Frigate"),
+        C::Destroyer => tr!("Destroyer"),
+        C::Cruiser => tr!("Cruiser"),
+        C::Battlecruiser => tr!("Battlecruiser"),
+        C::Battleship => tr!("Battleship"),
+        C::Capital => tr!("Capital"),
+        C::Industrial => tr!("Industrial and other"),
+    };
+    HullPath { class: (class as u8, name.to_owned()), group, hull }
+}
+
+/// The Hull tree: class, group, hull, then the fits, each level by name; a class's own group
+/// (Frigate among the frigates) first. Folded headers hide what is under them.
+fn hull_tree(list: &[&Entry], hull: &dyn Fn(TypeId) -> HullPath, folded: &BTreeSet<String>) -> Vec<Line> {
+    let mut rows: Vec<(HullPath, &Entry)> = list.iter().map(|e| (hull(e.ship), *e)).collect();
+    let group_key = |p: &HullPath| (p.group.to_lowercase() != p.class.1.to_lowercase(), p.group.to_lowercase());
+    rows.sort_by(|(a, x), (b, y)| (a.class.0, group_key(a), a.hull.to_lowercase(), x.doctrine.is_some(), x.name.to_lowercase()).cmp(&(b.class.0, group_key(b), b.hull.to_lowercase(), y.doctrine.is_some(), y.name.to_lowercase())));
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < rows.len() {
+        let class = rows[i].0.class.clone();
+        let in_class = rows[i..].iter().take_while(|(p, _)| p.class == class).count();
+        let key = format!("class:{}", class.0);
+        out.push(Line::Group { key: key.clone(), title: class.1.clone(), n: in_class, depth: 0 });
+        let class_shut = folded.contains(&key);
+        let end = i + in_class;
+        while i < end {
+            let group = rows[i].0.group.clone();
+            let in_group = rows[i..end].iter().take_while(|(p, _)| p.group == group).count();
+            let gkey = format!("group:{}:{}", class.0, group.to_lowercase());
+            let group_end = i + in_group;
+            if !class_shut {
+                out.push(Line::Group { key: gkey.clone(), title: group.clone(), n: in_group, depth: 1 });
+            }
+            let group_shut = class_shut || folded.contains(&gkey);
+            while i < group_end {
+                let ship = rows[i].1.ship;
+                let in_hull = rows[i..group_end].iter().take_while(|(_, e)| e.ship == ship).count();
+                let hkey = format!("hull:{ship}");
+                if !group_shut {
+                    out.push(Line::Group { key: hkey.clone(), title: rows[i].0.hull.clone(), n: in_hull, depth: 2 });
+                    if !folded.contains(&hkey) {
+                        out.extend(rows[i..i + in_hull].iter().map(|(_, e)| Line::Fit((*e).clone())));
+                    }
+                }
+                i += in_hull;
+            }
+        }
+    }
+    out
 }
 
 /// The library's fits and the doctrine presets as one list. A preset carries its own tags and
@@ -68,14 +136,20 @@ pub fn entries(sim: &SimUi) -> Vec<Entry> {
     out
 }
 
-/// The list as shown: filtered by the query (name, hull or tag), grouped, folded groups shut.
-pub fn lines(entries: &[Entry], hull_name: &dyn Fn(TypeId) -> String, grouping: Grouping, query: &str, folded: &BTreeSet<String>) -> Vec<Line> {
+/// The list as shown: filtered by the query (name, hull, its group or a tag), grouped, folded
+/// groups shut.
+pub fn lines(entries: &[Entry], hull: &dyn Fn(TypeId) -> HullPath, grouping: Grouping, query: &str, folded: &BTreeSet<String>) -> Vec<Line> {
     let q = query.trim().to_lowercase();
-    let hit = |e: &Entry| q.is_empty() || e.name.to_lowercase().contains(&q) || hull_name(e.ship).to_lowercase().contains(&q) || e.tags.iter().any(|t| t.to_lowercase().contains(&q));
+    let hit = |e: &Entry| {
+        let p = hull(e.ship);
+        q.is_empty() || e.name.to_lowercase().contains(&q) || p.hull.to_lowercase().contains(&q) || p.group.to_lowercase().contains(&q) || e.tags.iter().any(|t| t.to_lowercase().contains(&q))
+    };
     let mut list: Vec<&Entry> = entries.iter().filter(|e| hit(e)).collect();
     list.sort_by_key(|e| (e.doctrine.is_some(), e.name.to_lowercase()));
-    if grouping == Grouping::Flat {
-        return list.into_iter().cloned().map(Line::Fit).collect();
+    match grouping {
+        Grouping::Flat => return list.into_iter().cloned().map(Line::Fit).collect(),
+        Grouping::Hull => return hull_tree(&list, hull, folded),
+        Grouping::Tag => {}
     }
     let mut groups: Vec<(String, String, Vec<Entry>)> = Vec::new();
     let mut put = |key: String, title: String, e: &Entry| match groups.iter_mut().find(|(k, _, _)| *k == key) {
@@ -83,16 +157,11 @@ pub fn lines(entries: &[Entry], hull_name: &dyn Fn(TypeId) -> String, grouping: 
         None => groups.push((key, title, vec![e.clone()])),
     };
     for e in &list {
-        match grouping {
-            Grouping::Hull => put(format!("hull:{}", e.ship), hull_name(e.ship), e),
-            _ => {
-                if e.tags.is_empty() {
-                    put("tag:".into(), tr!("No tag").to_owned(), e);
-                }
-                for t in &e.tags {
-                    put(format!("tag:{}", t.to_lowercase()), t.clone(), e);
-                }
-            }
+        if e.tags.is_empty() {
+            put("tag:".into(), tr!("No tag").to_owned(), e);
+        }
+        for t in &e.tags {
+            put(format!("tag:{}", t.to_lowercase()), t.clone(), e);
         }
     }
     // Groups by title, the untagged last.
@@ -100,13 +169,25 @@ pub fn lines(entries: &[Entry], hull_name: &dyn Fn(TypeId) -> String, grouping: 
     let mut out = Vec::new();
     for (key, title, fits) in groups {
         let shut = folded.contains(&key);
-        out.push(Line::Group { key, title, n: fits.len() });
+        out.push(Line::Group { key, title, n: fits.len(), depth: 0 });
         if !shut {
             out.extend(fits.into_iter().map(Line::Fit));
         }
     }
     out
 }
+
+/// How far in a fit's row starts under `grouping`: past its headers.
+pub fn fit_indent(grouping: Grouping) -> f32 {
+    match grouping {
+        Grouping::Flat => 0.0,
+        Grouping::Tag => GROUP_INDENT,
+        Grouping::Hull => 3.0 * GROUP_INDENT,
+    }
+}
+
+/// Each level of the tree's step in.
+pub const GROUP_INDENT: f32 = 10.0;
 
 /// Tags as typed: split at commas, trimmed, empty and repeated ones dropped.
 pub fn parse_tags(text: &str) -> Vec<String> {
@@ -166,15 +247,16 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let dirty = sim.session().is_some_and(|s| s.dirty);
     let all = entries(sim);
     let dogma = sim.dogma.clone();
-    let hull_name = |t: TypeId| dogma.as_ref().and_then(|d| d.type_(t)).map_or_else(|| trf!("Type {id}", id = t), |d| d.name.clone());
-    let shown = lines(&all, &hull_name, sim.library_state.grouping, &sim.library_state.query, &sim.library_state.folded);
+    let hull = |t: TypeId| hull_path(dogma.as_deref(), t);
+    let hull_name = |t: TypeId| hull(t).hull;
+    let shown = lines(&all, &hull, sim.library_state.grouping, &sim.library_state.query, &sim.library_state.folded);
     let mut load: Option<String> = None;
     let mut open_doctrine: Option<String> = None;
     let mut delete: Option<(String, String, bool)> = None;
     let mut toggle: Option<String> = None;
     let mut edit_tags: Option<(String, Vec<String>)> = None;
     let mut copy: Option<String> = None;
-    let indent = if sim.library_state.grouping == Grouping::Flat { 0.0 } else { 12.0 };
+    let indent = fit_indent(sim.library_state.grouping);
     let folded = sim.library_state.folded.clone();
     // A search with no fit to show offers a new fit of each hull it names.
     let hulls: Vec<(TypeId, String)> = if shown.is_empty() && sim.library_state.grouping == Grouping::Hull { hulls_matching(sim, &sim.library_state.query) } else { Vec::new() };
@@ -199,9 +281,10 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         }
         for line in shown.iter().skip(range.start).take(range.end - range.start) {
             match line {
-                Line::Group { key, title, n } => {
+                Line::Group { key, title, n, depth } => {
                     let shut = folded.contains(key);
                     let r = rows::row(ui, "fits", ("sim_lib_group", key), ROW_H, false, |ui| {
+                        ui.add_space(f32::from(*depth) * GROUP_INDENT);
                         ui.add(egui::Label::new(if shut { icon::CARET_RIGHT } else { icon::CARET_DOWN }).selectable(false));
                         let w = ui.available_width();
                         rows::cell(ui, w, egui::RichText::new(format!("{title}  ({n})")).strong(), "");
@@ -297,7 +380,6 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
 /// The window that picks a fit to project onto the one on screen: only fits that act on others,
 /// grouped and searchable like the Fits tab.
 pub fn project_picker(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
-    use spai_ui::widgets::SteadySelect as _;
     if sim.project_picker.is_none() {
         return;
     }
@@ -311,67 +393,15 @@ pub fn project_picker(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
         }
     }
     all.retain(|e| outside.fit(&e.id).is_some_and(|f| spai_fit::projection::acts_on_others(&dogma, f)));
-    let hull_name = |t: TypeId| dogma.type_(t).map_or_else(|| trf!("Type {id}", id = t), |d| d.name.clone());
     let mut open = true;
     let mut chosen: Option<String> = None;
-    let mut toggle: Option<String> = None;
     let state = sim.project_picker.as_mut().expect("checked above");
-    let shown = lines(&all, &hull_name, state.grouping, &state.query, &state.folded);
     let size = egui::vec2(420.0, 480.0);
     egui::Window::new(tr!("Project a fit")).id(egui::Id::new("sim_project_picker")).open(&mut open).collapsible(false).resizable(true).default_size(size).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
         ui.label(egui::RichText::new(tr!("Fits whose remote modules, drones, command bursts or phenomena generator act on others.")).weak());
-        ui.horizontal(|ui| {
-            let w = egui::vec2(((ui.available_width() - 2.0 * ui.spacing().item_spacing.x) / 3.0).max(40.0), 22.0);
-            for (g, label) in [(Grouping::Hull, tr!("Hull")), (Grouping::Tag, tr!("Tag")), (Grouping::Flat, tr!("A–Z"))] {
-                if ui.menu_label_sized(w, state.grouping == g, label).clicked() {
-                    state.grouping = g;
-                }
-            }
-        });
-        ui.add_sized([ui.available_width(), 22.0], egui::TextEdit::singleline(&mut state.query).hint_text(trf!("{icon} Name, hull or tag", icon = icon::MAGNIFYING_GLASS)));
-        ui.add_space(2.0);
-        egui::ScrollArea::vertical().id_salt("sim_project_list").auto_shrink([false, false]).show_rows(ui, ROW_H, shown.len().max(1), |ui, range| {
-            if shown.is_empty() {
-                ui.label(egui::RichText::new(if all.is_empty() { tr!("No fit acts on others yet: give one a web, a rep, a burst or a generator and switch it on.") } else { tr!("Nothing matches.") }).weak());
-            }
-            for line in shown.iter().skip(range.start).take(range.end - range.start) {
-                match line {
-                    Line::Group { key, title, n } => {
-                        let shut = state.folded.contains(key);
-                        let r = rows::row(ui, "project", ("sim_project_group", key), ROW_H, false, |ui| {
-                            ui.add(egui::Label::new(if shut { icon::CARET_RIGHT } else { icon::CARET_DOWN }).selectable(false));
-                            let w = ui.available_width();
-                            rows::cell(ui, w, egui::RichText::new(format!("{title}  ({n})")).strong(), "");
-                        });
-                        if r.clicked() {
-                            toggle = Some(key.clone());
-                        }
-                    }
-                    Line::Fit(e) => {
-                        let r = rows::row(ui, "project", ("sim_project", &e.id), ROW_H, false, |ui| {
-                            ui.add_space(12.0);
-                            crate::icons::type_icon(ui, e.ship, 18.0);
-                            let w = ui.available_width() - if e.doctrine.is_some() { 22.0 } else { 0.0 };
-                            rows::cell(ui, w.max(40.0), egui::RichText::new(&e.name), "").on_hover_ui(|ui| entry_tip(ui, e, &hull_name(e.ship)));
-                            if e.doctrine.is_some() {
-                                ui.add(egui::Label::new(egui::RichText::new(icon::SEAL_CHECK).color(ui.visuals().hyperlink_color)).selectable(false));
-                            }
-                        });
-                        if r.clicked() {
-                            chosen = Some(e.id.clone());
-                        }
-                    }
-                }
-            }
-        });
+        let empty = if all.is_empty() { tr!("No fit acts on others yet: give one a web, a rep, a burst or a generator and switch it on.") } else { tr!("Nothing matches.") };
+        chosen = pick_list(ui, "project", state, &all, &[], Some(&dogma), empty);
     });
-    if let Some(k) = toggle {
-        if let Some(st) = sim.project_picker.as_mut() {
-            if !st.folded.remove(&k) {
-                st.folded.insert(k);
-            }
-        }
-    }
     if let Some(id) = chosen {
         // A booster covers all its charges from the start: one entry stands for every boost it runs.
         let charges = match (&sim.dogma, sim.sessions().iter().find(|s| s.id == id).map(|s| &s.fit).or_else(|| sim.fit_docs.get(&id))) {
@@ -386,6 +416,82 @@ pub fn project_picker(sim: &mut SimUi, ctx: &egui::Context, now_ms: u64) {
     if !open {
         sim.project_picker = None;
     }
+}
+
+/// A picker's list: the grouping buttons, the search, then `first` under a heading of its own when
+/// there are any, and the fits as the Fits tab groups them. The fit clicked.
+pub fn pick_list(ui: &mut egui::Ui, salt: &str, state: &mut LibraryState, all: &[Entry], first: &[(String, Vec<Entry>)], dogma: Option<&spai_fit::Dogma>, empty: &str) -> Option<String> {
+    use spai_ui::widgets::SteadySelect as _;
+    let hull = |t: TypeId| hull_path(dogma, t);
+    ui.horizontal(|ui| {
+        let w = egui::vec2(((ui.available_width() - 2.0 * ui.spacing().item_spacing.x) / 3.0).max(40.0), 22.0);
+        for (g, label) in [(Grouping::Hull, tr!("Hull")), (Grouping::Tag, tr!("Tag")), (Grouping::Flat, tr!("A–Z"))] {
+            if ui.menu_label_sized(w, state.grouping == g, label).clicked() {
+                state.grouping = g;
+            }
+        }
+    });
+    ui.add_sized([ui.available_width(), 22.0], egui::TextEdit::singleline(&mut state.query).hint_text(trf!("{icon} Name, hull or tag", icon = icon::MAGNIFYING_GLASS)));
+    ui.add_space(2.0);
+    let mut shown: Vec<Line> = Vec::new();
+    for (title, fits) in first {
+        let found = lines(fits, &hull, Grouping::Flat, &state.query, &state.folded);
+        if found.is_empty() {
+            continue;
+        }
+        let key = format!("first:{title}");
+        shown.push(Line::Group { key: key.clone(), title: title.clone(), n: found.len(), depth: 0 });
+        if !state.folded.contains(&key) {
+            shown.extend(found);
+        }
+    }
+    let lead = shown.len();
+    shown.extend(lines(all, &hull, state.grouping, &state.query, &state.folded));
+    let mut chosen = None;
+    let mut toggle: Option<String> = None;
+    egui::ScrollArea::vertical().id_salt(("sim_pick_list", salt)).auto_shrink([false, false]).show_rows(ui, ROW_H, shown.len().max(1), |ui, range| {
+        if shown.is_empty() {
+            ui.label(egui::RichText::new(empty).weak());
+        }
+        for (k, line) in shown.iter().enumerate().skip(range.start).take(range.end - range.start) {
+            match line {
+                Line::Group { key, title, n, depth } => {
+                    let shut = state.folded.contains(key);
+                    let r = rows::row(ui, salt, ("sim_pick_group", salt, key), ROW_H, false, |ui| {
+                        ui.add_space(f32::from(*depth) * GROUP_INDENT);
+                        ui.add(egui::Label::new(if shut { icon::CARET_RIGHT } else { icon::CARET_DOWN }).selectable(false));
+                        let w = ui.available_width();
+                        rows::cell(ui, w, egui::RichText::new(format!("{title}  ({n})")).strong(), "");
+                    });
+                    if r.clicked() {
+                        toggle = Some(key.clone());
+                    }
+                }
+                Line::Fit(e) => {
+                    let r = rows::row(ui, salt, ("sim_pick", salt, k, &e.id), ROW_H, false, |ui| {
+                        ui.add_space(if k < lead { GROUP_INDENT } else { fit_indent(state.grouping) });
+                        crate::icons::type_icon(ui, e.ship, 18.0);
+                        let w = ui.available_width() - if e.doctrine.is_some() { 22.0 } else { 0.0 };
+                        let p = hull(e.ship);
+                        let label = if k < lead || state.grouping != Grouping::Hull { format!("{}: {}", p.hull, e.name) } else { e.name.clone() };
+                        rows::cell(ui, w.max(40.0), egui::RichText::new(label), "").on_hover_ui(|ui| entry_tip(ui, e, &p.hull));
+                        if e.doctrine.is_some() {
+                            ui.add(egui::Label::new(egui::RichText::new(icon::SEAL_CHECK).color(ui.visuals().hyperlink_color)).selectable(false));
+                        }
+                    });
+                    if r.clicked() {
+                        chosen = Some(e.id.clone());
+                    }
+                }
+            }
+        }
+    });
+    if let Some(k) = toggle {
+        if !state.folded.remove(&k) {
+            state.folded.insert(k);
+        }
+    }
+    chosen
 }
 
 /// A fit's tooltip in the list: its name, hull and tags.
