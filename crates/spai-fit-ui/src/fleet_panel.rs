@@ -1329,7 +1329,7 @@ pub fn results(sim: &mut SimUi, ui: &mut egui::Ui) {
     let names = |s: &spai_fit::fleet::SlotStats| -> String {
         labels.iter().find_map(|(st, l)| st.slots.iter().position(|x| std::ptr::eq(x, s)).and_then(|i| l.get(i).cloned())).unwrap_or_else(|| s.name.clone())
     };
-    if sim.fleet_analysis_pending() {
+    if sim.analysis_pending(Run::Fleet) {
         working_badge(ui, sim.fleet_analysis_progress());
     }
     if let Some((theirs, _, _)) = &enemy {

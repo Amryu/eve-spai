@@ -125,7 +125,8 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, place: Option<bool>) {
     ui.add_space(4.0);
     let tunes = sim.fleet_graph_tunes.get(&sim.fleet_graph).cloned().filter(|t| t.iter().any(Option::is_some));
     let (analysis, run) = match &tunes {
-        Some(t) => (sim.analysis(Run::Graph, &|a, b| tweak(t, a, b)), Run::Graph),
+        // The fleet's until the graph's own is in.
+        Some(t) => (sim.analysis(Run::Graph, &|a, b| tweak(t, a, b)).or_else(|| sim.fleet_analysis()), Run::Graph),
         None => (sim.fleet_analysis(), Run::Fleet),
     };
     if sim.analysis_pending(run) {
@@ -179,13 +180,15 @@ fn tune_button(sim: &mut SimUi, ui: &mut egui::Ui) {
     egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_min_width(360.0);
         ui.set_max_width(520.0);
+        // The menu style drops the frames that show a number can be dragged.
+        ui.set_style(ui.ctx().global_style());
         // The fleets as they are, not as this graph tunes them: what it starts from.
         let Some((mine, Some((theirs, _, _)))) = sim.fleet_stats() else {
             ui.label(egui::RichText::new(tr!("Pick a fleet under Against to compare.")).weak());
             return;
         };
-        let Some(fleet) = sim.fleet.as_ref().map(|f| f.fleet.clone()) else { return };
-        let Some(enemy) = fleet.enemy.as_ref().and_then(|id| sim.enemy_fleet(id)) else { return };
+        let Some((fleet, Some(enemy))) = sim.fleet.as_ref().map(|f| (f.fleet.clone(), f.enemy.clone())) else { return };
+        let Some(enemy) = sim.enemy_fleet(&enemy) else { return };
         let labels = [sim.ship_labels(&fleet, &mine), sim.ship_labels(&enemy, &theirs)];
         let mut tunes = sim.fleet_graph_tunes.get(&graph).cloned().unwrap_or_default();
         let mut changed = false;

@@ -10101,3 +10101,33 @@ fn uitest_dropdowns_keep_their_width_and_cut_only_what_does_not_fit() {
     assert!((r[0].width() - r[1].width()).abs() < 0.5, "same width: {} vs {}", r[0].width(), r[1].width());
     assert!(r[1].width() <= 201.0, "no wider than asked: {}", r[1].width());
 }
+
+/// The range graph's tune button opens both sides' ewar; ticking ours lists its ships to tune.
+fn graph_tune_harness(gpu: bool, run: impl FnOnce(&mut egui_kittest::Harness<'_>)) {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = imperium_scene_with("imperium_fleet_graph_tune", [1440.0, 900.0], false, spai_fit_ui::Pane::Graphs, |sim| {
+        sim.fleet_graph = spai_fit_ui::fleet_graphs::FleetGraph::DamageByRange;
+        sim.fleet_graph_open = true;
+        sim.fleet_graph_place = spai_fit_ui::GraphPlace::Bottom;
+        fleet_fixture(sim);
+    });
+    let mut h = harness::build(&mut scene, gpu);
+    h.get_by_label(egui_phosphor::regular::SLIDERS_HORIZONTAL).click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Our ewar").is_some() && h.query_by_label("Their ewar").is_some(), "both sides offered");
+    h.get_all_by_label("Tuned for this graph").next().expect("our side's switch").click();
+    h.run_steps(3);
+    assert!(h.query_all_by_label_contains("Logi Rifter").next().is_some() || h.query_all_by_label_contains("Rifter").next().is_some(), "our webbing ship listed to tune");
+    run(&mut h);
+}
+
+#[test]
+fn uitest_a_graph_tunes_its_own_ewar_from_its_button() {
+    graph_tune_harness(false, |_| {});
+}
+
+#[test]
+#[ignore]
+fn uitest_screenshots_graph_tune() {
+    graph_tune_harness(true, |h| harness::shot(h, "imperium_fleet_graph_tune"));
+}
