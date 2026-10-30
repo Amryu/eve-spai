@@ -636,6 +636,12 @@ const PILOT_STOP: &[&str] = &[
     "just", "is", "are", "was", "were", "be", "been", "has", "have", "had", "not", "but",
     "now", "still", "back", "with", "this", "that", "they", "them", "their", "here", "there", "to",
     "crit", "wrong", "channel", "see", "nothing", "else", "safe",
+    // What gets done to an ESS, never a name: "OLIMPO72 COL ESS Disconnected".
+    "disconnected", "link", "intrusion", "robbery", "robbing", "robbers", "robber", "robbed",
+    "robing", "robery", "thief", "thiefes", "thieves", "steal", "raid", "raiding", "bait", "trap", "bank",
+    // The ESS window's units, "Solar System" as pasted, and trade chatter.
+    "isk", "thousand", "thousands", "million", "millions", "billion", "billions", "solar", "wts", "wtb",
+    "raided", "progress", "ni", "fi", "si", "mobile", "up", "single", "outside", "inside",
     "whoever", "whatever", "whenever", "wherever", "however", "someone", "somebody", "anybody",
     "everyone", "everybody", "nobody",
     "about", "after", "because", "call", "came", "can", "come", "could", "day", "did", "die",
@@ -756,12 +762,59 @@ fn detect_classes(
     out
 }
 
+/// "ESS" as posted: "ess", "ESS's", "#ess", "ess:5:50", "11+ess", "esslinked", "ess5.58" or glued to
+/// CJK text ("ESS五分钟").
+fn is_ess_word(w: &str) -> bool {
+    w.split(|c: char| !c.is_alphanumeric() && c != '\'').any(|part| {
+        let l = part.to_lowercase();
+        l.strip_prefix("ess").is_some_and(|rest| {
+            matches!(rest, "" | "'s" | "s" | "ss" | "link" | "linked")
+                || rest.chars().next().is_some_and(|c| !c.is_ascii() || c.is_ascii_digit())
+        })
+    })
+}
+
+/// A word that labels an ESS bank amount: "ESS 443", "Main Bank: 287", "MB 300".
+fn is_bank_label(w: &str) -> bool {
+    let l = w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+    is_ess_word(w) || matches!(l.as_str(), "bank" | "mb" | "rb" | "主赏金池" | "储备赏金池" | "банк")
+}
+
+/// "4min", "300m", "20km": an amount, a timer or a range, never the start of a name.
+fn is_number_with_unit(w: &str) -> bool {
+    let l = w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+    let split = l.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(l.len());
+    let (num, unit) = l.split_at(split);
+    if num.is_empty() || unit.is_empty() {
+        return false;
+    }
+    // "4m20s", "5м40с": the hack timer.
+    let minsec = unit.strip_prefix(['m', 'м']).is_some_and(|r| {
+        let secs = r.trim_end_matches(['s', 'с']);
+        !secs.is_empty() && secs.len() <= 2 && secs.chars().all(|c| c.is_ascii_digit())
+    });
+    COUNT_UNIT_WORDS.contains(&unit) || minsec
+}
+
+/// What gets done at an ESS. A pasted name never starts with one: "linked proteus, stabber, khiz".
+const ESS_ACTIONS: &[&str] = &[
+    "disconnected", "link", "linked", "intrusion", "robbery", "robbing", "robbers", "robber", "robbed",
+    "robing", "robery", "theft", "thief", "thiefes", "thieves", "steal", "stealing", "stole", "raid",
+    "raiding", "hack", "hacking", "hacked", "bank",
+];
+
+/// The ESS window's own wording, as a client in any language copies it.
+const BANK_PHRASES: &[&str] =
+    &["main bank", "reserve bank", "主赏金池", "储备赏金池", "главный банк", "резервный банк"];
+
 pub fn is_pilot_stopword(w: &str) -> bool {
     let lw = w.to_lowercase();
     if lw.split_whitespace().nth(1).is_some() {
         return lw.split_whitespace().all(is_pilot_stopword);
     }
     PILOT_STOP.contains(&lw.as_str())
+        || is_ess_word(&lw)
+        || is_number_with_unit(&lw)
         || crate::shipnames::ambiguous_candidates(&lw).is_some()
         || SHIP_CLASSES.iter().any(|(k, _)| *k == lw.as_str())
         || matches!(
@@ -1070,21 +1123,57 @@ fn segment_is_name(seg: &str, systems: &Systems) -> bool {
 
 fn trim_paste_location_tail(seg: &str, ship_index: &HashMap<String, (i64, String)>) -> String {
     const LOC_PREP: &[&str] = &["at", "in", "on", "near"];
+    // "Nitila Cable (Metamorphosis)": the hull in brackets, as the client copies a kill or a d-scan.
+    let seg = match seg.trim_end().strip_suffix(')').and_then(|s| s.rfind('(')) {
+        Some(open) if open > 0 => seg[..open].trim_end(),
+        _ => seg,
+    };
+    let core = |w: &str| w.trim_matches(|c: char| !c.is_alphanumeric()).to_owned();
+    let is_timer = |w: &str| {
+        w.chars().any(|c| c.is_ascii_digit())
+            && w.chars().any(|c| matches!(c, ':' | '：' | ';'))
+            && w.chars().all(|c| c.is_ascii_digit() || matches!(c, ':' | '：' | ';' | '.'))
+    };
     let mut words: Vec<&str> = seg.split_whitespace().collect();
-    while words.len() >= 2 && is_decorated_count(words[words.len() - 1]) {
-        words.pop();
+    let plus = |w: &str| w.starts_with('+') && w.chars().any(|c| c.is_ascii_digit());
+    let report_word = |w: &str| {
+        let c = core(w);
+        let c = if c.is_empty() { w.to_owned() } else { c };
+        (is_pilot_stopword(&c) && !is_name_connector(&c) && !is_name_capable_stopword(&c) && !is_name_suffix(&c))
+            || ship_of(&c.to_lowercase(), ship_index).is_some()
+    };
+    // "Hulkwar +7 4 min", "Stilte Starving 5:38", "kenna holcolm nv": the report after the name.
+    loop {
+        let n = words.len();
+        if n >= 3
+            && COUNT_UNIT_WORDS.contains(&core(words[n - 1]).to_lowercase().as_str())
+            && core(words[n - 2]).chars().all(|c| c.is_ascii_digit())
+        {
+            words.truncate(n - 2);
+        } else if n >= 2
+            && (core(words[n - 1]).is_empty()
+                || is_timer(words[n - 1])
+                || is_number_with_unit(words[n - 1])
+                || is_decorated_count(words[n - 1])
+                || plus(words[n - 1])
+                || report_word(words[n - 1]))
+        {
+            words.pop();
+        } else {
+            break;
+        }
     }
+    // "linked proteus, stabber, khiz": ESS words and a listed hull in front of the name. A hull
+    // only with its comma, since "Fenrir Hammer" is a name.
     while words.len() >= 2 && {
-        let last = words[words.len() - 1];
-        (is_pilot_stopword(last)
-            && !is_name_connector(last)
-            && !is_name_capable_stopword(last)
-            && !is_name_suffix(last))
-            || ship_of(&last.to_lowercase(), ship_index).is_some()
+        let c = core(words[0]).to_lowercase();
+        (words[0].ends_with(',') && ship_of(&c, ship_index).is_some())
+            || is_ess_word(&c)
+            || ESS_ACTIONS.contains(&c.as_str())
     } {
-        words.pop();
+        words.remove(0);
     }
-    match words
+    let name = match words
         .iter()
         .enumerate()
         .find(|(i, w)| *i >= 2 && LOC_PREP.contains(&w.to_lowercase().as_str()))
@@ -1092,7 +1181,8 @@ fn trim_paste_location_tail(seg: &str, ship_index: &HashMap<String, (i64, String
     {
         Some(cut) => words[..cut].join(" "),
         None => words.join(" "),
-    }
+    };
+    name.trim_end_matches(|c: char| c.is_whitespace() || ",.;:!?".contains(c)).to_owned()
 }
 
 fn is_decorated_count(w: &str) -> bool {
@@ -1380,10 +1470,13 @@ fn loose_pilot_runs(
         name_part(w) && w.chars().any(|c| c.is_ascii_lowercase()) && !is_pilot_stopword(w)
     };
     let toks: Vec<&str> = text.split_whitespace().map(|w| w.trim_matches(punct)).collect();
+    // A paste goes the double-space way, and a second system ("C-J6MT bob uitra") keeps the
+    // location held until resolution says which word is the name.
+    let lead_is_location = !text.contains("  ") && toks.iter().skip(1).all(|w| !is_system_token(w, systems));
     for (i, core) in toks.iter().enumerate() {
         let prev = i.checked_sub(1).and_then(|j| toks.get(j));
         let next = toks.get(i + 1);
-        let breaks = if hard_name_breaker(core, ship_index) {
+        let breaks = if hard_name_breaker(core, ship_index) || is_ess_word(core) {
             true
         } else if core.chars().count() == 1
             && core.chars().all(|c| c.is_ascii_alphabetic())
@@ -1400,7 +1493,13 @@ fn loose_pilot_runs(
         {
             true
         } else if is_system_token(core, systems) {
-            ![prev, next].into_iter().flatten().any(|n| is_name_anchor(n, ship_index, systems))
+            // A real system code opening the report is where it happened ("A-803L mobile warp
+            // bubble up"), not the first word of a name.
+            (i == 0
+                && lead_is_location
+                && core.contains('-')
+                && resolve(systems, core).is_some())
+                || ![prev, next].into_iter().flatten().any(|n| is_name_anchor(n, ship_index, systems))
         } else {
             false
         };
@@ -1744,6 +1843,106 @@ fn mask_wh_mass(text: &str) -> String {
         return text.to_owned();
     }
     text.split_whitespace().map(|w| if is_mass(w) { "," } else { w }).collect::<Vec<_>>().join(" ")
+}
+
+/// Blanks the ESS window's amount line ("Main Bank: 287 million ISK", "主赏金池：197 百万 星币",
+/// "Главный банк: 20,2 миллион ISK") to a double space, the separator around it in a paste.
+fn mask_bank_line(text: &str) -> String {
+    let lower = text.to_lowercase();
+    // Byte offsets found in the lowercase copy must hold in the original.
+    if lower.len() != text.len() {
+        return text.to_owned();
+    }
+    let mut cuts: Vec<(usize, usize)> = Vec::new();
+    for p in BANK_PHRASES {
+        for (at, _) in lower.match_indices(p) {
+            let mut end = at + p.len();
+            let rest = &text[end..];
+            let skip = rest.len() - rest.trim_start_matches([' ', ':', '：']).len();
+            end += skip;
+            let words: Vec<&str> = text[end..].split(' ').take(3).collect();
+            let Some(num) = words.first().filter(|w| w.starts_with(|c: char| c.is_ascii_digit())) else { continue };
+            let glued = num.chars().any(|c| c.is_alphabetic());
+            let is_unit = |w: &str| COUNT_UNIT_WORDS.contains(&w.to_lowercase().as_str());
+            let mut taken = 1;
+            if words.get(1).is_some_and(|w| is_unit(w)) {
+                taken = 2;
+                if words.get(2).is_some_and(|w| matches!(w.to_lowercase().as_str(), "isk" | "星币")) {
+                    taken = 3;
+                }
+            } else if glued && words.get(1).is_some_and(|w| matches!(w.to_lowercase().as_str(), "isk" | "星币")) {
+                taken = 2;
+            }
+            if !glued && taken == 1 {
+                continue;
+            }
+            end += words[..taken].iter().map(|w| w.len()).sum::<usize>() + taken - 1;
+            cuts.push((at, end));
+        }
+    }
+    cuts.sort();
+    let mut out = String::with_capacity(text.len());
+    let mut pos = 0;
+    for (a, b) in cuts {
+        if a < pos {
+            continue;
+        }
+        out.push_str(&text[pos..a]);
+        out.push_str("  ");
+        pos = b;
+    }
+    out.push_str(&text[pos..]);
+    out
+}
+
+/// A word that mixes Latin and Cyrillic letters is a keyboard slip ("Сlr" with a Cyrillic С): its
+/// Cyrillic lookalikes read as the Latin letters they show. A wholly Cyrillic word is Russian and
+/// stays as it is.
+fn fold_homoglyphs(text: &str) -> String {
+    let latin = |c: char| c.is_ascii_alphabetic();
+    let cyrillic = |c: char| ('\u{0400}'..='\u{04FF}').contains(&c);
+    let fold = |c: char| match c {
+        'А' => 'A', 'В' => 'B', 'Е' => 'E', 'К' => 'K', 'М' => 'M', 'Н' => 'H', 'О' => 'O', 'Р' => 'P',
+        'С' => 'C', 'Т' => 'T', 'Х' => 'X', 'а' => 'a', 'е' => 'e', 'о' => 'o', 'р' => 'p', 'с' => 'c',
+        'у' => 'y', 'х' => 'x', 'к' => 'k', 'м' => 'm', 'т' => 't', 'н' => 'h', 'і' => 'i',
+        c => c,
+    };
+    if !text.chars().any(cyrillic) {
+        return text.to_owned();
+    }
+    text.split(' ')
+        .map(|w| {
+            if w.chars().any(latin) && w.chars().any(cyrillic) {
+                w.chars().map(fold).collect()
+            } else {
+                w.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// "5xConfessors" is "5x Confessors". Split only in front of a real hull, so a name shaped like
+/// that stays whole.
+fn split_glued_counts(text: &str, ship_index: &HashMap<String, (i64, String)>) -> String {
+    let mut out = String::with_capacity(text.len() + 8);
+    for (i, w) in text.split(' ').enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        let digits = w.len() - w.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        let split = (1..=3).contains(&digits)
+            && w[digits..].starts_with(['x', 'X'])
+            && ship_of(&w[digits + 1..].trim_end_matches(|c: char| !c.is_alphanumeric()).to_lowercase(), ship_index).is_some();
+        if split {
+            out.push_str(&w[..=digits]);
+            out.push(' ');
+            out.push_str(&w[digits + 1..]);
+        } else {
+            out.push_str(w);
+        }
+    }
+    out
 }
 
 fn preprocess_intel(text: &str) -> String {
@@ -2129,8 +2328,12 @@ pub fn analyze_ctx(
     let text = cleaned.as_str();
     let display_text = text.trim().to_owned();
     let links = extract_links(text);
-    let stripped = mask_wh_mass(&strip_urls(text));
-    let text = stripped.as_str();
+    let stripped = split_glued_counts(&fold_homoglyphs(&mask_wh_mass(&strip_urls(text))), ship_index);
+    // The ESS window's line is read for its amount and then taken out, so its words stay out of
+    // names: "Main Bank: 312 million ISK  Y-CWQY" otherwise reads as one long pilot.
+    let bank_lower = stripped.to_lowercase();
+    let banked = mask_bank_line(&stripped);
+    let text = banked.as_str();
     let lower = text.to_lowercase();
     let tokens: Vec<&str> = tokenize(text);
     let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
@@ -2327,7 +2530,7 @@ pub fn analyze_ctx(
     if text.contains("  ") {
         let segments: Vec<&str> =
             text.split("  ").map(str::trim).filter(|s| !s.is_empty()).collect();
-        let names: Option<Vec<&str>> = (segments.len() > 1)
+        let names: Option<Vec<(&str, String)>> = (segments.len() > 1)
             .then(|| {
                 let mut names = Vec::new();
                 let mut anchor = false;
@@ -2357,15 +2560,49 @@ pub fn analyze_ctx(
                         anchor = true;
                         continue;
                     }
-                    if segment_is_name(seg, systems) {
-                        names.push(*seg);
+                    // The report itself: "ESS 维德马克级*", "ess 3.28", "主赏金池：197 百万 星币".
+                    if seg.split_whitespace().next().is_some_and(is_number_with_unit)
+                        || seg.replace('：', " ").split_whitespace().any(|w| is_bank_label(w) && !is_ess_word(w))
+                    {
+                        continue;
+                    }
+                    // A pasted name runs to the next double space, and the last one often carries
+                    // the report on with a single space: "Steir Austrene ESS 160 mil 5;30".
+                    let seg: &str = match seg.split_whitespace().find(|w| is_ess_word(w)) {
+                        Some(w) if !known_pilots.contains_key(&seg.to_lowercase()) => {
+                            seg[..w.as_ptr() as usize - seg.as_ptr() as usize].trim_end()
+                        }
+                        _ => seg,
+                    };
+                    if seg.is_empty() {
+                        continue;
+                    }
+                    // Filler between names and the system ("Rick Rothsar  still in  KW-OAM"), or a
+                    // bare timer or amount ("3:42", "412 THOUSANDS!").
+                    if seg.split_whitespace().all(|w| {
+                        let c = w.trim_matches(|c: char| !c.is_alphanumeric());
+                        !c.chars().any(char::is_alphabetic) || is_pilot_stopword(c)
+                    }) {
+                        continue;
+                    }
+                    let name = trim_paste_location_tail(seg, ship_index);
+                    if segment_is_name(&name, systems) {
+                        names.push((seg, name));
                     } else if seg.split_whitespace().any(is_mention) {
                         anchor = true;
                     } else {
                         return None;
                     }
                 }
-                (anchor && !names.is_empty()).then_some(names)
+                // Without a system, only a run of three or more names reads as a paste of local.
+                // Most of them must hold a word no dictionary has, or "nice  one  mate" is a paste.
+                let odd = |n: &str| {
+                    n.split_whitespace().any(|w| !crate::dict::is_word(&w.to_lowercase()) && !is_pilot_stopword(w))
+                };
+                let list = names.len() >= 3
+                    && names.iter().all(|(_, n)| n.split_whitespace().count() <= 4)
+                    && names.iter().filter(|(_, n)| odd(n)).count() * 2 > names.len();
+                (!names.is_empty() && (anchor || list)).then_some(names)
             })
             .flatten();
         if let Some(names) = names {
@@ -2375,8 +2612,11 @@ pub fn analyze_ctx(
                 !p.contains(' ')
                     || seg_padded.iter().any(|s| s.contains(&format!(" {} ", p.to_lowercase())))
             });
-            for seg in names {
-                let name = trim_paste_location_tail(seg, ship_index);
+            // The untrimmed segment may also have been read as a name, report and all.
+            let untrimmed: Vec<String> =
+                names.iter().filter(|(seg, name)| *seg != name.as_str()).map(|(seg, _)| seg.to_lowercase()).collect();
+            pilots.retain(|p| !untrimmed.contains(&p.to_lowercase()));
+            for (_, name) in names {
                 paste_origin.insert(name.to_lowercase());
                 if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&name)) {
                     pilots.push(name);
@@ -2489,6 +2729,22 @@ pub fn analyze_ctx(
     let is_strong_name_word = |w: &str| {
         name_part(w) && w.chars().any(|c| c.is_ascii_lowercase()) && !is_pilot_stopword(w)
     };
+    // An item link is trade chatter, and its item words match real characters ("Unit", "Modified").
+    if lower.contains("(item exchange)") || lower.contains("[multiple items]") {
+        pilots.clear();
+    }
+    // Numbers and keywords only ("6 mins") is the report, unless the name is confirmed ("Red 5") or
+    // quoted.
+    pilots.retain(|p| {
+        known_pilots.contains_key(&p.to_lowercase())
+            || quoted.contains(&p.to_lowercase())
+            || p.split_whitespace().any(|w| {
+                let c = w.trim_matches(|c: char| !c.is_alphanumeric());
+                c.chars().any(char::is_alphabetic)
+                    && !is_pilot_stopword(c)
+                    && !COUNT_UNIT_WORDS.contains(&c.to_lowercase().as_str())
+            })
+    });
     let mut pilot_tokens: std::collections::HashSet<String> = pilots
         .iter()
         .filter(|n| n.split_whitespace().any(|w| is_strong_name_word(w)))
@@ -2787,8 +3043,17 @@ pub fn analyze_ctx(
     let named = pilots.len() as u32;
     let solo = lower_tokens.iter().any(|t| t == "solo" && !pilot_tokens.contains(t));
     let count = derive_count(total_count, plus_count, 0, named, solo);
-    let ess_ctx = lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t));
-    let isk = parse_isk(text, ess_ctx);
+    // Only a confirmed pilot's name can hide "ESS": an unresolved candidate often runs on over it
+    // ("Steir Austrene ESS 160 mil"), and losing the flag loses the bank amount with it. A
+    // one-word name cannot either, since characters called "ESS" and "Main Bank" exist.
+    let known_tokens: std::collections::HashSet<String> = pilots
+        .iter()
+        .filter(|p| p.contains(' ') && known_pilots.contains_key(&p.to_lowercase()))
+        .flat_map(|p| p.split_whitespace().map(|w| w.to_lowercase()))
+        .collect();
+    let ess_ctx = text.split_whitespace().any(|w| is_ess_word(w) && !known_tokens.contains(&w.to_lowercase()))
+        || BANK_PHRASES.iter().any(|p| bank_lower.contains(p));
+    let isk = parse_isk(&stripped, ess_ctx, ship_index);
     let structures = detect_structures(text);
     // Ambiguous ship abbreviations (e.g. "SFI"): surface as a badge unless a candidate hull is
     // already named in this same message.
@@ -2900,13 +3165,14 @@ pub fn analyze_ctx(
         // The ESS hack timer maxes at 6 min for the main bank, 45 min for the
         // reserve. A larger "Xm" is an ISK amount (e.g. "77m bank"), not a time.
         ess_time: if lower.contains("ess") {
-            let max = if lower.contains("reserve") { 45 } else { 6 };
+            let max = if bank_lower.contains("reserve") { 45 } else { 6 };
             parse_time_left(text, max)
         } else {
             None
         },
         skyhook: lower.contains("skyhook") || lower_tokens.iter().any(|t| is_skyhook_typo(t)),
-        reserve: flagged_exact(&lower_tokens, &pilot_tokens, &["reserve"]),
+        reserve: flagged_exact(&lower_tokens, &pilot_tokens, &["reserve"])
+            || ["reserve bank", "储备赏金池", "резервный банк"].iter().any(|p| bank_lower.contains(p)),
         filament: flagged_exact(
             &lower_tokens,
             &pilot_tokens,
@@ -3361,50 +3627,67 @@ fn detect_structures(text: &str) -> Vec<(String, Option<String>)> {
 
 /// An approximate ISK amount posted in intel ("300kk", "1.5b", "300 mil", "300 million"),
 /// returned in ISK. "kk" is the EVE shorthand for millions. Returns the largest match.
-fn parse_isk(text: &str, ess: bool) -> Option<u64> {
+///
+/// A bare number straight after "ESS" or a bank label ("ESS 443", "MB 300") is the bank in
+/// millions: nobody posts a bank under 50M, and nobody posts a fleet that way without saying what
+/// it is ("ESS 40 reds").
+fn parse_isk(text: &str, ess: bool, ship_index: &HashMap<String, (i64, String)>) -> Option<u64> {
     if !ess {
         return None;
     }
     let mult = |s: &str| -> Option<f64> {
         match s {
-            "k" => Some(1e3),
-            // "mio"/"mio." is an unambiguous "million" abbreviation (no system-code collision
-            // like bare "m"), so it counts as 1e6 regardless of ESS context.
-            "kk" | "mil" | "mill" | "million" | "millions" | "mio" | "mio." => Some(1e6),
-            // Bare "m"/"M" collides with null-sec system shorthands ("4M-", "4M-HGW"), so
-            // only read it as millions when an ESS amount is being discussed.
-            "m" if ess => Some(1e6),
-            "b" | "bil" | "bill" | "billion" | "billions" => Some(1e9),
+            "isk" | "星币" => Some(1.0),
+            "k" | "thousand" | "thousands" | "тысяч" | "тысяча" | "тысячи" => Some(1e3),
+            "万" => Some(1e4),
+            "kk" | "m" | "м" | "mil" | "mill" | "million" | "millions" | "mio" | "mio." | "百万" | "млн"
+            | "миллион" | "миллиона" | "миллионов" => Some(1e6),
+            "亿" => Some(1e8),
+            "b" | "bil" | "bill" | "billion" | "billions" | "十亿" | "млрд" | "миллиард" | "миллиарда"
+            | "миллиардов" => Some(1e9),
             _ => None,
         }
     };
+    // The Chinese client labels its banks with a full-width colon glued to the amount ("主赏金池：197").
+    let text = text.replace('：', " ");
     let words: Vec<&str> = text.split_whitespace().collect();
+    let bare = |w: &str| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
     let mut best: Option<u64> = None;
     for (i, w) in words.iter().enumerate() {
         // A hyphenated token is a null-sec system code ("4M-", "4M-HGW"), never ISK.
         if w.contains('-') {
             continue;
         }
-        let w = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '.');
+        let w = decimal_point(w.trim_matches(|c: char| !c.is_alphanumeric() && c != '.'));
         let split = w.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(w.len());
         let (num, suf) = w.split_at(split);
         let Ok(n) = num.parse::<f64>() else { continue };
+        let labelled = i > 0 && is_bank_label(words[i - 1]);
         if !n.is_finite() || n <= 0.0 {
             continue;
         }
+        let next = words.get(i + 1).map(|nx| bare(nx));
+        let unit = if suf.is_empty() { next.clone().unwrap_or_default() } else { suf.to_lowercase() };
         let m = if !suf.is_empty() {
             mult(&suf.to_lowercase())
+        } else if let Some(m) = next.as_deref().and_then(mult) {
+            Some(m)
         } else {
-            words
-                .get(i + 1)
-                .and_then(|nx| mult(&nx.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()))
+            let integer = num.chars().all(|c| c.is_ascii_digit());
+            let qualified = next.as_deref().is_some_and(|nx| {
+                COUNT_KEYWORDS.contains(&nx)
+                    || COUNT_UNIT_WORDS.contains(&nx)
+                    || SHIP_CLASSES.iter().any(|(k, _)| *k == nx)
+                    || ship_of(nx, ship_index).is_some()
+            }) || words.get(i + 1).is_some_and(|nx| is_plus_token(nx));
+            (labelled && integer && !qualified && (50.0..100_000.0).contains(&n)).then_some(1e6)
         };
         if let Some(m) = m {
             let isk = (n * m) as u64;
-            // In ESS context an amount below 50M is almost always a time ("30m" = 30 minutes),
-            // since ESS banks worth calling out are >= 50M. Drop the small ones so they don't
-            // double-parse as an ISK amount alongside the hack timer.
-            if ess && isk < 50_000_000 {
+            // Under 50M a bare "m" is almost always the hack timer ("30m" = 30 minutes) and a "k"
+            // a range, since banks worth calling out are bigger. The ESS window's own line ("Main
+            // Bank: 27 million ISK") and an unambiguous unit stand at any size.
+            if isk == 0 || isk < 50_000_000 && matches!(unit.as_str(), "m" | "м" | "k") && !labelled {
                 continue;
             }
             if best.map_or(true, |b| isk > b) {
@@ -3413,6 +3696,19 @@ fn parse_isk(text: &str, ess: bool) -> Option<u64> {
         }
     }
     best
+}
+
+/// "1,69B" and "20,2" (a comma for the decimal point, as Russian and European clients write it)
+/// read as 1.69 and 20.2; "1,500" stays a thousands separator.
+fn decimal_point(w: &str) -> std::borrow::Cow<'_, str> {
+    let Some(at) = w.find(',') else { return w.into() };
+    let after = w[at + 1..].chars().take_while(|c| c.is_ascii_digit()).count();
+    let before = w[..at].chars().rev().take_while(|c| c.is_ascii_digit()).count();
+    match (before, after) {
+        (1.., 1..=2) => format!("{}.{}", &w[..at], &w[at + 1..]).into(),
+        (1.., 3) => format!("{}{}", &w[..at], &w[at + 1..]).into(),
+        _ => w.into(),
+    }
 }
 
 pub fn format_isk(isk: u64) -> String {
@@ -3439,8 +3735,9 @@ pub fn derive_count(
     solo: bool,
 ) -> Option<u32> {
     // A stated number is the whole fleet, unless the pilots named and a "+N" beyond them make more.
+    // Seven pilots named beside "2x tempest" are seven: the 2 counts one hull, not the fleet.
     let base = if let Some(t) = extra {
-        if plus > 0 { t.max(named + plus) } else { t }
+        if plus > 0 { t.max(named + plus) } else if named >= 3 { t.max(named) } else { t }
     } else if plus > 0 {
         named + plus
     } else if named >= 3 {
@@ -3453,6 +3750,17 @@ pub fn derive_count(
     let total = (base + ships).min(999);
     (total > 0).then_some(total)
 }
+
+/// A number in front of one of these is a quantity of something else, and every one of them is
+/// separately parsed elsewhere: ISK magnitudes by `parse_isk`, durations by `parse_time_left`
+/// (the ESS hack timer), distances by nothing at all.
+const COUNT_UNIT_WORDS: &[&str] = &[
+    "m", "м", "mm", "mil", "mill", "million", "millions", "mio", "kk", "b", "bil", "bill", "billion",
+    "billions", "k", "thousand", "thousands", "isk", "星币", "万", "百万", "亿", "十亿", "млн",
+    "млрд", "миллион", "миллиона", "миллионов", "миллиард", "миллиарда", "миллиардов", "тысяч",
+    "тысяча", "тысячи", "min", "mins", "minute", "minutes", "s",
+    "sec", "secs", "second", "seconds", "h", "hr", "hrs", "hour", "hours", "km", "kms", "au",
+];
 
 const COUNT_KEYWORDS: &[&str] =
     &["red", "reds", "neut", "neuts", "neutral", "neutrals", "hostile", "hostiles"];
@@ -3491,6 +3799,8 @@ fn number_in_pilot_name(
     let lead = words[i.checked_sub(1)?]
         .trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-');
     if !name_part(lead)
+        || is_bank_label(lead)
+        || COUNT_UNIT_WORDS.contains(&lead.to_lowercase().as_str())
         || systems.lookup(lead).is_some()
         || ship_index.contains_key(&lead.to_ascii_lowercase())
     {
@@ -3510,16 +3820,6 @@ fn parse_count(
     known_pilots: &HashMap<String, i64>,
 ) -> (Option<u32>, u32, Vec<(String, u32)>) {
     let mut name_skips: Vec<(String, u32)> = Vec::new();
-    // A number in front of one of these is a quantity of something else, and every one of them is
-    // separately parsed elsewhere: ISK magnitudes by `parse_isk`, durations by `parse_time_left`
-    // (the ESS hack timer), distances by nothing at all. A number claimed by any of them must not
-    // also be read as a hostile count, however it is qualified: "ess reds 5 min" is a 5 minute
-    // timer, not 5 reds, and "reds 20 km off gate" is a range.
-    const UNIT_WORDS: &[&str] = &[
-        "m", "mil", "mill", "million", "millions", "mio", "kk", "b", "bil", "bill", "billion",
-        "billions", "k", "isk", "min", "mins", "minute", "minutes", "s", "sec", "secs", "second",
-        "seconds", "h", "hr", "hrs", "hour", "hours", "km", "kms", "au",
-    ];
     let mut best: Option<u32> = None;
     let mut plus: u32 = 0;
     let words: Vec<&str> = text.split_whitespace().collect();
@@ -3583,6 +3883,19 @@ fn parse_count(
             || kw_neighbour
             || ship_neighbour
             || loc_neighbour;
+        // Before the name guards below: a number that is an amount, a timer or a range must not be
+        // held back as part of a name either, or resolution adds it back as hostiles once the
+        // "name" turns out not to exist ("Main Bank: 287 million ISK", "ESS 5 min").
+        let unit_next = next.is_some_and(|nx| {
+            COUNT_UNIT_WORDS.contains(&nx.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase().as_str())
+        });
+        if bare_number && !attached_plus && !attached_x && unit_next {
+            continue;
+        }
+        // "ESS 443": the bank in millions, read by `parse_isk`.
+        if bare_number && !qualified && prev.is_some_and(is_bank_label) {
+            continue;
+        }
         if bare_number
             && pilots.iter().any(|p| {
                 let pl = p.to_lowercase();
@@ -3610,23 +3923,20 @@ fn parse_count(
         if bare_number && !qualified && i > 0 {
             let prevw = words[i - 1].trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-');
             let plc = prevw.to_lowercase();
-            if name_part(prevw) && systems.lookup(prevw).is_none() && !ship_index.contains_key(&plc) {
+            // "Main Bank: 168 million ISK 415": a unit closes an amount, it does not open a name.
+            if name_part(prevw)
+                && !COUNT_UNIT_WORDS.contains(&plc.as_str())
+                && systems.lookup(prevw).is_none()
+                && !ship_index.contains_key(&plc)
+            {
                 if let Ok(n) = digits.parse::<u32>() {
                     name_skips.push((format!("{prevw} {digits}"), n));
                 }
                 continue;
             }
         }
-        if bare_number && !attached_plus && !attached_x {
-            if consumed.iter().any(|c| c == &t.to_lowercase()) {
-                continue;
-            }
-            if let Some(nx) = next {
-                let n = nx.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
-                if UNIT_WORDS.contains(&n.as_str()) {
-                    continue;
-                }
-            }
+        if bare_number && !attached_plus && !attached_x && consumed.iter().any(|c| c == &t.to_lowercase()) {
+            continue;
         }
         if let Ok(n) = digits.parse::<u32>() {
             if (1..=999).contains(&n) {

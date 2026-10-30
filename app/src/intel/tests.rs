@@ -1748,21 +1748,21 @@ fn scanner_probes_badge_not_ship_or_pilot() {
 
 #[test]
 fn parses_isk_amounts() {
-    assert_eq!(parse_isk("ess 300kk 5 min", true), Some(300_000_000));
-    assert_eq!(parse_isk("ess worth 1.5b", true), Some(1_500_000_000));
-    assert_eq!(parse_isk("ess 300 mil tag", true), Some(300_000_000));
-    assert_eq!(parse_isk("worth 1.5b", false), None);
-    assert_eq!(parse_isk("300 mil tag", false), None);
-    assert_eq!(parse_isk("ess 750m", true), Some(750_000_000));
-    assert_eq!(parse_isk("loot 750m", false), None);
-    assert_eq!(parse_isk("ess hostiles in 4M-HGW", true), None);
-    assert_eq!(parse_isk("5 min", false), None);
-    assert_eq!(parse_isk("Rancer 3 Drake +2", false), None);
-    assert_eq!(parse_isk("ess robbed 30m", true), None);
-    assert_eq!(parse_isk("ess reserve 30m bank", true), None);
-    assert_eq!(parse_isk("ess 50m", true), Some(50_000_000));
-    assert_eq!(parse_isk("ess 77m bank", true), Some(77_000_000));
-    assert_eq!(parse_isk("30m loot", false), None);
+    assert_eq!(parse_isk("ess 300kk 5 min", true, &noships()), Some(300_000_000));
+    assert_eq!(parse_isk("ess worth 1.5b", true, &noships()), Some(1_500_000_000));
+    assert_eq!(parse_isk("ess 300 mil tag", true, &noships()), Some(300_000_000));
+    assert_eq!(parse_isk("worth 1.5b", false, &noships()), None);
+    assert_eq!(parse_isk("300 mil tag", false, &noships()), None);
+    assert_eq!(parse_isk("ess 750m", true, &noships()), Some(750_000_000));
+    assert_eq!(parse_isk("loot 750m", false, &noships()), None);
+    assert_eq!(parse_isk("ess hostiles in 4M-HGW", true, &noships()), None);
+    assert_eq!(parse_isk("5 min", false, &noships()), None);
+    assert_eq!(parse_isk("Rancer 3 Drake +2", false, &noships()), None);
+    assert_eq!(parse_isk("ess robbed 30m", true, &noships()), None);
+    assert_eq!(parse_isk("ess reserve 30m bank", true, &noships()), None);
+    assert_eq!(parse_isk("ess 50m", true, &noships()), Some(50_000_000));
+    assert_eq!(parse_isk("ess 77m bank", true, &noships()), Some(77_000_000));
+    assert_eq!(parse_isk("30m loot", false, &noships()), None);
 }
 
 #[test]
@@ -3104,12 +3104,12 @@ fn systems_with(extra: &[(&str, &str, i64, f64)]) -> Systems {
 
 #[test]
 fn parse_isk_handles_mio_million_abbreviation() {
-    assert_eq!(parse_isk("ess 346mio", true), Some(346_000_000));
-    assert_eq!(parse_isk("346mio", false), None);
-    assert_eq!(parse_isk("ess worth 120 mio", true), Some(120_000_000));
-    assert_eq!(parse_isk("ess 50mio.", true), Some(50_000_000));
-    assert_eq!(parse_isk("loot 750m", false), None);
-    assert_eq!(parse_isk("ess hostiles in 4M-HGW", true), None);
+    assert_eq!(parse_isk("ess 346mio", true, &noships()), Some(346_000_000));
+    assert_eq!(parse_isk("346mio", false, &noships()), None);
+    assert_eq!(parse_isk("ess worth 120 mio", true, &noships()), Some(120_000_000));
+    assert_eq!(parse_isk("ess 50mio.", true, &noships()), Some(50_000_000));
+    assert_eq!(parse_isk("loot 750m", false, &noships()), None);
+    assert_eq!(parse_isk("ess hostiles in 4M-HGW", true, &noships()), None);
 }
 
 #[test]
@@ -3500,10 +3500,10 @@ mod session_regressions {
 
     #[test]
     fn line8_parse_isk_ess_amounts() {
-        assert_eq!(parse_isk("ess robbed 30m", true), None, "'robbed' is not an amount");
-        assert_eq!(parse_isk("ess 346mio", true), Some(346_000_000));
-        assert_eq!(parse_isk("ess 77m", true), Some(77_000_000));
-        assert_eq!(parse_isk("ess 300kk 5 min", true), Some(300_000_000));
+        assert_eq!(parse_isk("ess robbed 30m", true, &noships()), None, "'robbed' is not an amount");
+        assert_eq!(parse_isk("ess 346mio", true, &noships()), Some(346_000_000));
+        assert_eq!(parse_isk("ess 77m", true, &noships()), Some(77_000_000));
+        assert_eq!(parse_isk("ess 300kk 5 min", true, &noships()), Some(300_000_000));
     }
 }
 
@@ -3696,3 +3696,268 @@ fn wormhole_mass_is_not_a_hostile_count() {
     assert_eq!(r.count, Some(10), "outside a wormhole report '>' still reads as a count");
 }
 
+
+
+/// A number held back as part of a possible name comes back as hostiles once ESI says the name does
+/// not exist, so an ESS amount must never land in `name_number_skips`.
+fn no_skip(r: &IntelReport, n: u32) {
+    assert!(!r.name_number_skips.iter().any(|(_, k)| *k == n), "{n} held as a name number: {:?}", r.name_number_skips);
+}
+
+/// "ESS 443" is the bank in millions. It used to be held as a pilot "ESS 443" and turn into 443
+/// hostiles once resolution rejected that name.
+#[test]
+fn a_bare_number_after_ess_is_the_bank_not_hostiles() {
+    let s = systems();
+    let sh = ships_with(&[("Loki", 29990)]);
+    for (text, isk, n) in [
+        ("C-J6MT  Varn Hollis  Tessa Quill  Odo Brack ESS 443", 443, 443),
+        ("C-J6MT ESS 250", 250, 250),
+        ("Rancer ess: 300", 300, 300),
+        ("Rancer ess MB 180", 180, 180),
+        ("Rancer  Varn Hollis +6 ess 350m 545", 350, 545),
+    ] {
+        let r = analyze(text, &s, &sh, &noknown(), 1, "ch", "x");
+        assert_eq!(r.isk, Some(isk * 1_000_000), "{text}");
+        assert!(r.count.unwrap_or(0) < 50, "{text} gave {:?} hostiles", r.count);
+        no_skip(&r, n);
+    }
+    // Said with what it is, the number is a fleet again.
+    let r = analyze("Rancer ESS 60 reds", &s, &sh, &noknown(), 1, "ch", "x");
+    assert_eq!((r.count, r.isk), (Some(60), None));
+    let r = analyze("Rancer ESS 60 Loki", &s, &sh, &noknown(), 1, "ch", "x");
+    assert_eq!((r.count, r.isk), (Some(60), None));
+    // Too small for a bank worth calling out, and still not a name.
+    let r = analyze("Rancer ESS 2  Varn Hollis  Tessa Quill", &s, &sh, &noknown(), 1, "ch", "x");
+    assert_eq!(r.isk, None);
+    no_skip(&r, 2);
+}
+
+/// A number with a unit after it is an amount, a timer or a range, and must not be held as a name
+/// number either: "Main Bank: 287 million ISK" became a pilot "Bank 287" and 287 hostiles.
+#[test]
+fn a_number_with_a_unit_is_never_a_name_number() {
+    let s = systems();
+    for (text, n) in [
+        ("Rancer i think they go for ess  Main Bank: 287 million ISK", 287),
+        ("Rancer  Varn Hollis  Tessa Quill ESS 5 min", 5),
+        ("Rancer  Varn Hollis 100 mm bounty on ess", 100),
+    ] {
+        let r = analyze(text, &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_ne!(r.count, Some(n), "{text}");
+        no_skip(&r, n);
+    }
+    let r = analyze("Rancer i think they go for ess  Main Bank: 287 million ISK", &s, &noships(), &noknown(), 1, "ch", "x");
+    assert_eq!(r.isk, Some(287_000_000));
+}
+
+/// The last pasted name often carries the report on after a single space. The name stops at "ESS",
+/// and the rest no longer hides the ESS flag and the bank amount.
+#[test]
+fn a_pasted_name_stops_at_ess() {
+    let s = systems();
+    for (text, name, isk) in [
+        ("C-J6MT  Varn Hollis ESS 160 mil 5;30", "Varn Hollis", Some(160_000_000)),
+        ("C-J6MT  Tessa Quill  Odo Brack ESS 200mil", "Odo Brack", Some(200_000_000)),
+        ("C-J6MT  Tessa Quill  Odo Brack ess 5:20 183kk", "Odo Brack", Some(183_000_000)),
+        ("C-J6MT  Varn Hollis ESS Intrusion", "Varn Hollis", None),
+    ] {
+        let r = analyze(text, &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.ess, "{text}");
+        assert_eq!(r.isk, isk, "{text}");
+        assert!(r.pilots.iter().any(|p| p == name), "{text}: {:?}", r.pilots);
+        assert!(!r.pilots.iter().any(|p| p.split_whitespace().any(|w| w.eq_ignore_ascii_case("ess"))), "{text}: {:?}", r.pilots);
+    }
+    // A segment that opens with ESS, or is a bare timer, is the report, not a pilot.
+    for text in ["C-J6MT  Varn Hollis  Tessa Quill  ESS 2:40", "C-J6MT  Varn Hollis  Tessa Quill  ess  4min left"] {
+        let r = analyze(text, &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r.pilots.len(), 2, "{text}: {:?}", r.pilots);
+    }
+}
+
+/// Characters named "ESS" and "Main Bank" exist and sit in the known-pilot cache. A one-word or
+/// unconfirmed match must not switch the ESS context off.
+#[test]
+fn a_pilot_called_ess_does_not_hide_the_bank() {
+    let s = systems();
+    let known: std::collections::HashMap<String, i64> = [("ess".to_owned(), 1), ("main bank".to_owned(), 2)].into();
+    let r = analyze("Rancer ESS 200mil", &s, &noships(), &known, 1, "ch", "x");
+    assert!(r.ess);
+    assert_eq!(r.isk, Some(200_000_000));
+    let r = analyze("Rancer Main Bank: 287 million ISK", &s, &noships(), &known, 1, "ch", "x");
+    assert_eq!(r.isk, Some(287_000_000));
+}
+
+/// The ESS window copied from a Chinese or Russian client, and ESS spelled the ways it gets posted.
+#[test]
+fn localized_banks_and_ess_spellings() {
+    let s = systems();
+    let r = analyze("主赏金池：197 百万 星币  C-J6MT  Varn Hollis  Tessa Quill  ess 3.28", &s, &noships(), &noknown(), 1, "ch", "x");
+    assert_eq!(r.isk, Some(197_000_000));
+    assert_eq!(r.pilots.len(), 2, "{:?}", r.pilots);
+    let r = analyze("C-J6MT 主赏金池：321 百万 星币 ESS 5.30min", &s, &noships(), &noknown(), 1, "ch", "x");
+    assert_eq!(r.isk, Some(321_000_000));
+    assert!(r.pilots.is_empty(), "{:?}", r.pilots);
+    let r = analyze("Rancer Главный банк: 450 млн ISK", &s, &noships(), &noknown(), 1, "ch", "x");
+    assert_eq!(r.isk, Some(450_000_000));
+    for text in ["Rancer #ess", "Rancer ess:5:50", "Rancer 11+ess", "Rancer ESS's", "Rancer ESS五分钟", "Rancer ESS?"] {
+        assert!(analyze(text, &s, &noships(), &noknown(), 1, "ch", "x").ess, "{text}");
+    }
+    assert!(!analyze("Rancer Essew Kadoko", &s, &noships(), &noknown(), 1, "ch", "x").ess);
+}
+
+
+/// The ESS window's amount line as each client copies it, and amounts written the European way.
+#[test]
+fn bank_lines_from_every_client() {
+    let s = systems();
+    for (text, isk) in [
+        ("C-J6MT  Main Bank: 412 thousand ISK", 412_000),
+        ("C-J6MT  Main Bank: 27 million ISK", 27_000_000),
+        ("C-J6MT  Reserve Bank: 1,69B ISK hacking in progress", 1_690_000_000),
+        ("C-J6MT  Главный банк: 20,2 миллион ISK", 20_200_000),
+        ("C-J6MT  主赏金池：24.9 百万 星币", 24_900_000),
+        ("C-J6MT  储备赏金池：2.14B 星币", 2_140_000_000),
+    ] {
+        let r = analyze(text, &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.ess, "{text}");
+        assert_eq!(r.isk, Some(isk), "{text}");
+        assert!(r.pilots.is_empty(), "{text}: {:?}", r.pilots);
+    }
+    let r = analyze("C-J6MT  Reserve Bank: 1,69B ISK", &s, &noships(), &noknown(), 1, "ch", "x");
+    assert!(r.reserve);
+    // A timer is not an amount.
+    let r = analyze("C-J6MT  Reserve Bank: 13:50 remaining", &s, &noships(), &noknown(), 1, "ch", "x");
+    assert_eq!(r.isk, None);
+    // A number after the line's "ISK" is neither an amount nor part of a name.
+    let r = analyze("Main Bank: 168 million ISK 415", &s, &noships(), &noknown(), 1, "ch", "x");
+    assert_eq!(r.isk, Some(168_000_000));
+    no_skip(&r, 415);
+}
+
+/// The bank line is taken out before names are read, so it no longer runs into the system or the
+/// pilot beside it, and its words ("ISK", "Solar" of "Solar System") match no character.
+#[test]
+fn the_bank_line_stays_out_of_names() {
+    let s = systems();
+    let known: std::collections::HashMap<String, i64> = [("isk".to_owned(), 1), ("solar".to_owned(), 2)].into();
+    let r = analyze("Main Bank: 312 million ISK  C-J6MT", &s, &noships(), &known, 1, "ch", "x");
+    assert_eq!(r.systems.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["C-J6MT"]);
+    assert!(r.pilots.is_empty(), "{:?}", r.pilots);
+    let r = analyze("Main Bank: 225 million ISK ESS  Varn Hollis 5:38  C-J6MT", &s, &noships(), &known, 1, "ch", "x");
+    assert_eq!(r.pilots, ["Varn Hollis"]);
+    let r = analyze("Main Bank: 131 million ISK  C-J6MT Solar System  Varn Hollis +7 4 min", &s, &noships(), &known, 1, "ch", "x");
+    assert_eq!(r.pilots, ["Varn Hollis"]);
+    assert_eq!(r.count, Some(8));
+}
+
+/// "esslinked", "ess5.58" and "4M20S" are the report, glued together: no name, and the system
+/// next to them is still found.
+#[test]
+fn glued_ess_and_timers_are_not_names() {
+    let s = systems();
+    for text in [
+        "C-J6MT esslinked  主赏金池：472 百万 星币",
+        "主赏金池：81 百万 星币  C-J6MT ess5.58",
+        "主赏金池：347 百万 星币  C-J6MT 4M20S",
+        "C-J6MT  主赏金池：243 百万 星币 ess5min35",
+    ] {
+        let r = analyze(text, &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.ess, "{text}");
+        assert_eq!(r.systems.len(), 1, "{text}");
+        assert!(r.pilots.is_empty(), "{text}: {:?}", r.pilots);
+    }
+}
+
+/// What follows a pasted name in the same segment is the report: a hull in brackets or after it,
+/// a marker, a timer, a count, filler. The name alone is what goes to ESI.
+#[test]
+fn a_pasted_name_sheds_the_report_around_it() {
+    let s = systems();
+    let sh = ships_with(&[("Loki", 29990), ("Sabre", 22456), ("Metamorphosis", 1)]);
+    for (text, want) in [
+        ("C-J6MT  Varn Hollis (Metamorphosis)", vec!["Varn Hollis"]),
+        ("C-J6MT  Varn Hollis Loki", vec!["Varn Hollis"]),
+        ("C-J6MT  Varn Hollis ^nv", vec!["Varn Hollis"]),
+        ("C-J6MT  Varn Hollis just left", vec!["Varn Hollis"]),
+        ("C-J6MT  Varn Hollis +4-5", vec!["Varn Hollis"]),
+        ("C-J6MT  linked loki, sabre, Varn Hollis +2 nv in system", vec!["Varn Hollis"]),
+        ("Varn Hollis  Tessa Quill  Odo Brack  still in  C-J6MT", vec!["Varn Hollis", "Tessa Quill", "Odo Brack"]),
+    ] {
+        let r = analyze(text, &s, &sh, &noknown(), 1, "ch", "x");
+        let mut got = r.pilots.clone();
+        got.sort();
+        let mut want: Vec<String> = want.into_iter().map(String::from).collect();
+        want.sort();
+        assert_eq!(got, want, "{text}");
+        assert_eq!(r.systems.len(), 1, "{text}");
+    }
+    let r = analyze("C-J6MT  Varn Hollis Loki", &s, &sh, &noknown(), 1, "ch", "x");
+    assert!(r.ships.iter().any(|x| x.name == "Loki"));
+}
+
+/// Three or more pasted names with no system are still a local paste, one name each. Dictionary
+/// words in the same shape are not.
+#[test]
+fn a_paste_of_names_without_a_system() {
+    let s = systems();
+    let r = analyze("Varnix Hollo  Tessq Quillz  Odox Brakk", &s, &noships(), &noknown(), 1, "ch", "x");
+    assert_eq!(r.pilots.len(), 3, "{:?}", r.pilots);
+    assert_eq!(r.count, Some(3));
+    let r = analyze("nice  one  mate", &s, &noships(), &noknown(), 1, "ch", "x");
+    assert!(r.pilots.len() <= 1, "{:?}", r.pilots);
+}
+
+/// "5xLoki 1xSabre": counts glued to the hull.
+#[test]
+fn a_count_glued_to_a_hull() {
+    let s = systems();
+    let sh = ships_with(&[("Loki", 29990), ("Sabre", 22456)]);
+    let r = analyze("C-J6MT ESS Link 55M 5xLoki 1xSabre", &s, &sh, &noknown(), 1, "ch", "x");
+    assert_eq!(r.count, Some(5));
+    assert!(r.ships.iter().any(|x| x.name == "Loki") && r.ships.iter().any(|x| x.name == "Sabre"), "{:?}", r.ships);
+    assert!(r.pilots.is_empty(), "{:?}", r.pilots);
+    assert_eq!(r.isk, Some(55_000_000));
+    // Only in front of a real hull: a name shaped like it stays whole.
+    let r = analyze("C-J6MT  2xTroublemaker", &s, &sh, &noknown(), 1, "ch", "x");
+    assert_eq!(r.count, None);
+}
+
+/// A Cyrillic letter typed inside a Latin word reads as the Latin one it looks like.
+#[test]
+fn a_cyrillic_slip_in_a_latin_word() {
+    let s = systems();
+    let r = analyze("C-J6MT \u{0421}lr", &s, &noships(), &noknown(), 1, "ch", "x");
+    assert!(r.clear);
+    let r = analyze("C-J6MT \u{0441}\u{043b}\u{0430}\u{0432}\u{0430}", &s, &noships(), &noknown(), 1, "ch", "x");
+    assert!(!r.clear, "a Russian word is left as it is");
+}
+
+/// An item link is trade, and item words match real characters ("Unit", "Modified").
+#[test]
+fn an_item_link_names_no_pilots() {
+    let s = systems();
+    let known: std::collections::HashMap<String, i64> =
+        [("unit".to_owned(), 1), ("modified".to_owned(), 2), ("augmentor".to_owned(), 3)].into();
+    let r = analyze("WTS Unit P-343554's Modified Drone Link Augmentor (Item Exchange) 800m", &s, &noships(), &known, 1, "ch", "x");
+    assert!(r.pilots.is_empty(), "{:?}", r.pilots);
+    assert_eq!(r.count, None);
+}
+
+/// A system code opening a report is where it happened, not the start of a name.
+#[test]
+fn a_leading_system_code_is_not_part_of_a_name() {
+    let s = systems_with(&[("a-803l", "A-803L", 30001193, -0.04)]);
+    let r = analyze("A-803L mobile warp bubble up", &s, &noships(), &noknown(), 1, "ch", "x");
+    assert_eq!(r.systems.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["A-803L"]);
+    assert!(r.pilots.is_empty(), "{:?}", r.pilots);
+    assert!(r.bubble);
+}
+
+/// "2x tempest" beside seven named pilots is seven: the 2 counts one hull.
+#[test]
+fn named_pilots_floor_a_stated_count() {
+    assert_eq!(derive_count(Some(2), 0, 0, 7, false), Some(7));
+    assert_eq!(derive_count(Some(12), 0, 0, 7, false), Some(12));
+    assert_eq!(derive_count(Some(2), 0, 0, 2, false), Some(2));
+}
