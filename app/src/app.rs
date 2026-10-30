@@ -755,6 +755,8 @@ pub struct SpaiApp {
     map_pan: egui::Vec2,
     map_last_rect: Option<egui::Rect>,
     map_zoom: f32,
+    /// The scale last handed to egui, to tell a Settings change from a Ctrl +/- one.
+    ui_scale_applied: f32,
     map_follow: bool,
     map_follow_region: Option<(i64, i64)>,
     pub(crate) map_popped: bool,
@@ -1168,6 +1170,8 @@ impl SpaiApp {
         let notes_view = std::sync::Arc::new(notes.view_with(&settings.notes_folder, &settings.tag_colors));
 
         settings.theme.apply(ctx);
+        settings.ui_scale = crate::settings::clamp_ui_scale(settings.ui_scale);
+        ctx.set_zoom_factor(settings.ui_scale);
         crate::store::history::set_retention(&settings.retention);
 
         if !settings.alerts.seeded {
@@ -1737,6 +1741,7 @@ impl SpaiApp {
             map_pan: egui::Vec2::ZERO,
             map_last_rect: None,
             map_zoom: 1.0,
+            ui_scale_applied: f32::NAN,
             map_follow: false,
             map_follow_region: None,
             map_popped: false,
@@ -2407,6 +2412,25 @@ impl SpaiApp {
     /// stays the stored value, which code all over compares against.
     pub(crate) fn shown_character(&self) -> String {
         if self.active_character == "No character" { tr!("No character").to_owned() } else { self.active_character.clone() }
+    }
+
+    fn sync_ui_scale(&mut self, ctx: &egui::Context) {
+        if self.settings.ui_scale != self.ui_scale_applied {
+            self.settings.ui_scale = crate::settings::clamp_ui_scale(self.settings.ui_scale);
+            ctx.set_zoom_factor(self.settings.ui_scale);
+            self.ui_scale_applied = self.settings.ui_scale;
+            return;
+        }
+        let raw = ctx.zoom_factor();
+        if (raw - self.ui_scale_applied).abs() > 1e-4 {
+            let z = crate::settings::clamp_ui_scale(raw);
+            if z != raw {
+                ctx.set_zoom_factor(z);
+            }
+            self.settings.ui_scale = z;
+            self.ui_scale_applied = z;
+            self.needs_save = true;
+        }
     }
 
     pub(crate) fn apply_language(&mut self) {
@@ -4136,6 +4160,7 @@ impl eframe::App for SpaiApp {
         }
 
         self.settings.theme.apply(&ctx);
+        self.sync_ui_scale(&ctx);
         self.apply_language();
         if self.want_battle_history.swap(false, std::sync::atomic::Ordering::SeqCst) && self.battle_history.lock().unwrap().is_empty() {
             self.load_battle_history(&ctx);

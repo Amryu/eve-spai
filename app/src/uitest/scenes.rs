@@ -3306,6 +3306,21 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push({
         harness::scratch_profile();
         let mut app: Option<crate::app::SpaiApp> = None;
+        // A 720px wide window at 200% leaves 360 points.
+        Scene::ui("settings_general_scaled", [360.0, 3200.0], move |ui| {
+            let a = app.get_or_insert_with(|| {
+                let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+                a.settings.ui_scale = 2.0;
+                a.settings.eve_logs_dir = "C:/Users/pilot/Documents/EVE/logs/Chatlogs".into();
+                a.settings.eve_settings_dir = "C:/Users/pilot/AppData/Local/CCP/EVE".into();
+                a
+            });
+            egui::CentralPanel::default().show_inside(ui, |ui| a.settings_view(ui));
+        })
+    });
+    v.push({
+        harness::scratch_profile();
+        let mut app: Option<crate::app::SpaiApp> = None;
         Scene::ui("settings_history", [460.0, 420.0], move |ui| {
             let a = app.get_or_insert_with(|| {
                 let mut a = crate::app::SpaiApp::build(ui.ctx(), true);

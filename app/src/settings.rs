@@ -176,6 +176,9 @@ pub struct Settings {
     /// Ship names in that language as well, as a client set to it shows them.
     #[serde(default)]
     pub translate_ship_names: bool,
+    /// egui zoom factor over the OS scale. Ctrl +/- change it too, the app writes that back here.
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
     /// The language was chosen in setup or in the one-time dialog shown to those who set up before.
     #[serde(default)]
     pub language_asked: bool,
@@ -1145,6 +1148,16 @@ fn default_battle_break() -> i64 {
 fn default_true() -> bool {
     true
 }
+fn default_ui_scale() -> f32 {
+    1.0
+}
+pub const UI_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
+pub const UI_SCALE_PRESETS: [f32; 9] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5];
+
+/// A NaN or out-of-range value from disk or a keyboard zoom must not make the UI unusable.
+pub fn clamp_ui_scale(v: f32) -> f32 {
+    if v.is_finite() { v.clamp(*UI_SCALE_RANGE.start(), *UI_SCALE_RANGE.end()) } else { 1.0 }
+}
 fn default_volume() -> f32 {
     1.0
 }
@@ -1644,6 +1657,7 @@ impl Default for Settings {
             sealed_feed: Default::default(),
             language: String::new(),
             translate_ship_names: false,
+            ui_scale: 1.0,
             language_asked: false,
             retention: Default::default(),
             battles_enabled: true,

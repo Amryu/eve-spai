@@ -1950,6 +1950,21 @@ impl SpaiApp {
                     changed |= color_row(ui, tr!("Background"), &mut self.settings.theme.background);
                     changed |= color_row(ui, tr!("Foreground"), &mut self.settings.theme.foreground);
                     changed |= color_row(ui, tr!("Accent"), &mut self.settings.theme.accent);
+                    ui.add_space(4.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label(tr!("Interface scale"));
+                        let pct = |v: f32| format!("{}%", (v * 100.0).round() as i32);
+                        egui::ComboBox::from_id_salt("ui_scale")
+                            .selected_text(pct(self.settings.ui_scale))
+                            .show_ui(ui, |ui| {
+                                for v in crate::settings::UI_SCALE_PRESETS {
+                                    changed |= ui.menu_value(&mut self.settings.ui_scale, v, pct(v)).changed();
+                                }
+                            });
+                    })
+                    .response
+                    .on_hover_text(tr!("Scales text and controls in every window. Ctrl + and Ctrl - change it too, Ctrl 0 resets it."));
 
                     ui.separator();
 
@@ -2338,14 +2353,23 @@ impl SpaiApp {
     pub(crate) fn sounds_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
         ui.label(egui::RichText::new(tr!("Sounds")).strong());
+        // Sound rows side by side need ~460 points; at a high interface scale sliders move to a row
+        // of their own instead of off the window.
+        let narrow = ui.available_width() < 460.0;
+        let master = |ui: &mut egui::Ui, st: &mut crate::settings::Settings| {
+            ui.label(tr!("Master volume"));
+            ui.add_enabled_ui(!st.sound_muted, |ui| volume_slider(ui, &mut st.sound_master_volume)).inner
+        };
         ui.horizontal(|ui| {
             changed |= ui.checkbox(&mut self.settings.sound_muted, tr!("Mute all")).changed();
-            ui.add_space(12.0);
-            ui.label(tr!("Master volume"));
-            ui.add_enabled_ui(!self.settings.sound_muted, |ui| {
-                changed |= volume_slider(ui, &mut self.settings.sound_master_volume);
-            });
+            if !narrow {
+                ui.add_space(12.0);
+                changed |= master(ui, &mut self.settings);
+            }
         });
+        if narrow {
+            ui.horizontal(|ui| changed |= master(ui, &mut self.settings));
+        }
         ui.label(egui::RichText::new(tr!("Each sound's own volume is scaled by the master volume.")).weak());
 
         // A per-rule volume that falls back to a shared one until it is set.
@@ -2376,13 +2400,21 @@ impl SpaiApp {
         };
 
         let muted = self.settings.sound_muted;
+        let wrap = |ui: &mut egui::Ui| {
+            if narrow {
+                ui.end_row();
+                ui.label("");
+            }
+        };
         ui.add_enabled_ui(!muted, |ui| {
             if self.settings.alert_enabled {
                 group(ui, tr!("Intel alerts"));
                 egui::Grid::new("sounds_alerts").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
                     let a = &mut self.settings.alerts;
                     ui.label(tr!("Shared volume"));
-                    ui.label("");
+                    if !narrow {
+                        ui.label("");
+                    }
                     changed |= volume_slider(ui, &mut a.alert_volume);
                     ui.end_row();
                     let vol = a.alert_volume;
@@ -2392,13 +2424,16 @@ impl SpaiApp {
                         }
                         ui.label(*lbl);
                         changed |= sound_picker(ui, ("sounds_severity", i), false, &mut a.sounds[i], vol);
-                        ui.label("");
+                        if !narrow {
+                            ui.label("");
+                        }
                         ui.end_row();
                     }
                     for (i, rule) in a.rules.iter_mut().enumerate() {
                         rule_label(ui, &rule.name, rule.enabled);
                         let v = rule.volume.unwrap_or(vol);
                         changed |= sound_picker(ui, ("sounds_rule", i), true, &mut rule.sound, v);
+                        wrap(ui);
                         ui.horizontal(|ui| changed |= own_volume(ui, &mut rule.volume, vol));
                         ui.end_row();
                     }
@@ -2418,6 +2453,7 @@ impl SpaiApp {
                         ] {
                             ui.label(label);
                             changed |= sound_picker(ui, ("sounds_jabber", salt), false, sound, *vol);
+                            wrap(ui);
                             changed |= volume_slider(ui, vol);
                             ui.end_row();
                         }
@@ -2426,6 +2462,7 @@ impl SpaiApp {
                             rule_label(ui, &rule.name, rule.enabled);
                             let v = rule.volume.unwrap_or(ping_vol);
                             changed |= sound_picker(ui, ("sounds_ping_rule", i), true, &mut rule.sound, v);
+                            wrap(ui);
                             ui.horizontal(|ui| changed |= own_volume(ui, &mut rule.volume, ping_vol));
                             ui.end_row();
                         }
@@ -2442,6 +2479,7 @@ impl SpaiApp {
                 ] {
                     ui.label(label).on_hover_text(hint);
                     changed |= sound_picker(ui, ("sounds_map", salt), false, sound, *vol);
+                    wrap(ui);
                     changed |= volume_slider(ui, vol);
                     ui.end_row();
                 }
@@ -2455,12 +2493,14 @@ impl SpaiApp {
                     if fc {
                         ui.label(tr!("delve911 callout")).on_hover_text(tr!("A rescue request in delve911. At most once every five minutes."));
                         changed |= sound_picker(ui, ("sounds_rescue", 0), false, &mut st.sound_delve911, st.sound_delve911_volume);
+                        wrap(ui);
                         changed |= volume_slider(ui, &mut st.sound_delve911_volume);
                         ui.end_row();
                     }
                     if rescuee {
                         ui.label(tr!("Another cap save (Rescuee)")).on_hover_text(tr!("A cap-save ping in delve911 that is not yours while you are in Rescuee mode: get the Rorqual safe. At most once every 20 seconds."));
                         changed |= sound_picker(ui, ("sounds_rescue", 1), false, &mut st.sound_delve911_rescuee, st.sound_delve911_rescuee_volume);
+                        wrap(ui);
                         changed |= volume_slider(ui, &mut st.sound_delve911_rescuee_volume);
                         ui.end_row();
                     }

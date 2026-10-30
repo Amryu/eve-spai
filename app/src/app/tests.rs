@@ -3712,3 +3712,44 @@ mod loss_fitting_tests {
     }
 }
 
+
+#[cfg(test)]
+mod ui_scale_tests {
+    use crate::settings::clamp_ui_scale;
+
+    fn frame(ctx: &egui::Context, a: &mut super::SpaiApp) {
+        let _ = ctx.run_ui(Default::default(), |ui| a.sync_ui_scale(ui.ctx()));
+    }
+
+    #[test]
+    fn the_setting_drives_the_zoom_and_keyboard_zoom_is_saved() {
+        let ctx = egui::Context::default();
+        let mut a = super::SpaiApp::build(&ctx, true);
+        a.settings.ui_scale = 1.5;
+        frame(&ctx, &mut a);
+        frame(&ctx, &mut a);
+        assert_eq!(ctx.zoom_factor(), 1.5);
+        assert_eq!(a.settings.ui_scale, 1.5, "a Settings change must not be read back as a keyboard one");
+
+        a.needs_save = false;
+        ctx.set_zoom_factor(1.1);
+        frame(&ctx, &mut a);
+        assert!((a.settings.ui_scale - 1.1).abs() < 1e-4);
+        assert!(a.needs_save);
+
+        ctx.set_zoom_factor(5.0);
+        frame(&ctx, &mut a);
+        frame(&ctx, &mut a);
+        assert_eq!(a.settings.ui_scale, 3.0);
+        assert_eq!(ctx.zoom_factor(), 3.0);
+    }
+
+    #[test]
+    fn a_broken_or_missing_scale_falls_back() {
+        assert_eq!(clamp_ui_scale(f32::NAN), 1.0);
+        assert_eq!(clamp_ui_scale(0.01), 0.5);
+        assert_eq!(clamp_ui_scale(1.25), 1.25);
+        let s: crate::settings::Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.ui_scale, 1.0);
+    }
+}
