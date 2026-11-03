@@ -123,11 +123,9 @@ impl SpaiApp {
         }
     }
 
-    /// Puts holes read from the database in place, and refreshes a route that went through one
-    /// that changed.
-    fn apply_wormholes(&mut self, loaded: WhLoaded) {
+    /// Puts holes read from the database in place, and replans the map's route if one changed.
+    pub(crate) fn apply_wormholes(&mut self, loaded: WhLoaded) {
         let usable = self.wh_usable();
-        let was = self.route_destination.and_then(|d| self.ingame_hole_waypoints(d));
         let WhLoaded { holes, groups, now, .. } = loaded;
         // A hole switched off that has since closed is forgotten with it.
         let before = self.settings.wh_disabled_holes.len();
@@ -136,9 +134,9 @@ impl SpaiApp {
         self.wh_cache = holes;
         self.wh_overlay = WhOverlay::build(&self.wh_cache, |w| !self.wh_blocked(w, now));
         self.wh_group_of = groups;
-        // Synced, expired, edited or found: a route through a hole that changed is out of date.
-        if self.wh_usable() != usable {
-            self.wh_routes_refresh(Some(was));
+        // Never the game's route: a sync rewrote it mid-flight, from wherever the pilot was by then.
+        if self.wh_usable() != usable && !self.map_route_anchors.is_empty() {
+            self.map_recompute_route();
         }
     }
 
@@ -283,7 +281,7 @@ impl SpaiApp {
     pub(crate) fn wh_routing_changed(&mut self) {
         self.needs_save = true;
         self.wh_overlay = WhOverlay::build(&self.wh_cache, |w| !self.wh_blocked(w, crate::clock::utc().timestamp()));
-        self.wh_routes_refresh(None);
+        self.wh_routes_refresh();
     }
 
     /// Toggles for the kinds of hole routes may use. Returns whether any changed.
@@ -417,26 +415,18 @@ impl SpaiApp {
         self.wh_reloaded = Some(std::time::Instant::now());
     }
 
-    /// Redoes every route after the holes they may use changed: the map's planned route and the one
-    /// in the game. `was` is the game route's hole waypoints from before;
-    /// the game is only sent the route again when they differ. `None` sends it anyway.
-    pub(crate) fn wh_routes_refresh(&mut self, was: Option<Option<Vec<i64>>>) {
+    /// Redoes every route after the user changed which holes they may use: the map's planned route
+    /// and the one in the game.
+    pub(crate) fn wh_routes_refresh(&mut self) {
         if !self.map_route_anchors.is_empty() {
             self.map_recompute_route();
         }
         let Some(dest) = self.route_destination else { return };
-        if self.active_character == "No character" || was.is_some_and(|w| w == self.ingame_hole_waypoints(dest)) {
+        if self.active_character == "No character" {
             return;
         }
         let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
         self.set_destination_esi(cid, self.active_character.clone(), dest);
-    }
-
-    fn ingame_hole_waypoints(&self, dest: i64) -> Option<Vec<i64>> {
-        if !self.settings.route_via_wormholes {
-            return None;
-        }
-        self.wh_route_waypoints(self.player_system()?, dest)
     }
 
     /// Holes routes may use, as a stable value to compare.
@@ -1041,6 +1031,13 @@ pub(crate) struct WhLoaded {
     groups: std::collections::HashMap<String, String>,
     now: i64,
     gen: u64,
+}
+
+#[cfg(test)]
+impl WhLoaded {
+    pub(crate) fn of(holes: Vec<crate::wormholes::Wormhole>) -> Self {
+        Self { holes, groups: Default::default(), now: crate::clock::utc().timestamp(), gen: 0 }
+    }
 }
 
 pub(crate) fn load_wormholes(store: &crate::store::Store, now: i64, gen: u64) -> WhLoaded {

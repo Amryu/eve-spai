@@ -143,6 +143,13 @@ pub(crate) fn seed_overlay_size(
     }
 }
 
+/// Windows shows a window kept off the taskbar on every virtual desktop at once. The alert and
+/// ping windows are only up while there is something in them, so their taskbar entry is the price
+/// of staying on the desktop they belong to.
+fn on_every_desktop_without_taskbar() -> bool {
+    cfg!(target_os = "windows")
+}
+
 pub(crate) fn ping_viewport_builder(
     on_top: bool,
     pos: Option<(f32, f32)>,
@@ -153,7 +160,7 @@ pub(crate) fn ping_viewport_builder(
         .with_title(tr!("EVE Spai \u{2014} Fleet ping"))
         .with_min_inner_size([260.0, 100.0])
         .with_resizable(true)
-        .with_taskbar(false)
+        .with_taskbar(on_every_desktop_without_taskbar())
         .with_visible(false)
         // Windows shows a window with SW_SHOW, which activates it, whenever any of its flags
         // changes, and Smart on-top flips the level every time EVE gains or loses focus: an
@@ -254,7 +261,7 @@ pub(crate) fn alert_viewport_builder(
         .with_resizable(true)
         // Floor so the title-bar controls and resize grip always fit, even in compact mode.
         .with_min_inner_size([200.0, 90.0])
-        .with_taskbar(false)
+        .with_taskbar(on_every_desktop_without_taskbar())
         // A normal managed top-level, kept above and off the taskbar, with no parent: the window
         // manager has nothing tying it to the main window, so it stays up when that is minimized.
         //
@@ -815,11 +822,13 @@ pub(crate) fn build_ping_viewport_cb(
         let geom_at = st.geom_at;
         let win_pos = st.win_pos;
         let win_size = st.win_size;
+        // The pointer on it holds it up: being read is not the moment for it to drop behind.
+        let hovered = ctx.input(|i| i.pointer.has_pointer());
         let on_top = st.on_top != crate::settings::OnTop::Never
-            && (st.on_top == crate::settings::OnTop::Always || st.eve_focused);
-        let due = st
-            .level_at
-            .is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(800));
+            && (st.on_top == crate::settings::OnTop::Always || st.eve_focused || (hovered && st.level_applied == Some(true)));
+        // Windows only, as for the alert window: elsewhere the re-assert is a raise KWin complains about.
+        let due = cfg!(target_os = "windows")
+            && st.level_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(800));
         if st.level_applied != Some(on_top) || (on_top && due) {
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on_top {
                 egui::WindowLevel::AlwaysOnTop

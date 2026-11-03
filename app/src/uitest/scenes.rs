@@ -1874,6 +1874,35 @@ fn jabber_start_scene(name: &'static str, rooms: bool) -> Scene {
     })
 }
 
+/// The rooms the server lists, as the room dialog's search suggests them. A long name too.
+fn listed_rooms() -> Vec<(String, String)> {
+    let r = |node: &str, name: &str| (format!("{node}@conference.goonfleet.com"), name.to_owned());
+    vec![
+        r("fleet_capitals", "Fleet capitals"),
+        r("fleetops", "fleetops"),
+        r("logi", "Logistics"),
+        r("capsuleer_fleet_school_and_the_very_long_name_room", "Capsuleer fleet school and the very long name room"),
+        r("hr", "Human resources"),
+    ]
+}
+
+fn jabber_join_search_scene(name: &'static str, query: &'static str) -> Scene {
+    harness::scratch_profile();
+    let f = fixtures::jabber_sidebar_frame();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ctx(name, [420.0, 400.0], move |ctx| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ctx, true);
+            let mut st = fixtures::jabber_state();
+            st.room_directory = Some(Ok(listed_rooms()));
+            *a.jabber.lock().unwrap() = st;
+            a.jabber_room_input = query.to_owned();
+            a
+        });
+        app.jabber_join_dialog_for_test(ctx, &f, true);
+    })
+}
+
 /// The rescue feed on its own. The rescue window itself has no scene, so this renders the chat the
 /// way `uitest_rescue_chat_lines_are_one_line_tall` drives it.
 fn rescue_chat_scene(name: &'static str, size: [f32; 2]) -> Scene {
@@ -2626,6 +2655,7 @@ pub(crate) fn all() -> Vec<Scene> {
         // One dialog per kind, and neither offering the other kind's conversations.
         jabber_start_scene("jabber_start_dm", false),
         jabber_start_scene("jabber_join_room", true),
+        jabber_join_search_scene("jabber_join_room_search", "fleet"),
         // The class list is the subject, so the panel is sized to show the picker and the
         // range readout that moves with it.
         route_panel_scene("route_panel_gate"),
@@ -10261,4 +10291,39 @@ fn uitest_the_fit_offers_its_ship_and_lets_go_of_the_selection() {
     press_at(&h, module, egui::PointerButton::Secondary);
     h.run_steps(3);
     assert!(h.query_by_label("2 modules").is_none(), "a click on nothing let go of the selection");
+}
+
+/// Typing in the room dialog suggests the rooms the server lists, and picking one joins it.
+#[test]
+fn uitest_the_room_dialog_suggests_and_joins_listed_rooms() {
+    use egui_kittest::kittest::Queryable as _;
+    harness::scratch_profile();
+    let f = fixtures::jabber_sidebar_frame();
+    let app: std::rc::Rc<std::cell::RefCell<Option<crate::app::SpaiApp>>> = Default::default();
+    let held = app.clone();
+    let mut scene = Scene::ctx("join_search", [420.0, 400.0], move |ctx| {
+        let mut slot = held.borrow_mut();
+        let a = slot.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ctx, true);
+            let mut st = fixtures::jabber_state();
+            st.room_directory = Some(Ok(listed_rooms()));
+            *a.jabber.lock().unwrap() = st;
+            a.jabber_room_input = "fleet".to_owned();
+            a
+        });
+        if a.jabber_room_input == "fleet" {
+            a.jabber_join_dialog_for_test(ctx, &f, true);
+        }
+    });
+    let mut h = harness::build(&mut scene, false);
+    h.run();
+    assert!(h.query_by_label_contains("Fleet capitals").is_some(), "a listed room that matches is not offered");
+    assert!(h.query_by_label_contains("fleetops").is_some());
+    assert!(h.query_by_label_contains("Human resources").is_none(), "a room that does not match is offered");
+    h.get_by_label("Fleet capitals").click();
+    h.run();
+    drop(h);
+    let slot = app.borrow();
+    let a = slot.as_ref().unwrap();
+    assert!(a.settings.jabber_rooms.iter().any(|r| r == "fleet_capitals@conference.goonfleet.com"), "picking a listed room did not join it");
 }

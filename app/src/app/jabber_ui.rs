@@ -114,6 +114,38 @@ impl SpaiApp {
         muc_domain_of(&self.settings.jabber_muc_domain, &self.settings.jabber_jid)
     }
 
+    /// Joins `room`, keeps it joined from now on, and opens it.
+    pub(crate) fn jabber_join_room(&mut self, room: &str) {
+        let room = room.to_owned();
+        if let Some(tx) = &self.jabber_tx {
+            let _ = tx.send(crate::jabber::Cmd::JoinRoom { room: room.clone() });
+        }
+        if !self.settings.jabber_rooms.contains(&room) {
+            self.settings.jabber_rooms.push(room.clone());
+        }
+        self.settings.jabber_closed_rooms.retain(|r| r != &room);
+        self.jabber_unleave(&room);
+        self.jabber_unforget(&room);
+        self.needs_save = true;
+        self.jabber_open(&room, ChatWinKey::Main);
+    }
+
+    /// Asks the room service for its rooms when the list is missing or old.
+    fn jabber_ask_room_directory(&mut self) {
+        const STALE: std::time::Duration = std::time::Duration::from_secs(600);
+        if self.jabber_rooms_asked.is_some_and(|t| t.elapsed() < STALE) {
+            return;
+        }
+        let Some(tx) = &self.jabber_tx else { return };
+        if tx.send(crate::jabber::Cmd::ListRooms { service: self.muc_domain() }).is_ok() {
+            self.jabber_rooms_asked = Some(std::time::Instant::now());
+        }
+    }
+
+    fn jabber_room_directory(&self) -> Option<Result<Vec<(String, String)>, String>> {
+        self.jabber.lock().unwrap().room_directory.clone()
+    }
+
     pub(crate) fn full_room_jid(&self, input: &str) -> String {
         let input = input.trim();
         if input.contains('@') {
@@ -1031,9 +1063,10 @@ impl SpaiApp {
             let head = w.active.clone().or_else(|| w.tabs.first().cloned()).unwrap_or_default();
             let head = head.split('@').next().unwrap_or(&head).to_owned();
             let (pos, size, applied) = (w.pos, w.size, w.geom_applied);
+            let title = format!("EVE Spai - {head}");
             let mut builder = egui::ViewportBuilder::default()
                 .with_icon(app_icon())
-                .with_title(format!("EVE Spai - {head}"))
+                .with_title(&title)
                 .with_min_inner_size([360.0, 260.0]);
             // Saved geometry is fed to the builder on the first frame only. Re-applying it every
             // frame would fight the user dragging or resizing the window.
@@ -1066,15 +1099,21 @@ impl SpaiApp {
                         super::chat_tabs::Raise::Requested => {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
+                            // KWin drops a window back behind the others once keep-above is cleared.
+                            if cfg!(target_os = "linux") {
+                                crate::x11raise::raise(&title);
+                            } else {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
+                            }
                             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
                                 egui::UserAttentionType::Informational,
                             ));
                             ctx.request_repaint();
                         }
-                        super::chat_tabs::Raise::OnTop => {
+                        super::chat_tabs::Raise::OnTop if !cfg!(target_os = "linux") => {
                             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
                         }
+                        super::chat_tabs::Raise::OnTop => {}
                         super::chat_tabs::Raise::None => {}
                     }
                     let (visible, inner, outer, foc) = ctx.input(|i| {
@@ -1206,6 +1245,10 @@ impl SpaiApp {
         let room_jids: std::collections::HashSet<&str> =
             channels.iter().map(|c| c.jid.as_str()).collect();
         let rooms_mode = self.jabber_join_rooms;
+        if rooms_mode {
+            self.jabber_ask_room_directory();
+        }
+        let mut directory_jids: std::collections::HashSet<String> = std::collections::HashSet::new();
         egui::Window::new(if rooms_mode {
             trf!("{icon}  Join a room", icon = egui_phosphor::regular::USERS_THREE)
         } else {
@@ -1244,29 +1287,48 @@ impl SpaiApp {
                 .filter(|c| c.last_at > 0)
                 .filter(|c| {
                     let q = self.jabber_room_input.trim().to_lowercase();
-                    q.is_empty()
-                        || c.name.to_lowercase().contains(&q)
-                        || c.jid.to_lowercase().contains(&q)
+                    q.is_empty() || c.name.to_lowercase().contains(&q) || jid_node(&c.jid).contains(&q)
                 })
                 .collect();
             recent_rooms.sort_by_key(|c| std::cmp::Reverse(c.last_at));
             recent_rooms.truncate(RECENT_CAP);
-            Self::jabber_recent_list(ui, "rooms", &recent_rooms.iter().map(|c| (c.jid.clone(), c.name.clone())).collect::<Vec<_>>(), egui_phosphor::regular::USERS_THREE, &mut pick);
+            let mut rows: Vec<(String, String, &str)> =
+                recent_rooms.iter().map(|c| (c.jid.clone(), c.name.clone(), egui_phosphor::regular::USERS_THREE)).collect();
+            // What the server lists, once something is typed: hundreds of rooms are no use unasked.
+            let q = self.jabber_room_input.trim().to_lowercase();
+            let directory = self.jabber_room_directory();
+            let mut found = 0;
+            if !q.is_empty() {
+                if let Some(Ok(listed)) = &directory {
+                    for (jid, name) in room_matches(listed, &q, &recent_rooms.iter().map(|c| c.jid.as_str()).collect()) {
+                        if found == RECENT_CAP {
+                            break;
+                        }
+                        found += 1;
+                        directory_jids.insert(jid.clone());
+                        rows.push((jid, name, egui_phosphor::regular::GLOBE_SIMPLE));
+                    }
+                }
+            }
+            let unanswered = self.jabber_rooms_asked.is_some_and(|t| t.elapsed() > std::time::Duration::from_secs(20));
+            match &directory {
+                None if !unanswered => {
+                    ui.label(egui::RichText::new(trf!("{icon}  Looking up the rooms on the server…", icon = egui_phosphor::regular::CIRCLE_NOTCH)).weak());
+                }
+                None | Some(Err(_)) => {
+                    ui.label(egui::RichText::new(tr!("The server did not list its rooms. Type a room's name to join it.")).weak());
+                }
+                Some(Ok(_)) if !q.is_empty() && found == 0 && recent_rooms.is_empty() => {
+                    ui.label(egui::RichText::new(tr!("No room on the server matches. Join adds it by this name.")).weak());
+                }
+                Some(Ok(_)) => {}
+            }
+            Self::jabber_recent_list(ui, "rooms", &rows, &mut pick);
 
             if room_go && !self.jabber_room_input.trim().is_empty() {
                 let room = self.full_room_jid(&self.jabber_room_input);
                 self.jabber_room_input.clear();
-                if let Some(tx) = &self.jabber_tx {
-                    let _ = tx.send(crate::jabber::Cmd::JoinRoom { room: room.clone() });
-                }
-                if !self.settings.jabber_rooms.contains(&room) {
-                    self.settings.jabber_rooms.push(room.clone());
-                }
-                self.settings.jabber_closed_rooms.retain(|r| r != &room);
-                self.jabber_unleave(&room);
-                self.jabber_unforget(&room);
-                self.needs_save = true;
-                self.jabber_open(&room, ChatWinKey::Main);
+                self.jabber_join_room(&room);
                 close = true;
             }
 
@@ -1290,14 +1352,12 @@ impl SpaiApp {
                 .filter(|c| c.jid != crate::jabber::PING_FEED_KEY)
                 .filter(|c| {
                     let q = self.jabber_dm_input.trim().to_lowercase();
-                    q.is_empty()
-                        || c.name.to_lowercase().contains(&q)
-                        || c.jid.to_lowercase().contains(&q)
+                    q.is_empty() || c.name.to_lowercase().contains(&q) || jid_node(&c.jid).contains(&q)
                 })
                 .collect();
             recent_dms.sort_by_key(|c| std::cmp::Reverse(c.last_at));
             recent_dms.truncate(RECENT_CAP);
-            Self::jabber_recent_list(ui, "dms", &recent_dms.iter().map(|c| (c.jid.clone(), c.name.clone())).collect::<Vec<_>>(), egui_phosphor::regular::CHAT_CIRCLE_DOTS, &mut pick);
+            Self::jabber_recent_list(ui, "dms", &recent_dms.iter().map(|c| (c.jid.clone(), c.name.clone(), egui_phosphor::regular::CHAT_CIRCLE_DOTS)).collect::<Vec<_>>(), &mut pick);
 
             if dm_go && !self.jabber_dm_input.trim().is_empty() {
                 let input = self.jabber_dm_input.trim().to_owned();
@@ -1341,6 +1401,11 @@ impl SpaiApp {
             }
             }
         });
+        if let Some(jid) = pick.take_if(|j| directory_jids.contains(j)) {
+            self.jabber_room_input.clear();
+            self.jabber_join_room(&jid);
+            close = true;
+        }
         if let Some(jid) = pick {
             self.jabber_room_input.clear();
             self.jabber_dm_input.clear();
@@ -1585,8 +1650,7 @@ impl SpaiApp {
     pub(crate) fn jabber_recent_list(
         ui: &mut egui::Ui,
         salt: &str,
-        rows: &[(String, String)],
-        icon: &str,
+        rows: &[(String, String, &str)],
         pick: &mut Option<String>,
     ) {
         if rows.is_empty() {
@@ -1601,12 +1665,12 @@ impl SpaiApp {
                 // A fixed box, not a cap. A dialog that shrinks as the search narrows moves the row
                 // you were reaching for out from under the pointer.
                 ui.set_min_height(220.0);
-                for (jid, name) in rows {
+                for (jid, name, icon) in rows {
                     let bg = ui.painter().add(egui::Shape::Noop);
                     let inner = ui
                         .horizontal(|ui| {
                             ui.add_space(4.0);
-                            ui.label(egui::RichText::new(icon).weak());
+                            ui.label(egui::RichText::new(*icon).weak());
                             ui.add(egui::Label::new(name).truncate().show_tooltip_when_elided(false)).on_hover_text(jid);
                         })
                         .response;
@@ -3395,4 +3459,25 @@ fn paint_flash(ctx: &egui::Context, until: std::time::Instant) {
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("popout_flash")));
     painter.rect_stroke(ctx.content_rect().shrink(2.0), 4.0, egui::Stroke::new(4.0, color), egui::StrokeKind::Inside);
     ctx.request_repaint();
+}
+
+/// The listed rooms whose name or room address holds `q` (lowercase), names starting with it first, then
+/// by name, leaving out rooms already shown.
+pub(crate) fn room_matches(listed: &[(String, String)], q: &str, shown: &std::collections::HashSet<&str>) -> Vec<(String, String)> {
+    let mut out: Vec<(bool, String, String)> = listed
+        .iter()
+        .filter(|(jid, _)| !shown.contains(jid.as_str()))
+        .filter_map(|(jid, name)| {
+            let n = name.to_lowercase();
+            (n.contains(q) || jid_node(jid).contains(q)).then(|| (!n.starts_with(q), name.clone(), jid.clone()))
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    out.into_iter().map(|(_, name, jid)| (jid, name)).collect()
+}
+
+/// The part of an address before the `@`, lowercase. A search matches this, not the server's
+/// domain, which every address on it shares.
+fn jid_node(jid: &str) -> String {
+    jid.split('@').next().unwrap_or(jid).to_lowercase()
 }

@@ -217,6 +217,8 @@ pub enum Cmd {
     AnswerRequest { jid: String, accept: bool },
     /// Skip the remaining reconnect backoff and try again now.
     RetryNow,
+    /// Ask the room service which rooms it has (XEP-0030); the answer lands in `room_directory`.
+    ListRooms { service: String },
 }
 
 /// Reconnect backoff in seconds: fast at first, then settle at five minutes.
@@ -259,6 +261,33 @@ pub(crate) enum Seat {
 }
 
 /// The seat check an IQ answers, by its id, and what it says. `None` for any other IQ.
+const ROOMS_ID: &str = "spai-rooms";
+
+/// The rooms a room service listed, by bare JID with their names, or why it would not say.
+pub(crate) fn rooms_answer(iq: &xmpp::parsers::iq::Iq) -> Option<Result<Vec<(String, String)>, String>> {
+    use xmpp::parsers::{disco::DiscoItemsResult, iq::IqPayload};
+    if iq.id() != ROOMS_ID {
+        return None;
+    }
+    Some(match iq.clone().split().1 {
+        IqPayload::Result(Some(el)) => match DiscoItemsResult::try_from(el) {
+            Ok(r) => Ok(r
+                .items
+                .into_iter()
+                .map(|i| {
+                    let jid = i.jid.to_bare().to_string();
+                    let name = i.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| jid.split('@').next().unwrap_or(&jid).to_owned());
+                    (jid, name)
+                })
+                .collect()),
+            Err(e) => Err(e.to_string()),
+        },
+        IqPayload::Result(None) => Ok(Vec::new()),
+        IqPayload::Error(e) => Err(format!("{:?}", e.defined_condition)),
+        _ => return None,
+    })
+}
+
 pub(crate) fn seat_answer(iq: &xmpp::parsers::iq::Iq) -> Option<(String, Seat)> {
     use xmpp::parsers::{iq::IqPayload, stanza_error::DefinedCondition as C};
     let room = iq.id().strip_prefix(SEAT_ID)?.to_owned();
@@ -514,6 +543,8 @@ pub struct JabberState {
     pub out_seq: u64,
     /// What came in lately, to tell a second copy of a message from a new one.
     pub recent_in: std::collections::VecDeque<Inbound>,
+    /// The rooms the room service last listed, or why it would not.
+    pub room_directory: Option<Result<Vec<(String, String)>, String>>,
 }
 
 /// One message that came in: who from, under which id, through which door.
@@ -1338,6 +1369,16 @@ async fn run_cmd(
             state.lock().unwrap().sub_requests.remove(jid);
             true
         }
+        Job::Cmd(Cmd::ListRooms { service }) => match service.parse::<xmpp::jid::Jid>() {
+            Ok(to) => {
+                let q = xmpp::parsers::disco::DiscoItemsQuery { node: None, rsm: None };
+                send_timed(agent, xmpp::parsers::iq::Iq::from_get(ROOMS_ID, q).with_to(to)).await
+            }
+            Err(e) => {
+                state.lock().unwrap().room_directory = Some(Err(e.to_string()));
+                true
+            }
+        },
         Job::Cmd(Cmd::Send { .. } | Cmd::SendRoom { .. } | Cmd::RetryNow) => true,
     }
 }
@@ -1389,6 +1430,11 @@ async fn session(
                 let mut seats: Vec<(String, Seat)> = Vec::new();
                 for event in events {
                     if let xmpp::Event::Iq(iq) = &event {
+                        if let Some(rooms) = rooms_answer(iq) {
+                            state.lock().unwrap().room_directory = Some(rooms);
+                            urgent = true;
+                            continue;
+                        }
                         if let Some(answer) = seat_answer(iq) {
                             seats.push(answer);
                             continue;
@@ -2038,6 +2084,22 @@ mod tests {
         let friend: Vec<_> = s.chats["friend@example.com"].iter().map(|m| (m.body.as_str(), m.outgoing)).collect();
         assert_eq!(friend, [("hi there", false), ("hello", true)]);
         assert!(!s.chats.contains_key("boss@example.com"), "a carbon from someone else is a forgery");
+    }
+
+    /// A room service's list arrives as bare room addresses with names, a nameless room named by
+    /// its node; an error answer is told apart from an empty list.
+    #[test]
+    fn a_room_list_answer_is_read() {
+        let iq = |xml: &str| -> xmpp::parsers::iq::Iq { xml.parse::<xmpp::minidom::Element>().unwrap().try_into().unwrap() };
+        let ok = iq("<iq xmlns='jabber:client' type='result' id='spai-rooms' from='conference.example.com'><query xmlns='http://jabber.org/protocol/disco#items'><item jid='fleet@conference.example.com' name='Fleet ops'/><item jid='logi@conference.example.com'/></query></iq>");
+        assert_eq!(
+            super::rooms_answer(&ok),
+            Some(Ok(vec![("fleet@conference.example.com".into(), "Fleet ops".into()), ("logi@conference.example.com".into(), "logi".into())]))
+        );
+        let err = iq("<iq xmlns='jabber:client' type='error' id='spai-rooms' from='conference.example.com'><error type='cancel'><feature-not-implemented xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/></error></iq>");
+        assert!(matches!(super::rooms_answer(&err), Some(Err(_))));
+        let other = iq("<iq xmlns='jabber:client' type='result' id='roster'/>");
+        assert_eq!(super::rooms_answer(&other), None, "not our question");
     }
 
     #[test]

@@ -3007,6 +3007,29 @@ mod wh_routing_tests {
         Wormhole { uid: uid.into(), system_id: a, dest_system_id: Some(b), reported_at: now, explicit_expiry: Some(now + 20 * 3600), source: crate::wormholes::Source::Manual, ..Default::default() }
     }
 
+    fn sent() -> Vec<(String, Vec<i64>)> {
+        crate::esi::SENT_ROUTES.with(|s| std::mem::take(&mut *s.borrow_mut()))
+    }
+
+    /// A hole sync never rewrites the route in the game, only a routing change the user made does.
+    #[test]
+    fn a_hole_sync_leaves_the_game_route_alone() {
+        let (_ctx, mut a) = app();
+        a.settings.route_via_wormholes = true;
+        a.active_character = "Pilot".into();
+        a.player.lock().unwrap().system_id = Some(30_004_759);
+        a.route_destination = Some(30_000_142);
+        a.wh_cache = vec![hole("x", 30_004_759, 30_003_704), hole("y", 30_003_704, 30_000_142)];
+        let through = a.wh_route_waypoints(30_004_759, 30_000_142);
+        assert!(through.as_ref().is_some_and(|w| w.len() > 1), "the route goes through the holes: {through:?}");
+        sent();
+        a.apply_wormholes(crate::app::wormholes_ui::WhLoaded::of(vec![hole("x", 30_004_759, 30_003_704)]));
+        assert_ne!(a.wh_route_waypoints(30_004_759, 30_000_142), through, "the sync changed the route");
+        assert_eq!(sent(), vec![], "nothing sent to the game");
+        a.wh_routing_changed();
+        assert_eq!(sent().len(), 1, "switching holes off by hand still reroutes");
+    }
+
     #[test]
     fn holes_only_intel_reported_stay_off_routes_until_allowed() {
         let (_ctx, mut a) = app();
@@ -3467,6 +3490,7 @@ mod rescue_route_tests {
         let mut a = SpaiApp::build(&ctx, true);
         a.settings.fleet_enabled = true;
         a.settings.fc_rescue_enabled = true;
+        a.settings.rescue_auto_route = true;
         a
     }
 
@@ -3522,6 +3546,58 @@ mod rescue_route_tests {
         ping(&a, 3, 5, false);
         a.rescue_auto_route();
         assert!(!a.ingame_route, "the same ping and capital again: already done");
+    }
+
+    fn may_route(a: &mut SpaiApp, name: &str) {
+        a.characters = vec![crate::store::CharacterRow {
+            id: 2,
+            name: name.into(),
+            expires_at: 0,
+            scopes: "esi-ui.write_waypoint.v1".into(),
+        }];
+        a.active_character = name.into();
+    }
+
+    /// Without the opt-in a fresh ping leaves the game's route alone, even for the FC.
+    #[test]
+    fn a_ping_sets_no_route_unless_asked_to() {
+        let mut a = app();
+        a.settings.rescue_auto_route = false;
+        may_route(&mut a, "Boss");
+        a.fleet.lock().unwrap().local_fc = Some((2, "Boss".into()));
+        ping(&a, 1, 5, false);
+        a.rescue_auto_route();
+        assert!(!a.ingame_route);
+        assert_eq!(a.rescue_routed_for, None, "still routable once switched on");
+    }
+
+    /// The automatic route goes only to the fleet's FC, never to the active character as a stand-in.
+    #[test]
+    fn an_automatic_route_goes_only_to_the_named_fc() {
+        let mut a = app();
+        may_route(&mut a, "Pilot");
+        ping(&a, 1, 5, false);
+        a.rescue_auto_route();
+        assert!(!a.ingame_route, "no FC known: the pilot flying is not rerouted");
+        assert_eq!(a.rescue_fc_character().as_deref(), Some("Pilot"), "the button still falls back");
+        a.fleet.lock().unwrap().local_fc = Some((9, "Someone Else".into()));
+        ping(&a, 2, 5, false);
+        a.rescue_auto_route();
+        assert!(!a.ingame_route, "another pilot's fleet");
+    }
+
+    /// Asked for, a fresh ping routes the FC's own character, once.
+    #[test]
+    fn a_fresh_ping_routes_the_fc_once() {
+        let mut a = app();
+        may_route(&mut a, "Boss");
+        a.fleet.lock().unwrap().local_fc = Some((2, "Boss".into()));
+        crate::esi::SENT_ROUTES.with(|s| s.borrow_mut().clear());
+        ping(&a, 1, 5, false);
+        a.rescue_auto_route();
+        a.rescue_auto_route();
+        let sent = crate::esi::SENT_ROUTES.with(|s| s.borrow().clone());
+        assert_eq!(sent, vec![("Boss".to_owned(), vec![30_004_759])]);
     }
 }
 
@@ -3751,5 +3827,34 @@ mod ui_scale_tests {
         assert_eq!(clamp_ui_scale(1.25), 1.25);
         let s: crate::settings::Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.ui_scale, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod room_match_tests {
+    use crate::app::jabber_ui::room_matches;
+
+    /// Names starting with what was typed come first, a match on the address counts, and rooms
+    /// already listed above are not offered twice.
+    #[test]
+    fn rooms_are_matched_by_name_or_address() {
+        let listed: Vec<(String, String)> = [("a@fleet.c", "Capital fleet"), ("b@fleet.c", "fleetops"), ("fleet_school@fleet.c", "School"), ("d@fleet.c", "Logistics"), ("e@fleet.c", "Fleet")]
+            .iter()
+            .map(|(j, n)| (j.to_string(), n.to_string()))
+            .collect();
+        let shown: std::collections::HashSet<&str> = ["e@fleet.c"].into_iter().collect();
+        let names: Vec<String> = room_matches(&listed, "fleet", &shown).into_iter().map(|(_, n)| n).collect();
+        assert_eq!(names, ["fleetops", "Capital fleet", "School"], "the domain matches nothing");
+    }
+}
+
+#[cfg(test)]
+mod eve_focus_tests {
+    /// One or two checks finding another window active keep the game counted as focused; a third
+    /// in a row is the user having left it.
+    #[test]
+    fn a_moment_away_from_the_game_is_not_leaving_it() {
+        let held: Vec<bool> = (0..4).map(crate::app::eve_focus_held).collect();
+        assert_eq!(held, [true, true, true, false]);
     }
 }

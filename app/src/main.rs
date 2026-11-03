@@ -64,6 +64,7 @@ mod fleets;
 mod nav;
 mod notes;
 mod pings;
+mod x11raise;
 mod procstat;
 mod push;
 mod rats;

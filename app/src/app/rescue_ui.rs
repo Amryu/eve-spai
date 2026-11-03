@@ -287,6 +287,10 @@ impl SpaiApp {
             return changed;
         }
         changed |= ui
+            .checkbox(&mut self.settings.rescue_auto_route, tr!("Set the route in game on a new ping"))
+            .on_hover_text(tr!("Only for your character that is the fleet's FC. Off, the route is set with the button."))
+            .changed();
+        changed |= ui
             .checkbox(&mut self.settings.rescue_sc_ops, tr!("Skirmish commander: rescues on ops 9 to 12"))
             .on_hover_text(tr!("The op channels a rescue picks from. Skirmish commanders and up use 9 to 12, everyone else 1 to 6."))
             .changed();
@@ -1978,8 +1982,6 @@ fn show_info_button(ui: &mut egui::Ui, pilot: &str, by: Option<&str>) -> bool {
 const AUTO_ROUTE_FRESH_SECS: i64 = 600;
 
 impl SpaiApp {
-    /// The FC's character among those signed in here that may set waypoints: the dashboard's FC by
-    /// name, else the active character.
     /// The character Show Info opens on: the FC's, else the active one, among those allowed to
     /// open windows.
     pub(crate) fn rescue_info_character(&self) -> Option<String> {
@@ -1995,12 +1997,16 @@ impl SpaiApp {
             .map(|c| (*c).to_owned())
     }
 
+    /// The FC's character among those signed in here that may set waypoints: the dashboard's FC by
+    /// name, else the active character.
     pub(crate) fn rescue_fc_character(&self) -> Option<String> {
-        let chars = self.waypoint_characters();
-        let fc = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).fc().map(|(_, name)| name);
-        fc.filter(|n| chars.iter().any(|c| c.eq_ignore_ascii_case(n)))
-            .and_then(|n| chars.iter().find(|c| c.eq_ignore_ascii_case(&n)).cloned())
-            .or_else(|| chars.iter().find(|c| **c == self.active_character).cloned())
+        self.rescue_named_fc().or_else(|| self.waypoint_characters().into_iter().find(|c| *c == self.active_character))
+    }
+
+    /// The fleet's FC when that is a character signed in here that may set waypoints, never a stand-in.
+    fn rescue_named_fc(&self) -> Option<String> {
+        let fc = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).fc().map(|(_, name)| name)?;
+        self.waypoint_characters().into_iter().find(|c| c.eq_ignore_ascii_case(&fc))
     }
 
     /// The waypoints that take `name` to the capital in `target`: out of the titan's range, its
@@ -2034,7 +2040,6 @@ impl SpaiApp {
         }
     }
 
-    /// A fresh ping picked: its route goes to the FC's character once, without a click.
     /// A rescue ping came in within the last [`AUTO_ROUTE_FRESH_SECS`].
     pub(crate) fn rescue_ping_recent(&self) -> bool {
         let r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
@@ -2042,6 +2047,7 @@ impl SpaiApp {
         crate::clock::utc().timestamp() - newest <= AUTO_ROUTE_FRESH_SECS
     }
 
+    /// A fresh ping picked: its route goes to the FC's character once, without a click, when asked for.
     pub(crate) fn rescue_auto_route(&mut self) {
         let (seq, target, received, test) = {
             let r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
@@ -2049,7 +2055,7 @@ impl SpaiApp {
             let received = r.events.iter().find(|e| e.seq == seq).map_or(0, |e| e.received);
             (seq, target, received, r.test_mode)
         };
-        if self.rescue_routed_for == Some((seq, target)) || !self.rescue_on() {
+        if self.rescue_routed_for == Some((seq, target)) || !self.rescue_on() || !self.settings.rescue_auto_route {
             return;
         }
         self.rescue_routed_for = Some((seq, target));
@@ -2057,7 +2063,8 @@ impl SpaiApp {
         if test || crate::clock::utc().timestamp() - received > AUTO_ROUTE_FRESH_SECS {
             return;
         }
-        if let Some(fc) = self.rescue_fc_character() {
+        // Not the active character as a stand-in: that rewrote the route of whoever was flying.
+        if let Some(fc) = self.rescue_named_fc() {
             self.rescue_send_route(&[fc], target);
         }
     }

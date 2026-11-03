@@ -382,12 +382,28 @@ fn contacts(client: &reqwest::blocking::Client, url: &str, token: &str) -> Vec<(
     out
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Route pushes made on this thread. Tests read these instead of reaching the game.
+    pub static SENT_ROUTES: std::cell::RefCell<Vec<(String, Vec<i64>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn sent_in_test(char_name: &str, waypoints: &[i64]) -> bool {
+    #[cfg(test)]
+    SENT_ROUTES.with(|s| s.borrow_mut().push((char_name.to_owned(), waypoints.to_vec())));
+    let _ = (char_name, waypoints);
+    cfg!(test)
+}
+
 pub fn set_waypoint(
     client_id: String,
     char_name: String,
     system_id: i64,
     clear: bool,
 ) {
+    if sent_in_test(&char_name, &[system_id]) {
+        return;
+    }
     let _ = std::thread::Builder::new().name("esi-waypoint".into()).spawn(move || {
         let Ok(store) = Store::open() else { return };
         let Some(character) = store.character_by_name(&char_name) else { return };
@@ -503,6 +519,9 @@ fn push_route(
 }
 
 pub fn set_route(client_id: String, char_name: String, waypoints: Vec<i64>) {
+    if sent_in_test(&char_name, &waypoints) {
+        return;
+    }
     let _ = std::thread::Builder::new().name("esi-route".into()).spawn(move || {
         let Ok(store) = Store::open() else { return };
         let Some(character) = store.character_by_name(&char_name) else { return };

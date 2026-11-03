@@ -587,8 +587,10 @@ pub struct SpaiApp {
     jabber_join_open: bool,
     /// Which half of the join dialog the user asked for, so it opens on the one they pressed.
     jabber_join_rooms: bool,
+    /// When the room service was last asked for its rooms.
+    jabber_rooms_asked: Option<std::time::Instant>,
     pub(crate) jabber_drafts: std::collections::HashMap<String, String>,
-    jabber_room_input: String,
+    pub(crate) jabber_room_input: String,
     jabber_contact_search: String,
     jabber_dm_input: String,
     jabber_dm_error: String,
@@ -1615,6 +1617,7 @@ impl SpaiApp {
             jabber_main_rect: None,
             jabber_join_open: false,
             jabber_join_rooms: false,
+            jabber_rooms_asked: None,
             jabber_drafts: std::collections::HashMap::new(),
             jabber_room_input: String::new(),
             jabber_contact_search: String::new(),
@@ -2490,7 +2493,7 @@ impl SpaiApp {
         if self.settings.fleet_ping_on_top == crate::settings::OnTop::Smart {
             self.watch_eve_focus();
         }
-        let (moved, moved_size) = {
+        let (moved, moved_size, ping_level) = {
             let mut st = self.ping_shared.lock().unwrap();
             st.on_top = self.settings.fleet_ping_on_top;
             st.enabled = self.settings.fleet_ping_window;
@@ -2504,13 +2507,17 @@ impl SpaiApp {
             for cmd in ping_window_commands(&mut st) {
                 ctx.send_viewport_cmd_to(egui::ViewportId::from_hash_of("fleet_ping_window"), cmd);
             }
-            (st.moved.take(), st.moved_size.take())
+            (st.moved.take(), st.moved_size.take(), st.level_applied)
         };
         self.persist_ping_geometry(moved, moved_size);
 
-        let on_top = self.settings.fleet_ping_on_top != crate::settings::OnTop::Never
-            && (self.settings.fleet_ping_on_top == crate::settings::OnTop::Always
-                || self.eve_focused.load(std::sync::atomic::Ordering::Relaxed));
+        // The window sets its own level once it is up. A builder carrying another one would undo it
+        // the next frame, and the two took turns.
+        let on_top = ping_level.unwrap_or(
+            self.settings.fleet_ping_on_top != crate::settings::OnTop::Never
+                && (self.settings.fleet_ping_on_top == crate::settings::OnTop::Always
+                    || self.eve_focused.load(std::sync::atomic::Ordering::Relaxed)),
+        );
         ctx.show_viewport_deferred(
             egui::ViewportId::from_hash_of("fleet_ping_window"),
             ping_viewport_builder(
@@ -4098,10 +4105,13 @@ impl eframe::App for SpaiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-                egui::WindowLevel::AlwaysOnTop,
-            ));
-            self.raise_reset_top = true;
+            // KWin drops a window back behind the others once keep-above is cleared.
+            if cfg!(target_os = "linux") {
+                crate::x11raise::raise("EVE Spai");
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
+                self.raise_reset_top = true;
+            }
             ctx.request_repaint();
         } else if self.raise_reset_top {
             self.raise_reset_top = false;
@@ -4354,13 +4364,24 @@ impl SpaiApp {
         }
         self.eve_focus_watching = true;
         let (wanted, focused) = (self.eve_focus_wanted.clone(), self.eve_focused.clone());
-        let _ = std::thread::Builder::new().name("eve-focus".into()).spawn(move || loop {
-            if wanted.swap(false, std::sync::atomic::Ordering::Relaxed) {
-                focused.store(eve_is_focused(), std::sync::atomic::Ordering::Relaxed);
+        let _ = std::thread::Builder::new().name("eve-focus".into()).spawn(move || {
+            let mut away = 0;
+            loop {
+                if wanted.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                    away = if eve_is_focused() { 0 } else { away + 1 };
+                    focused.store(eve_focus_held(away), std::sync::atomic::Ordering::Relaxed);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(800));
             }
-            std::thread::sleep(std::time::Duration::from_millis(800));
         });
     }
+}
+
+/// Whether the game still counts as focused after `away` checks in a row found something else
+/// active. A notification, a launcher or a popup taking the focus for a moment is not the user
+/// leaving the game, and dropping every on-top window behind the others for it was a flicker.
+pub(crate) fn eve_focus_held(away: u32) -> bool {
+    away < 3
 }
 
 /// Whether the game is the active window, or one of this app's own (an alert window or the map

@@ -493,6 +493,9 @@ pub struct Settings {
     // --- FC / delve911 Rescue Mode (off by default; FC-only feature) ---
     #[serde(default)]
     pub fc_rescue_enabled: bool,
+    /// A fresh ping sets the route in the FC's client without a click. Off: it rewrote routes mid-flight.
+    #[serde(default)]
+    pub rescue_auto_route: bool,
     /// Skirmish commanders and up run rescues on ops 9 to 12; everyone else on 1 to 6.
     #[serde(default = "default_true")]
     pub rescue_sc_ops: bool,
@@ -1772,6 +1775,7 @@ impl Default for Settings {
             fleet_doctrine_aliases: Vec::new(),
             fleet_doctrine_strict: Vec::new(),
             fc_rescue_enabled: false,
+            rescue_auto_route: false,
             rescue_sc_ops: true,
             rescuee_enabled: false,
             rescue_mode: RescueMode::Fc,
