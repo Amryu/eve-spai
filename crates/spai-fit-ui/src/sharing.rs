@@ -72,6 +72,8 @@ pub struct SharingState {
     pub dialog: Option<ShareDialog>,
     pub shared: Vec<SharedFit>,
     pub shared_open: bool,
+    /// A link the pilot opened that this character may not open.
+    pub refused: bool,
     /// A link the pilot opened, so its answer opens a tab; a follow-up answer only refreshes.
     opening: Option<String>,
     followed_at: u64,
@@ -149,8 +151,10 @@ impl SimUi {
         let l = match result {
             Ok(l) => l,
             Err(e) => {
-                if asked {
-                    self.status(if e == MISSING { tr!("That link opens nothing for this character: not shared with it, or gone").to_owned() } else { trf!("Could not open the link: {e}", e = e) });
+                if asked && e == MISSING {
+                    self.sharing.refused = true;
+                } else if asked {
+                    self.status(trf!("Could not open the link: {e}", e = e));
                 }
                 return;
             }
@@ -452,6 +456,33 @@ impl SimUi {
             self.set_sync(false);
             self.requests.push(HostRequest::ForgetServerLibrary);
             self.status(tr!("Deleting your fits from the server; sync is off").to_owned());
+        }
+    }
+
+    /// Why a link opened nothing, said where it cannot be missed.
+    pub(crate) fn refused_window(&mut self, ctx: &egui::Context) {
+        if !self.sharing.refused {
+            return;
+        }
+        let mut open = true;
+        let mut ok = false;
+        let w = 380.0;
+        egui::Window::new(tr!("No access to this fit")).id(egui::Id::new("sim_link_refused")).open(&mut open).collapsible(false).resizable(false).default_width(w).default_pos(ctx.content_rect().center() - egui::vec2(w / 2.0, 80.0)).show(ctx, |ui| {
+            ui.set_width(w);
+            ui.label(if self.access.signed_in {
+                tr!("This fit is not shared with your character, or its owner deleted it. Ask the owner to share it with you.")
+            } else {
+                tr!("Only the characters this fit is shared with can open it. Sign in with EVE to open it with yours.")
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ok = ui.button(tr!("OK")).clicked();
+                });
+            });
+        });
+        if !open || ok {
+            self.sharing.refused = false;
         }
     }
 

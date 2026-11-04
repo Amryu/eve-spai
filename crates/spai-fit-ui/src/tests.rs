@@ -2793,4 +2793,26 @@ fn sharing_waits_for_sync_and_the_fit_to_reach_the_server() {
     s.handle(HostEvent::Sharing { fit: fit.clone(), result: Err("no character is named X".into()) });
     assert_eq!(s.sharing.dialog.as_ref().unwrap().info, Some(Ok(info)), "a refused add keeps the list");
     assert_eq!(s.share_link("Q9"), "https://eve-spai.com/sim/#s=Q9");
+    s.open_link("Zz9");
+    s.handle(HostEvent::Linked(Err(sharing::MISSING.into())));
+    assert!(s.sharing.refused, "a link without access says so");
+    s.sharing.refused = false;
+    s.handle(HostEvent::Linked(Err(sharing::MISSING.into())));
+    assert!(!s.sharing.refused, "a follow-up of a link opened before stays quiet");
+}
+
+#[test]
+fn the_skill_check_looks_at_the_main_character_unless_another_is_picked() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    let pilot = |id: &str, mf: u8| Profile { id: id.into(), name: format!("Pilot {id}"), skills: spai_fit::skills::SkillSet::from_esi([(ids::SKILL_MF, mf)]) };
+    s.handle(HostEvent::Profiles(vec![pilot("1", 0), pilot("2", 5)]));
+    s.main_profile = Some("2".into());
+    assert_eq!(s.skill_check_profile().unwrap().id, "2", "the main one first");
+    assert_eq!(s.skills_missing(), 0);
+    s.skill_check.profile = Some("1".into());
+    assert_eq!(s.skills_missing(), 1, "the hull's skill");
+    apply(&mut s, PickTarget::Drone, ids::DRONE, 5);
+    assert_eq!(s.skills_missing(), 2, "the drones' skill too, worked out again on the edit");
+    assert!(s.skill_needs().iter().any(|n| n.scope == spai_fit::skills::Scope::Drones));
 }

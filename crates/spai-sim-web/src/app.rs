@@ -692,6 +692,7 @@ impl eframe::App for SimWebApp {
             }
         }
         egui::Panel::top("sim_web_top").frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(8, 5))).show_inside(ui, |ui| self.account_bar(ui));
+        self.sim.main_profile = self.session.as_ref().map(|s| s.character_id.to_string());
         egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| self.sim.show(ui));
         let ctx = ui.ctx().clone();
         for r in self.sim.take_requests() {

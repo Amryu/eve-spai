@@ -341,6 +341,17 @@ pub struct Fit {
     pub active_variations: Vec<u32>,
     pub notes: String,
     pub tags: Vec<String>,
+    /// Skill goals past what flies it, in order: each adds to the one before.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub milestones: Vec<Milestone>,
+}
+
+/// A named set of skills to train for a fit, on top of the milestones before it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Milestone {
+    pub name: String,
+    pub skills: Vec<(TypeId, u8)>,
 }
 
 impl Fit {

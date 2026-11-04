@@ -133,38 +133,3 @@ pub fn strip(sim: &mut SimUi, ui: &mut egui::Ui) {
     }
 }
 
-/// The skills the pilot lacks for the fit, each with the level held and the one needed.
-pub fn skills_window(sim: &mut SimUi, ctx: &egui::Context) {
-    if !sim.skills_window {
-        return;
-    }
-    let Some(dogma) = sim.dogma.clone() else { return };
-    let pilot = sim.profiles.get(sim.profile).map_or(String::new(), |p| p.name.clone());
-    let mut by_skill: Vec<(spai_fit::ids::TypeId, u8, u8)> = Vec::new();
-    if let Some(s) = sim.session() {
-        for m in &s.missing {
-            match by_skill.iter_mut().find(|(sk, _, _)| *sk == m.skill) {
-                Some(e) => e.1 = e.1.max(m.needed),
-                None => by_skill.push((m.skill, m.needed, m.have)),
-            }
-        }
-    }
-    let mut open = true;
-    let size = egui::vec2(380.0, 320.0);
-    egui::Window::new(trf!("Missing skills for {pilot}", pilot = pilot)).open(&mut open).collapsible(false).resizable(true).default_size(size).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
-        if by_skill.is_empty() {
-            ui.label(egui::RichText::new(tr!("This pilot has every skill the fit needs.")).weak());
-        }
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for (skill, needed, have) in by_skill {
-                let name = dogma.type_(skill).map_or_else(|| trf!("Skill {id}", id = skill), |t| t.name.clone());
-                rows::row(ui, "skills", ("sim_skill", skill), rows::ROW_H, false, |ui| {
-                    let w = ui.available_width() - 70.0 - rows::GAP;
-                    rows::cell(ui, w, egui::RichText::new(&name), &name);
-                    rows::num_cell(ui, 70.0, trf!("{have} to {needed}", have = have, needed = needed), false);
-                });
-            }
-        });
-    });
-    sim.skills_window = open;
-}

@@ -288,9 +288,9 @@ fn linked_banner(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 copy = ui.button(trf!("{icon} Make a copy", icon = icon::COPY)).on_hover_text(tr!("A fit of your own to change; editing does the same")).clicked();
-                let w = ui.available_width();
-                let text = trf!("{icon} Shared by {owner}: it follows their changes", icon = icon::SHARE_NETWORK, owner = owner);
-                ui.add_sized([w, ui.spacing().interact_size.y], egui::Label::new(text).truncate());
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(trf!("{icon} Shared by {owner}", icon = icon::SHARE_NETWORK, owner = owner)).truncate()).on_hover_text(tr!("It follows its owner's changes until you edit it"));
+                });
             });
         });
     });
@@ -380,7 +380,8 @@ fn fit_tabs(sim: &mut SimUi, ui: &mut egui::Ui) {
     let names: Vec<(String, bool)> = sim.sessions().iter().map(|s| (s.fit.name.clone(), s.dirty)).collect();
     // One row, flush with the edges: as many tabs as fit, the one on screen always among them,
     // the rest behind a caret pinned right before the add button, as on the chat bar.
-    let labels: Vec<String> = names.iter().map(|(n, _)| text::clip(n, 22)).collect();
+    let shared: Vec<bool> = sim.sessions().iter().map(|s| s.linked.is_some()).collect();
+    let labels: Vec<String> = names.iter().zip(&shared).map(|((n, _), linked)| if *linked { format!("{} {}", egui_phosphor::regular::SHARE_NETWORK, text::clip(n, 20)) } else { text::clip(n, 22) }).collect();
     let widths: Vec<f32> = labels.iter().map(|l| spai_ui::widgets::tab_box_width(ui, l)).collect();
     let plus_w = 26.0;
     let caret_w = 46.0;

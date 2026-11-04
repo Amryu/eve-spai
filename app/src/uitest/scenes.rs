@@ -3176,7 +3176,6 @@ pub(crate) fn all() -> Vec<Scene> {
     }));
     v.push(imperium_scene_with("imperium_fit_many_warnings", [1280.0, 800.0], true, spai_fit_ui::Pane::Fit, |sim| {
         sim.warnings_expanded = true;
-        sim.skills_window = true;
     }));
     v.push(imperium_scene_with("imperium_graphs_remote", [1440.0, 900.0], false, spai_fit_ui::Pane::Graphs, |sim| {
         use spai_fit::fit::{Module, Slot, State};
@@ -3355,6 +3354,42 @@ pub(crate) fn all() -> Vec<Scene> {
             ..Default::default()
         });
     }));
+    fn skill_check_fixture(sim: &mut spai_fit_ui::SimUi) {
+        use spai_fit::fit::{Module, Slot, State};
+        use spai_fit::test_support::ids;
+        sim.edit(spai_fit::history::EditKind::AddModule, 1, |f| {
+            f.modules.push(Module::new(ids::LAUNCHER, Slot::High, 0).with_charge(ids::MISSILE).with_state(State::Active));
+            f.modules.push(Module::new(ids::GUN, Slot::High, 1).with_charge(ids::AMMO).with_state(State::Active));
+            f.drones.push(spai_fit::fit::DroneStack { type_id: ids::DRONE, count: 2, active: true, launched: None, mutation: None });
+            f.milestones = vec![
+                spai_fit::fit::Milestone { name: "Recommended".into(), skills: vec![(ids::SKILL_MF, 4), (ids::SKILL_SPT, 3), (ids::SKILL_CRUISE_SPEC, 2)] },
+                spai_fit::fit::Milestone { name: "Guns first, with a long name".into(), skills: vec![(ids::SKILL_SPT, 5)] },
+            ];
+        });
+        let pilot = |id: &str, name: &str, skills: Vec<(u32, u8)>| spai_fit_ui::Profile { id: id.into(), name: name.into(), skills: spai_fit::skills::SkillSet::from_esi(skills) };
+        sim.handle(spai_fit_ui::HostEvent::Profiles(vec![pilot("1", "Ducky Pilot", vec![(ids::SKILL_MF, 3), (ids::SKILL_SPT, 1)]), pilot("2", "Alt Character", vec![])]));
+        sim.main_profile = Some("1".into());
+        sim.skills_window = true;
+    }
+    v.push(imperium_dialog_scene("imperium_skill_check", [520.0, 560.0], skill_check_fixture));
+    v.push(imperium_dialog_scene("imperium_skill_check_all", [520.0, 560.0], |sim| {
+        skill_check_fixture(sim);
+        sim.skill_check.show_all = true;
+    }));
+    v.push(imperium_dialog_scene("imperium_skill_milestone", [520.0, 620.0], |sim| {
+        skill_check_fixture(sim);
+        sim.skill_check.tab = 1;
+        sim.skill_check.export_open = true;
+    }));
+    v.push(imperium_dialog_scene("imperium_skill_import", [520.0, 560.0], |sim| {
+        skill_check_fixture(sim);
+        sim.skill_check.tab = 2;
+        sim.skill_check.import = Some("Minmatar Frigate 4\nSmall Projectile Turret V\nDrones 3\n".into());
+    }));
+    v.push(imperium_dialog_scene("imperium_link_refused", [480.0, 260.0], |sim| {
+        sim.open_link("Zz9");
+        sim.handle(spai_fit_ui::HostEvent::Linked(Err(spai_fit_ui::sharing::MISSING.into())));
+    }));
     v.push(imperium_dialog_scene("imperium_share_sync_off", [560.0, 300.0], |sim| {
         sim.handle(spai_fit_ui::HostEvent::Access { signed_in: true, imperium: true, admin: false });
         sim.start_share();
@@ -3371,6 +3406,7 @@ pub(crate) fn all() -> Vec<Scene> {
         sim.handle(spai_fit_ui::HostEvent::Access { signed_in: true, imperium: true, admin: true });
         sim.open_link("Ab3dEf7hJk");
         sim.handle(spai_fit_ui::HostEvent::Linked(Ok(spai_fit_ui::sharing::LinkedFit { link: "Ab3dEf7hJk".into(), owner_name: "Ducky Pilot".into(), mine: false, id: "x".into(), rev: 1, doc: spai_fit::doc::to_json(&fit) })));
+        sim.note("Link copied".into());
     }));
     v.push(imperium_dialog_scene("imperium_import", [520.0, 440.0], |sim| {
         sim.import = Some(spai_fit_ui::ImportDialog { text: "[Rifter, pasted]\nDamage Control II\nNope Module\n".into(), error: Some("No fit found: paste EFT text, ESI's JSON, the game's fitting XML, a DNA string or a link.".into()) });

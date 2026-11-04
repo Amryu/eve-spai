@@ -104,6 +104,7 @@ impl SpaiApp {
         if self.sim.clone_characters != clone_chars {
             self.sim.clone_characters = clone_chars;
         }
+        self.sim.main_profile = self.sim_character().map(|c| c.to_string());
         self.sim.show(ui);
         for r in self.sim.take_requests() {
             self.sim_request(ui.ctx(), r);

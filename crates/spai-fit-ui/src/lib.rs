@@ -18,6 +18,7 @@ pub mod browser;
 pub mod clones;
 pub mod graph_ewar;
 pub mod sharing;
+pub mod skill_check;
 pub mod combo;
 pub mod compare;
 pub mod details;
@@ -641,6 +642,9 @@ pub struct SimUi {
     pub doctrine_tab: doctrine_panel::TabState,
     pub access: Access,
     pub sharing: sharing::SharingState,
+    pub skill_check: skill_check::SkillCheckState,
+    /// The host's main character, by profile id: who the skill check looks at first.
+    pub main_profile: Option<String>,
     pub publish: Option<PublishDialog>,
     pub mode: Mode,
     pub fleets: Vec<FleetSummary>,
@@ -755,6 +759,8 @@ impl Default for SimUi {
             doctrine_tab: doctrine_panel::TabState::default(),
             access: Access::default(),
             sharing: Default::default(),
+            skill_check: Default::default(),
+            main_profile: None,
             publish: None,
             mode: Mode::Fits,
             fleets: Vec::new(),
@@ -1862,8 +1868,9 @@ impl SimUi {
         self.publish_window(ctx);
         self.sharing_window(ctx, now_ms);
         self.shared_window(ctx);
+        self.refused_window(ctx);
         doctrine_panel::windows(self, ctx, now_ms);
-        warnings_panel::skills_window(self, ctx);
+        self.skill_check_window(ctx, now_ms);
         graphs_panel::window(self, ctx, now_ms);
         if self.mode == Mode::Fleets {
             fleet_graphs::window(self, ctx);
@@ -2047,7 +2054,7 @@ impl SimUi {
                     ui.label(tr!("Skills"));
                 }
                 let name = self.profile_label();
-                let width = if narrow { 110.0 } else { 180.0 };
+                let width = if narrow { 90.0 } else { 180.0 };
                 let was = self.profile;
                 let mut picked = false;
                 crate::combo::combo(ui, "sim_profile", width, &name, |ui| {
@@ -2081,6 +2088,9 @@ impl SimUi {
                 }
                 if icon_button(ui, icon::ARROWS_CLOCKWISE).on_hover_text(tr!("Fetch skills from EVE")).clicked() {
                     self.requests.push(HostRequest::FetchSkills);
+                }
+                if self.mode == Mode::Fits && has_fit {
+                    self.skill_check_button(ui);
                 }
                 if !narrow {
                     ui.separator();
@@ -2124,7 +2134,10 @@ impl SimUi {
                     if text.is_none() {
                         self.status = None;
                     }
-                    ui.add_sized([room, 20.0], egui::Label::new(egui::RichText::new(text.unwrap_or_default()).weak()).truncate());
+                    ui.allocate_ui_with_layout(egui::vec2(room, 20.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.set_width(room);
+                        ui.add(egui::Label::new(egui::RichText::new(text.unwrap_or_default()).weak()).truncate());
+                    });
                 }
             });
         });
