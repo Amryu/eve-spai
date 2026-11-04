@@ -281,6 +281,34 @@ pub fn slots_w(n: f32) -> f32 {
     n * SLOT + (n - 1.0).max(0.0) * GAP
 }
 
+/// A count typed in, three slots wide: taken on Enter or when the field is left, Escape keeps
+/// the old one, the arrow keys step it by one. The new count when it changed.
+pub fn count_field(ui: &mut egui::Ui, id_salt: impl std::hash::Hash, count: u32) -> (egui::Response, Option<u32>) {
+    slot(ui, 3.0, |ui| {
+        let id = ui.make_persistent_id(id_salt);
+        let buf = id.with("text");
+        let mut text = ui.data(|d| d.get_temp::<String>(buf)).unwrap_or_else(|| count.to_string());
+        ui.spacing_mut().interact_size.y = ROW_H - 8.0;
+        let resp = ui.add(egui::TextEdit::singleline(&mut text).id(id).desired_width(slots_w(3.0) - 8.0).horizontal_align(egui::Align::Center).char_limit(6));
+        let mut out = None;
+        if resp.has_focus() {
+            let step = ui.input(|i| i32::from(i.key_pressed(egui::Key::ArrowUp)) - i32::from(i.key_pressed(egui::Key::ArrowDown)));
+            if step != 0 {
+                let n = (text.trim().parse::<i64>().unwrap_or(i64::from(count)) + i64::from(step)).clamp(0, 999_999);
+                text = n.to_string();
+            }
+            text.retain(|c| c.is_ascii_digit());
+            ui.data_mut(|d| d.insert_temp(buf, text));
+        } else {
+            if resp.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                out = text.trim().parse::<u32>().ok().filter(|n| *n != count);
+            }
+            ui.data_mut(|d| d.remove::<String>(buf));
+        }
+        (resp, out)
+    })
+}
+
 /// A control in a slot of fixed width, `n` slots wide, its contents centred. Rows that end in
 /// slots end at the same right edge whatever sits in them, and a slot left empty keeps the column.
 pub fn slot<R>(ui: &mut egui::Ui, n: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {

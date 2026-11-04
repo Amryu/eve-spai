@@ -19,6 +19,8 @@ pub mod clones;
 pub mod graph_ewar;
 pub mod sharing;
 pub mod skill_check;
+pub mod skill_plan;
+pub mod tips;
 pub mod combo;
 pub mod compare;
 pub mod details;
@@ -226,6 +228,8 @@ pub enum HostEvent {
     Clones { character: String, clones: Result<Vec<clones::JumpClone>, String> },
     /// Whether the library is kept on the server too.
     Sync(bool),
+    /// Each character's attributes and clone state as read, by profile id.
+    Training(Vec<(String, skill_plan::Training)>),
     /// A fit's sharing, or why not; `sharing::MISSING` when the fit is not on the server.
     Sharing { fit: String, result: Result<sharing::SharingInfo, String> },
     Shared(Vec<sharing::SharedFit>),
@@ -645,6 +649,8 @@ pub struct SimUi {
     pub skill_check: skill_check::SkillCheckState,
     /// The host's main character, by profile id: who the skill check looks at first.
     pub main_profile: Option<String>,
+    /// What the host read of each character's training, by profile id.
+    pub training: std::collections::HashMap<String, skill_plan::Training>,
     pub publish: Option<PublishDialog>,
     pub mode: Mode,
     pub fleets: Vec<FleetSummary>,
@@ -761,6 +767,7 @@ impl Default for SimUi {
             sharing: Default::default(),
             skill_check: Default::default(),
             main_profile: None,
+            training: Default::default(),
             publish: None,
             mode: Mode::Fits,
             fleets: Vec::new(),
@@ -883,6 +890,7 @@ impl SimUi {
                 }
             }
             HostEvent::Sync(on) => self.sharing.sync_on = on,
+            HostEvent::Training(list) => self.training.extend(list),
             HostEvent::Sharing { fit, result } => self.sharing_answer(fit, result, self.now_ms),
             HostEvent::Shared(list) => self.sharing.shared = list,
             HostEvent::Linked(result) => self.linked(result, self.now_ms),
@@ -1871,6 +1879,8 @@ impl SimUi {
         self.refused_window(ctx);
         doctrine_panel::windows(self, ctx, now_ms);
         self.skill_check_window(ctx, now_ms);
+        self.skill_plan_window(ctx);
+        self.skill_catalogue_window(ctx, now_ms);
         graphs_panel::window(self, ctx, now_ms);
         if self.mode == Mode::Fleets {
             fleet_graphs::window(self, ctx);

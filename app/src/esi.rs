@@ -590,7 +590,17 @@ pub fn fetch_jump_skills(
 
 /// Fetches every trained skill of the character, `(skill id, active level)`, and hands the list to
 /// `done` on the worker thread.
-pub fn fetch_skills(client_id: String, char_name: String, done: Box<dyn FnOnce(i64, Vec<(i64, u32)>) + Send>, ctx: egui::Context) {
+/// What a skills fetch learns of training besides the levels: the attributes, `None` when EVE
+/// refused or failed, whether it refused, and whether skills sit below their trained level, which
+/// only an Alpha clone has.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct TrainingRead {
+    pub attributes: Option<[f64; 5]>,
+    pub refused: bool,
+    pub alpha: bool,
+}
+
+pub fn fetch_skills(client_id: String, char_name: String, done: Box<dyn FnOnce(i64, Vec<(i64, u32)>, TrainingRead) + Send>, ctx: egui::Context) {
     let _ = std::thread::Builder::new().name("esi-skills".into()).spawn(move || {
         let Ok(store) = Store::open() else { return };
         let Some(character) = store.character_by_name(&char_name) else { return };
@@ -600,6 +610,16 @@ pub fn fetch_skills(client_id: String, char_name: String, done: Box<dyn FnOnce(i
         struct Skill {
             skill_id: i64,
             active_skill_level: u32,
+            #[serde(default)]
+            trained_skill_level: Option<u32>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Attrs {
+            charisma: f64,
+            intelligence: f64,
+            memory: f64,
+            perception: f64,
+            willpower: f64,
         }
         #[derive(serde::Deserialize)]
         struct Skills {
@@ -609,7 +629,15 @@ pub fn fetch_skills(client_id: String, char_name: String, done: Box<dyn FnOnce(i
         let Ok(resp) = client.get(url).bearer_auth(&token).send() else { return };
         match resp.error_for_status().and_then(|r| r.json::<Skills>()) {
             Ok(skills) => {
-                done(character.id, skills.skills.into_iter().map(|s| (s.skill_id, s.active_skill_level)).collect());
+                let alpha = skills.skills.iter().any(|s| s.trained_skill_level.is_some_and(|t| t > s.active_skill_level));
+                let url = format!("https://esi.evetech.net/latest/characters/{}/attributes/?datasource=tranquility", character.id);
+                let mut read = TrainingRead { alpha, ..Default::default() };
+                match client.get(url).bearer_auth(&token).send() {
+                    Ok(r) if r.status().as_u16() == 403 => read.refused = true,
+                    Ok(r) => read.attributes = r.error_for_status().and_then(|r| r.json::<Attrs>()).ok().map(|a| [a.charisma, a.intelligence, a.memory, a.perception, a.willpower]),
+                    Err(e) => crate::esilog::record("attributes", &format!("{char_name}: {e}")),
+                }
+                done(character.id, skills.skills.into_iter().map(|s| (s.skill_id, s.active_skill_level)).collect(), read);
                 ctx.request_repaint();
             }
             Err(e) => crate::esilog::record("skills", &format!("{char_name}: {e}")),

@@ -550,6 +550,15 @@ impl SpaiApp {
             })
             .collect();
         self.sim.handle(HostEvent::Profiles(profiles));
+        let training = self
+            .characters
+            .iter()
+            .filter_map(|c| {
+                let read: crate::esi::TrainingRead = serde_json::from_str(&store.kv_get(&format!("sim.training.{}", c.id))?).ok()?;
+                Some((c.id.to_string(), spai_fit_ui::skill_plan::Training { attributes: read.attributes.map(spai_fit::skills::Attributes), refused: read.refused, alpha: read.alpha }))
+            })
+            .collect();
+        self.sim.handle(HostEvent::Training(training));
     }
 
     fn sim_fetch_stale_skills(&mut self, ctx: &egui::Context) {
@@ -571,9 +580,10 @@ impl SpaiApp {
             crate::esi::fetch_skills(
                 client_id.clone(),
                 name,
-                Box::new(move |char_id, skills| {
+                Box::new(move |char_id, skills, training| {
                     if let Ok(mut store) = Store::open() {
                         let _ = store.skills_put(char_id, &skills);
+                        store.kv_set(&format!("sim.training.{char_id}"), &serde_json::to_string(&training).unwrap_or_default());
                     }
                     events.lock().unwrap().push(HostEvent::Status(String::new()));
                 }),

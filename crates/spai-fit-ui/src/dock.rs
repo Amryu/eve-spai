@@ -380,12 +380,10 @@ fn projected_fits(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64
                     set_charges = Some(next);
                 }
             }
-            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).clicked() {
-                delta = -1;
-            }
-            rows::slot(ui, 1.0, |ui| rows::num_cell(ui, rows::SLOT, count.to_string(), false));
-            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::PLUS)).clicked() {
-                delta = 1;
+            let (field, typed) = rows::count_field(ui, ("sim_count", 1, i), count);
+            field.on_hover_text(tr!("How many; type a number, or step it with the arrow keys"));
+            if let Some(c) = typed {
+                delta = c as i32 - count as i32;
             }
             if rows::slot(ui, 1.0, |ui| icon_button(ui, switch_glyph(ui, active))).on_hover_text(if active { tr!("Switch off") } else { tr!("Switch on") }).clicked() {
                 toggle = true;
@@ -601,12 +599,10 @@ fn projected(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
                 if let Some(next) = source_popup(&btn, dogma, type_id, charge, &source) {
                     set_source = Some(next);
                 }
-                if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).clicked() {
-                    delta = -1;
-                }
-                rows::slot(ui, 1.0, |ui| rows::num_cell(ui, rows::SLOT, count.to_string(), false));
-                if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::PLUS)).clicked() {
-                    delta = 1;
+                let (field, typed) = rows::count_field(ui, ("sim_count", 2, i), count);
+                field.on_hover_text(tr!("How many; type a number, or step it with the arrow keys"));
+                if let Some(c) = typed {
+                    delta = c as i32 - count as i32;
                 }
                 if rows::slot(ui, 1.0, |ui| icon_button(ui, crate::editor::state_icon(state))).on_hover_text(crate::editor::state_name(state)).clicked() {
                     toggle = true;
@@ -700,12 +696,10 @@ fn drones(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
             let label = if rolled.is_some() { label.color(crate::mutation::ROLLED) } else { label };
             let label = if out > 0 { label } else { label.weak() };
             rows::cell(ui, w, label, "").on_hover_ui(|ui| crate::details::type_tip_with(ui, dogma, type_id, "", tips.get(&crate::details::DetailsTarget::Drone(type_id))));
-            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).on_hover_text(tr!("One fewer in the bay")).clicked() {
-                delta = -1;
-            }
-            rows::slot(ui, 1.0, |ui| rows::num_cell(ui, rows::SLOT, count.to_string(), false));
-            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::PLUS)).on_hover_text(tr!("One more in the bay")).clicked() {
-                delta = 1;
+            let (field, typed) = rows::count_field(ui, ("sim_count", 4, i), count);
+            field.on_hover_text(tr!("How many in the bay; type a number, or step it with the arrow keys"));
+            if let Some(c) = typed {
+                delta = c as i32 - count as i32;
             }
             // How many of the stack are out, read as a share of the bay: "3/5", "0/5" all in the bay.
             let mut n = out;
@@ -788,12 +782,10 @@ fn fighters(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, now_ms: u64) {
             crate::icons::type_icon(ui, type_id, 18.0);
             let w = rows::name_w(ui, 4.0);
             rows::cell(ui, w, egui::RichText::new(&name), "").on_hover_ui(|ui| crate::details::type_tip_with(ui, dogma, type_id, "", tips.get(&crate::details::DetailsTarget::Fighter(type_id))));
-            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::MINUS)).clicked() {
-                delta = -1;
-            }
-            rows::slot(ui, 1.0, |ui| rows::num_cell(ui, rows::SLOT, count.to_string(), false));
-            if rows::slot(ui, 1.0, |ui| icon_button(ui, icon::PLUS)).clicked() {
-                delta = 1;
+            let (field, typed) = rows::count_field(ui, ("sim_count", 3, i), count);
+            field.on_hover_text(tr!("How many; type a number, or step it with the arrow keys"));
+            if let Some(c) = typed {
+                delta = c as i32 - count as i32;
             }
             if rows::slot(ui, 1.0, |ui| icon_button(ui, if active { icon::LIGHTNING } else { icon::CIRCLE })).on_hover_text(if active { tr!("In space") } else { tr!("In the bay") }).clicked() {
                 toggle = true;

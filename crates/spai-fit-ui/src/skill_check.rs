@@ -21,11 +21,22 @@ pub struct SkillCheckState {
     pub tab: usize,
     /// Every skill, the trained ones too; else only what is missing.
     pub show_all: bool,
-    pub query: String,
+    /// Each skill's prerequisites under it, down the tree.
+    pub tree: bool,
     /// A pasted plan on its way into the milestone on screen.
     pub import: Option<String>,
-    pub export_open: bool,
     pub plan: spai_fit::skills::PlanOptions,
+    /// The plan in a table, up to the tab it was opened from.
+    pub plan_open: bool,
+    /// The skill catalogue, picking skills for the milestone on screen.
+    pub catalogue_open: bool,
+    pub catalogue_group: Option<spai_fit::ids::GroupId>,
+    pub catalogue_query: String,
+    pub catalogue_paste: Option<String>,
+    /// Trains as an Alpha clone, at half the rate; EVE does not say which a character is.
+    pub alpha: bool,
+    /// What an active cerebral accelerator adds to every attribute.
+    pub booster: u8,
     /// The milestone name as typed, for the milestone it was taken from.
     name_edit: Option<(usize, String)>,
     /// The fit's requirements, by what they were worked out for.
@@ -151,7 +162,6 @@ impl SimUi {
         let mut open = true;
         let mut pick: Option<String> = None;
         let mut new_milestones: Option<Vec<spai_fit::fit::Milestone>> = None;
-        let mut copy_plan = false;
         let mut note: Option<String> = None;
         let size = egui::vec2(440.0, 0.0);
         egui::Window::new(tr!("Skills")).id(egui::Id::new("sim_skill_check")).open(&mut open).collapsible(false).resizable([true, false]).default_width(size.x).default_pos(ctx.content_rect().center() - egui::vec2(size.x / 2.0, 260.0)).show(ctx, |ui| {
@@ -195,9 +205,13 @@ impl SimUi {
             let body_h = 300.0;
             if tab == 0 {
                 let all = self.skill_check.show_all;
-                if ui.menu_label(all, trf!("{icon} Show all", icon = icon::LIST_CHECKS)).on_hover_text(tr!("Every skill the fit asks for and the fitting skills it needs to fit, trained or not")).clicked() {
-                    self.skill_check.show_all = !all;
-                }
+                ui.horizontal(|ui| {
+                    if ui.menu_label(all, trf!("{icon} Show all", icon = icon::LIST_CHECKS)).on_hover_text(tr!("Every skill the fit asks for and the fitting skills it needs to fit, trained or not")).clicked() {
+                        self.skill_check.show_all = !all;
+                    }
+                    ui.checkbox(&mut self.skill_check.tree, tr!("Dependencies")).on_hover_text(tr!("Each skill's prerequisites under it, down the tree"));
+                });
+                let tree = self.skill_check.tree;
                 egui::ScrollArea::vertical().id_salt("sim_skill_req").max_height(body_h).auto_shrink([false, true]).show(ui, |ui| {
                     let mut shown = 0;
                     for (scope, title) in [(Scope::Fit, tr!("Ship & fit")), (Scope::Drones, tr!("Drones")), (Scope::Cargo, tr!("Cargo"))] {
@@ -210,6 +224,9 @@ impl SimUi {
                         for n in rows {
                             skill_row(ui, &name(n.skill), n.level, 0, pilot.level(n.skill), None);
                             shown += 1;
+                            if tree {
+                                prerequisites(ui, &dogma, &pilot, n.skill, 1, all);
+                            }
                         }
                         ui.add_space(4.0);
                     }
@@ -219,6 +236,9 @@ impl SimUi {
                         for (s, l) in fit_rows {
                             skill_row(ui, &name(*s), *l, 0, pilot.level(*s), None);
                             shown += 1;
+                            if tree {
+                                prerequisites(ui, &dogma, &pilot, *s, 1, all);
+                            }
                         }
                     } else if all {
                         section(ui, tr!("To fit (CPU & PG)"));
@@ -307,29 +327,11 @@ impl SimUi {
                         }
                     });
                     ui.horizontal(|ui| {
+                        if ui.button(trf!("{icon} Skill catalogue", icon = icon::BOOKS)).on_hover_text(tr!("Pick this milestone's skills from every skill group, as in the game")).clicked() {
+                            self.skill_check.catalogue_open = true;
+                        }
                         if ui.button(trf!("{icon} Import", icon = icon::CLIPBOARD_TEXT)).on_hover_text(tr!("Paste a skill plan into this milestone")).clicked() {
                             self.skill_check.import = Some(String::new());
-                        }
-                        let edit = ui.add(egui::TextEdit::singleline(&mut self.skill_check.query).desired_width(ui.available_width()).hint_text(trf!("{icon} Add a skill", icon = icon::PLUS)));
-                        let q = self.skill_check.query.trim().to_lowercase();
-                        if q.len() >= 2 {
-                            let found: Vec<(TypeId, String)> = dogma
-                                .types
-                                .iter()
-                                .filter(|t| t.category == spai_fit::ids::category::SKILL && t.published && t.name.to_lowercase().contains(&q))
-                                .filter(|t| floor(t.id) < 5 && !list[i].skills.iter().any(|(s, _)| *s == t.id))
-                                .take(8)
-                                .map(|t| (t.id, t.name.clone()))
-                                .collect();
-                            egui::Popup::from_response(&edit).open(!found.is_empty()).width(edit.rect.width()).show(|ui| {
-                                for (id, n) in found {
-                                    if ui.menu_label(false, n).clicked() {
-                                        list[i].skills.push((id, floor(id) + 1));
-                                        changed = true;
-                                        self.skill_check.query.clear();
-                                    }
-                                }
-                            });
                         }
                     });
                 }
@@ -343,8 +345,8 @@ impl SimUi {
             let n = unmet(&shown);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.menu_label(self.skill_check.export_open, trf!("{icon} Skill plan", icon = icon::EXPORT)).on_hover_text(tr!("Export a skill plan the game imports from the clipboard")).clicked() {
-                        self.skill_check.export_open = !self.skill_check.export_open;
+                    if ui.menu_label(self.skill_check.plan_open, trf!("{icon} Skill plan", icon = icon::TABLE)).on_hover_text(tr!("The plan up to this tab in a table, with training times; copy it for the game from there")).clicked() {
+                        self.skill_check.plan_open = !self.skill_check.plan_open;
                     }
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         let text = if n == 0 { tr!("Nothing missing.").to_owned() } else { trf!("{n} missing, {sp} skill points", n = n, sp = crate::text::num(sp)) };
@@ -352,34 +354,6 @@ impl SimUi {
                     });
                 });
             });
-            if self.skill_check.export_open {
-                let o = &mut self.skill_check.plan;
-                ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(&mut o.required, tr!("Required"));
-                    ui.checkbox(&mut o.fitting, tr!("To fit"));
-                    let upto = if o.milestones == 0 { tr!("No milestones").to_owned() } else { trf!("Up to {name}", name = crate::text::clip(&milestones[o.milestones.min(milestones.len()) - 1].name, 20)) };
-                    crate::combo::combo(ui, "sim_plan_upto", 170.0, upto, |ui| {
-                        if ui.menu_label(o.milestones == 0, tr!("No milestones")).clicked() {
-                            o.milestones = 0;
-                        }
-                        for (k, m) in milestones.iter().enumerate() {
-                            if ui.menu_label(o.milestones.min(milestones.len()) == k + 1, trf!("Up to {name}", name = m.name)).clicked() {
-                                o.milestones = k + 1;
-                            }
-                        }
-                    });
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(&mut o.sort, tr!("Sort automatically")).on_hover_text(tr!("What flies the fit first, then each milestone; ship, high slot and, on drone hulls, drone skills ahead, then mids and lows, the hold and implants last"));
-                    ui.checkbox(&mut o.skip_trained, trf!("Leave out what {who} has", who = who.as_ref().map(|(_, n)| n.clone()).unwrap_or_default()));
-                    ui.checkbox(&mut o.full_tree, tr!("Every prerequisite"));
-                });
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        copy_plan = ui.button(trf!("{icon} Copy skill plan", icon = icon::COPY)).clicked();
-                    });
-                });
-            }
         });
         if let Some(id) = pick {
             self.skill_check.profile = Some(id);
@@ -390,30 +364,40 @@ impl SimUi {
         if let Some(list) = new_milestones {
             self.edit(spai_fit::history::EditKind::Other, now_ms, |f| f.milestones = list);
         }
-        if copy_plan {
-            if let Some(s) = self.session() {
-                let resolved = spai_fit::variations::resolve(&dogma, &s.fit);
-                let steps = spai_fit::skills::plan(&dogma, &resolved, &to_fit, &pilot, self.skill_check.plan);
-                if steps.is_empty() {
-                    self.status(tr!("Nothing to train under these choices").to_owned());
-                } else {
-                    self.requests.push(crate::HostRequest::CopyText(spai_fit::skills::plan_text(&dogma, &steps)));
-                    self.status(trf!("Skill plan copied: {n} steps", n = steps.len()));
-                }
-            }
-        }
         self.skills_window = open;
     }
 }
 
+/// A skill's prerequisites under it, each with its own below, as often as they come up; without
+/// `all` only the branches the character lacks something in.
+fn prerequisites(ui: &mut egui::Ui, dogma: &spai_fit::Dogma, pilot: &SkillSet, skill: TypeId, depth: u8, all: bool) {
+    if depth > 8 {
+        return;
+    }
+    let Some(t) = dogma.type_(skill) else { return };
+    for (p, l) in &t.required_skills {
+        if !all && !lacks_any(dogma, pilot, *p, *l, 0) {
+            continue;
+        }
+        let name = dogma.type_(*p).map_or_else(|| trf!("Skill {id}", id = p), |t| t.name.clone());
+        skill_row_at(ui, f32::from(depth) * 16.0, &format!("\u{2514} {name}"), *l, 0, pilot.level(*p), None);
+        prerequisites(ui, dogma, pilot, *p, depth + 1, all);
+    }
+}
+
+/// Whether the character lacks the skill at that level, or anything under it.
+fn lacks_any(dogma: &spai_fit::Dogma, pilot: &SkillSet, skill: TypeId, level: u8, depth: u8) -> bool {
+    pilot.level(skill) < level || depth < 8 && dogma.type_(skill).is_some_and(|t| t.required_skills.iter().any(|(p, l)| lacks_any(dogma, pilot, *p, *l, depth + 1)))
+}
+
 #[derive(Default)]
-struct RowEdit {
-    level: Option<u8>,
-    remove: bool,
+pub(crate) struct RowEdit {
+    pub(crate) level: Option<u8>,
+    pub(crate) remove: bool,
 }
 
 /// A small header over a group of skills.
-fn section(ui: &mut egui::Ui, title: &str) {
+pub(crate) fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(2.0);
     ui.label(egui::RichText::new(title.to_uppercase()).strong().color(ui.visuals().hyperlink_color));
 }
@@ -422,15 +406,25 @@ fn section(ui: &mut egui::Ui, title: &str) {
 /// levels filled, the levels still to train in the accent colour, those an earlier milestone
 /// trains (below `floor`) dimmed, the rest a dot. With `edit`, a box sets the level and a cross
 /// takes the skill off.
-fn skill_row(ui: &mut egui::Ui, name: &str, need: u8, floor: u8, have: u8, mut edit: Option<&mut RowEdit>) {
+pub(crate) fn skill_row(ui: &mut egui::Ui, name: &str, need: u8, floor: u8, have: u8, edit: Option<&mut RowEdit>) {
+    skill_row_at(ui, 0.0, name, need, floor, have, edit);
+}
+
+/// [`skill_row`] indented, for a skill's prerequisites under it. The levels it asks for are
+/// outlined whether trained or not, levels trained past them dimmed, and how far off it is shown
+/// beside the boxes.
+pub(crate) fn skill_row_at(ui: &mut egui::Ui, indent: f32, name: &str, need: u8, floor: u8, have: u8, mut edit: Option<&mut RowEdit>) {
     use egui_phosphor::regular as icon;
     ui.horizontal(|ui| {
+        ui.add_space(indent);
         let lacking = have < need;
         let (mark, _) = ui.allocate_exact_size(egui::vec2(16.0, ui.spacing().interact_size.y), egui::Sense::hover());
         if lacking {
             ui.painter().text(mark.center(), egui::Align2::CENTER_CENTER, icon::WARNING_CIRCLE, egui::TextStyle::Body.resolve(ui.style()), egui::Color32::from_rgb(0xE8, 0x8A, 0x3A));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Clear of a scroll bar.
+            ui.add_space(12.0);
             if let Some(e) = edit.as_deref_mut() {
                 if spai_ui::widgets::icon_button(ui, icon::X).on_hover_text(tr!("Take it off the list")).clicked() {
                     e.remove = true;
@@ -442,13 +436,16 @@ fn skill_row(ui: &mut egui::Ui, name: &str, need: u8, floor: u8, have: u8, mut e
             for i in 0..5u8 {
                 let r = egui::Rect::from_min_size(egui::pos2(rect.min.x + f32::from(i) * (BOX + BOX_GAP), rect.min.y), egui::vec2(BOX, BOX));
                 if i < have {
-                    ui.painter().rect_filled(r, 1.0, trained);
+                    ui.painter().rect_filled(r, 1.0, if i < need { trained } else { trained.gamma_multiply(0.45) });
                 } else if i < floor {
                     ui.painter().rect_filled(r, 1.0, accent.gamma_multiply(0.35));
                 } else if i < need {
                     ui.painter().rect_filled(r, 1.0, accent);
                 } else {
                     ui.painter().circle_filled(r.center(), 1.5, ui.visuals().weak_text_color());
+                }
+                if i < need {
+                    ui.painter().rect_stroke(r.expand(1.0), 1.5, egui::Stroke::new(1.0, accent), egui::StrokeKind::Outside);
                 }
             }
             if let (Some(e), Some(p)) = (edit.as_deref_mut(), resp.interact_pointer_pos().filter(|_| resp.clicked())) {
@@ -457,6 +454,9 @@ fn skill_row(ui: &mut egui::Ui, name: &str, need: u8, floor: u8, have: u8, mut e
             if edit.is_some() {
                 resp.on_hover_text(tr!("Click a box to set the level"));
             }
+            // How far off: levels missing, or trained past what is asked.
+            let (off, colour) = if have < need { (format!("\u{2212}{}", need - have), ui.visuals().error_fg_color) } else if have > need { (format!("+{}", have - need), ui.visuals().weak_text_color()) } else { (String::new(), ui.visuals().weak_text_color()) };
+            ui.add_sized([26.0, ui.spacing().interact_size.y], egui::Label::new(egui::RichText::new(off).color(colour)));
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 let text = format!("{name} {}", LEVELS[usize::from(need.min(5))]);
                 let tip = trf!("Trained to {have}, {need} needed", have = LEVELS[usize::from(have.min(5))], need = LEVELS[usize::from(need.min(5))]);

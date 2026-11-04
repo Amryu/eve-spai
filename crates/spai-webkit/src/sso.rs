@@ -97,6 +97,7 @@ impl Session {
 
 const RENEW_AHEAD: i64 = 3600;
 /// Seconds before a failed renewal is tried again.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 const RETRY: i64 = 60;
 
 /// The EVE refresh token of the login a session came from, by its character.
@@ -110,11 +111,13 @@ pub struct Renewal {
 /// the EVE login it came from: a character added with scopes when it is one, else the plain
 /// sign-in's own. Ticked every frame; the trip to EVE and the server runs in the background.
 #[derive(Clone, Default)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub struct Renewer {
     state: std::rc::Rc<std::cell::RefCell<RenewState>>,
 }
 
 #[derive(Default)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 struct RenewState {
     busy: bool,
     next_try: i64,

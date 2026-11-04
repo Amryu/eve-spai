@@ -78,3 +78,21 @@ mod tests {
         assert_eq!(clip("Rifter", 10), "Rifter");
     }
 }
+
+/// A training time as the game puts it: `2d 4h`, `5h 12m`, `45m`, `30s`.
+pub fn duration(secs: f64) -> String {
+    if !secs.is_finite() {
+        return "∞".into();
+    }
+    let s = secs.round().max(0.0) as u64;
+    let (d, h, m) = (s / 86_400, s / 3600 % 24, s / 60 % 60);
+    if d > 0 {
+        format!("{d}d {h}h")
+    } else if h > 0 {
+        format!("{h}h {m}m")
+    } else if m > 0 {
+        format!("{m}m")
+    } else {
+        format!("{s}s")
+    }
+}

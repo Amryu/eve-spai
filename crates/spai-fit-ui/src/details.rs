@@ -76,9 +76,6 @@ impl DetailsWindow {
 pub(crate) const GOOD: egui::Color32 = egui::Color32::from_rgb(0x7F, 0xC9, 0x8A);
 pub(crate) const BAD: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x86, 0x7E);
 
-/// How many attributes a tooltip shows.
-const SUMMARY_ATTRS: usize = 6;
-
 /// A type's pilot-facing attributes, those with a display name, or every one it carries.
 pub(crate) fn attrs_shown(dogma: &Dogma, attrs: &[AttrId], all: bool) -> Vec<AttrId> {
     attrs.iter().copied().filter(|a| all || dogma.attr(*a).is_some_and(|d| !d.display.is_empty())).collect()
@@ -157,6 +154,10 @@ impl SimUi {
                     ItemKind::Fighter { .. } => DetailsTarget::Fighter(it.type_id),
                     ItemKind::Implant => DetailsTarget::Implant(it.type_id),
                     ItemKind::Booster => DetailsTarget::Booster(it.type_id),
+                    ItemKind::Charge => match calc.items().iter().find(|m| m.charge == Some(i)).map(|m| m.kind) {
+                        Some(ItemKind::Module { slot, index }) => DetailsTarget::Charge(slot, index),
+                        _ => continue,
+                    },
                     _ => continue,
                 };
                 out.entry(target).or_insert_with(|| calc.attrs(i).into_iter().map(|a| (a, calc.value(i, a))).collect());
@@ -178,32 +179,32 @@ pub fn type_tip_with(ui: &mut egui::Ui, dogma: &Dogma, type_id: TypeId, note: &s
     };
     ui.label(egui::RichText::new(&t.name).strong());
     let group = dogma.group(t.group).map(|g| g.name.clone()).unwrap_or_default();
-    let line = match t.meta_level {
+    let mut line = match t.meta_level {
         Some(m) if !group.is_empty() => trf!("{group} · Meta {m}", group = group, m = m),
         _ => group,
     };
+    if let Some(extra) = crate::tips::subtitle(dogma, t) {
+        line = if line.is_empty() { extra } else { format!("{line} · {extra}") };
+    }
     let line = if fitted.is_some() { if line.is_empty() { tr!("As fitted").to_owned() } else { trf!("{line} · as fitted", line = line) } } else { line };
     if !line.is_empty() {
         ui.label(egui::RichText::new(line).weak());
     }
-    let attrs: Vec<AttrId> = t.attrs.iter().map(|(a, _)| *a).collect();
-    let shown: Vec<AttrId> = attrs_shown(dogma, &attrs, false).into_iter().take(SUMMARY_ATTRS).collect();
+    let shown = crate::tips::lines(dogma, t, fitted);
     if !shown.is_empty() {
         ui.add_space(2.0);
         egui::Grid::new(("sim_tip", type_id)).num_columns(2).spacing([16.0, 1.0]).show(ui, |ui| {
-            for a in shown {
-                let base = f64::from(t.attr(a).unwrap_or(0.0));
-                let v = fitted.and_then(|f| f.get(&a)).copied().unwrap_or(base);
-                let def = dogma.attr(a);
-                let text = egui::RichText::new(value_text(dogma, v, def.and_then(|d| d.unit))).monospace();
-                let text = if (v - base).abs() > 1e-9 * base.abs().max(1.0) {
-                    if (v > base) == def.is_none_or(|d| d.high_is_good) { text.color(GOOD) } else { text.color(BAD) }
-                } else {
-                    text
+            for l in shown {
+                let text = egui::RichText::new(&l.value).monospace();
+                let text = match l.tone {
+                    crate::tips::Tone::Better => text.color(GOOD),
+                    crate::tips::Tone::Worse => text.color(BAD),
+                    crate::tips::Tone::Plain if l.weak => text.weak(),
+                    crate::tips::Tone::Plain => text,
                 };
-                ui.label(egui::RichText::new(label_of(dogma, a)).weak());
+                ui.label(egui::RichText::new(&l.label).weak());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(text);
+                    ui.add(egui::Label::new(text).wrap());
                 });
                 ui.end_row();
             }

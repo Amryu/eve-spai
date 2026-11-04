@@ -304,12 +304,107 @@ pub struct PlanOptions {
     pub skip_trained: bool,
     /// Every prerequisite as well, down to the bottom.
     pub full_tree: bool,
+    /// Within each stage, the steps that train on the same two attributes together, so one remap
+    /// serves a run of them.
+    pub by_attributes: bool,
 }
 
 impl Default for PlanOptions {
     fn default() -> Self {
-        PlanOptions { required: true, fitting: true, milestones: usize::MAX, sort: true, skip_trained: false, full_tree: false }
+        PlanOptions { required: true, fitting: true, milestones: usize::MAX, sort: true, skip_trained: false, full_tree: false, by_attributes: false }
     }
+}
+
+/// One of the five attributes skills train on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Attr {
+    Charisma,
+    Intelligence,
+    Memory,
+    Perception,
+    Willpower,
+}
+
+impl Attr {
+    pub const ALL: [Attr; 5] = [Attr::Charisma, Attr::Intelligence, Attr::Memory, Attr::Perception, Attr::Willpower];
+
+    /// From the attribute id a skill's `primaryAttribute` and `secondaryAttribute` hold.
+    pub fn from_id(id: f32) -> Option<Attr> {
+        Some(match id.round() as i64 {
+            164 => Attr::Charisma,
+            165 => Attr::Intelligence,
+            166 => Attr::Memory,
+            167 => Attr::Perception,
+            168 => Attr::Willpower,
+            _ => return None,
+        })
+    }
+
+    /// The implant attribute that adds to it.
+    fn bonus_attr(self) -> crate::ids::AttrId {
+        match self {
+            Attr::Charisma => 175,
+            Attr::Intelligence => 176,
+            Attr::Memory => 177,
+            Attr::Perception => 178,
+            Attr::Willpower => 179,
+        }
+    }
+}
+
+/// A character's attributes as they train, implants and boosters included.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Attributes(pub [f64; 5]);
+
+impl Default for Attributes {
+    /// An unmapped character without implants.
+    fn default() -> Self {
+        Attributes([20.0, 20.0, 20.0, 20.0, 20.0])
+    }
+}
+
+impl Attributes {
+    pub fn get(&self, a: Attr) -> f64 {
+        self.0[a as usize]
+    }
+
+    pub fn plus(mut self, other: &Attributes) -> Self {
+        for i in 0..5 {
+            self.0[i] += other.0[i];
+        }
+        self
+    }
+
+    /// What implants add, read off their attribute bonuses.
+    pub fn of_implants(dogma: &Dogma, implants: &[TypeId]) -> Attributes {
+        let mut out = Attributes([0.0; 5]);
+        for t in implants.iter().filter_map(|i| dogma.type_(*i)) {
+            for a in Attr::ALL {
+                out.0[a as usize] += t.attr(a.bonus_attr()).unwrap_or(0.0) as f64;
+            }
+        }
+        out
+    }
+}
+
+/// The two attributes a skill trains on.
+pub fn skill_attributes(dogma: &Dogma, skill: TypeId) -> Option<(Attr, Attr)> {
+    let t = dogma.type_(skill)?;
+    Some((Attr::from_id(t.attr(180)?)?, Attr::from_id(t.attr(181)?)?))
+}
+
+/// Skill points a minute on those two attributes; an Alpha clone trains at half the rate.
+pub fn sp_per_minute(attrs: &Attributes, primary: Attr, secondary: Attr, omega: bool) -> f64 {
+    let rate = attrs.get(primary) + attrs.get(secondary) / 2.0;
+    if omega { rate } else { rate / 2.0 }
+}
+
+/// How long one level takes to train from the one below it, in seconds.
+pub fn step_seconds(dogma: &Dogma, skill: TypeId, level: u8, attrs: &Attributes, omega: bool) -> f64 {
+    let sp = skill_points(dogma, skill, level) - skill_points(dogma, skill, level.saturating_sub(1));
+    let (p, s) = skill_attributes(dogma, skill).unwrap_or((Attr::Intelligence, Attr::Memory));
+    let rate = sp_per_minute(attrs, p, s, omega);
+    if rate > 0.0 { sp / rate * 60.0 } else { f64::INFINITY }
 }
 
 /// Whether the hull's bonuses make its drones a weapon.
@@ -354,6 +449,11 @@ fn priorities(dogma: &Dogma, fit: &Fit) -> std::collections::HashMap<TypeId, u8>
 /// [`fitting_minimum`]'s answer, `pilot` whose training is skipped when asked. `fit` has its
 /// variations applied.
 pub fn plan(dogma: &Dogma, fit: &Fit, fitting: &[(TypeId, u8)], pilot: &SkillSet, opts: PlanOptions) -> Vec<(TypeId, u8)> {
+    plan_staged(dogma, fit, fitting, pilot, opts).into_iter().map(|(s, l, _)| (s, l)).collect()
+}
+
+/// [`plan`] with each step's stage: 0 what flies the fit, then 1 for the first milestone and on.
+pub fn plan_staged(dogma: &Dogma, fit: &Fit, fitting: &[(TypeId, u8)], pilot: &SkillSet, opts: PlanOptions) -> Vec<(TypeId, u8, usize)> {
     // Per skill, the level each stage wants: what flies the fit, then each milestone.
     let stages = 1 + fit.milestones.len().min(opts.milestones);
     let mut targets: Vec<(TypeId, Vec<u8>)> = Vec::new();
@@ -412,6 +512,18 @@ pub fn plan(dogma: &Dogma, fit: &Fit, fitting: &[(TypeId, u8)], pilot: &SkillSet
         }
     }
     steps.sort_by(|a, b| a.2.cmp(&b.2));
+    if opts.by_attributes {
+        // In each stage, each pair of attributes in the order it first comes up.
+        let pair = |s: TypeId| skill_attributes(dogma, s);
+        let mut order: Vec<(usize, Option<(Attr, Attr)>)> = Vec::new();
+        for (s, _, key) in &steps {
+            let k = (key.0, pair(*s));
+            if !order.contains(&k) {
+                order.push(k);
+            }
+        }
+        steps.sort_by_key(|(s, _, key)| (key.0, order.iter().position(|k| *k == (key.0, pair(*s))).unwrap_or(0)));
+    }
     // Whatever a step stands on, if it is in the plan, comes first.
     let wanted: Vec<(TypeId, u8)> = steps.iter().map(|(s, l, _)| (*s, *l)).collect();
     let mut out: Vec<(TypeId, u8)> = Vec::new();
@@ -435,7 +547,7 @@ pub fn plan(dogma: &Dogma, fit: &Fit, fitting: &[(TypeId, u8)], pilot: &SkillSet
     for step in &wanted {
         place(dogma, *step, &wanted, &mut out, 0);
     }
-    out
+    out.into_iter().map(|(s, l)| (s, l, steps.iter().find(|x| x.0 == s && x.1 == l).map_or(0, |x| x.2 .0))).collect()
 }
 
 /// The skills out of a pasted plan or list: a skill and a level a line, the level in digits or
@@ -693,5 +805,45 @@ mod tests {
         assert!(before.contains(&(ids::SKILL_MF, 3)) && before.contains(&(cpu, 2)));
         assert_eq!(added_over(&got, &before), vec![(ids::SKILL_MF, 4), (cpu, 3)]);
         assert_eq!(added_over(&[(ids::SKILL_MF, 2), (cpu, 2), (ids::SKILL_DRONES, 1)], &before), vec![(ids::SKILL_DRONES, 1)]);
+    }
+
+    #[test]
+    fn training_time_follows_the_attributes_and_alpha_trains_at_half() {
+        use crate::test_support::ids;
+        let mut d = crate::test_support::dataset();
+        let t = d.types.iter_mut().find(|t| t.id == ids::SKILL_MF).unwrap();
+        t.attrs.extend([(180, 167.0), (181, 168.0), (SKILL_RANK, 2.0)]);
+        let d = d.finish();
+        assert_eq!(skill_attributes(&d, ids::SKILL_MF), Some((Attr::Perception, Attr::Willpower)));
+        let a = Attributes([20.0, 20.0, 20.0, 27.0, 21.0]);
+        assert_eq!(sp_per_minute(&a, Attr::Perception, Attr::Willpower, true), 37.5);
+        // Level II of a rank 2 skill: 2 × (1415 − 250) points at 37.5 a minute.
+        assert!((step_seconds(&d, ids::SKILL_MF, 2, &a, true) - 2330.0 / 37.5 * 60.0).abs() < 1e-6);
+        assert!((step_seconds(&d, ids::SKILL_MF, 2, &a, false) - 2.0 * step_seconds(&d, ids::SKILL_MF, 2, &a, true)).abs() < 1e-6);
+        assert_eq!(Attributes::default().plus(&Attributes([0.0, 3.0, 0.0, 0.0, 0.0])).get(Attr::Intelligence), 23.0);
+    }
+
+    #[test]
+    fn grouping_by_attributes_keeps_each_stage_apart_and_prerequisites_first() {
+        use crate::test_support::ids;
+        let mut d = crate::test_support::dataset();
+        for (skill, p, s) in [(ids::SKILL_MF, 167.0, 168.0), (ids::SKILL_SPT, 167.0, 168.0), (ids::SKILL_DRONES, 166.0, 167.0), (ids::SKILL_CRUISE, 167.0, 168.0)] {
+            d.types.iter_mut().find(|t| t.id == skill).unwrap().attrs.extend([(180, p), (181, s)]);
+        }
+        let d = d.finish();
+        let mut fit = Fit::new(ids::SHIP, "Rifter");
+        fit.add_module(ids::GUN, crate::fit::Slot::High);
+        fit.drones.push(crate::fit::DroneStack { type_id: ids::DRONE, count: 2, active: true, launched: None, mutation: None });
+        fit.cargo.push(crate::fit::CargoItem { type_id: ids::MISSILE, quantity: 10, hold: None });
+        fit.milestones = vec![crate::fit::Milestone { name: "More".into(), skills: vec![(ids::SKILL_DRONES, 5), (ids::SKILL_MF, 3)] }];
+        let steps = plan_staged(&d, &fit, &[], &SkillSet::none(), PlanOptions { by_attributes: true, ..PlanOptions::default() });
+        let pairs: Vec<(usize, Option<(Attr, Attr)>)> = steps.iter().map(|(s, _, st)| (*st, skill_attributes(&d, *s))).collect();
+        let mut runs = pairs.clone();
+        runs.dedup();
+        let mut distinct = pairs.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(runs.len(), distinct.len(), "each pair in one run per stage: {pairs:?}");
+        assert!(steps.windows(2).all(|w| w[0].2 <= w[1].2), "stage by stage");
     }
 }

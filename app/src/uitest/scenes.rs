@@ -3369,6 +3369,10 @@ pub(crate) fn all() -> Vec<Scene> {
         let pilot = |id: &str, name: &str, skills: Vec<(u32, u8)>| spai_fit_ui::Profile { id: id.into(), name: name.into(), skills: spai_fit::skills::SkillSet::from_esi(skills) };
         sim.handle(spai_fit_ui::HostEvent::Profiles(vec![pilot("1", "Ducky Pilot", vec![(ids::SKILL_MF, 3), (ids::SKILL_SPT, 1)]), pilot("2", "Alt Character", vec![])]));
         sim.main_profile = Some("1".into());
+        sim.handle(spai_fit_ui::HostEvent::Training(vec![
+            ("1".into(), spai_fit_ui::skill_plan::Training { attributes: Some(spai_fit::skills::Attributes([19.0, 24.0, 21.0, 27.0, 21.0])), refused: false, alpha: false }),
+            ("2".into(), spai_fit_ui::skill_plan::Training { attributes: None, refused: true, alpha: true }),
+        ]));
         sim.skills_window = true;
     }
     v.push(imperium_dialog_scene("imperium_skill_check", [520.0, 560.0], skill_check_fixture));
@@ -3379,12 +3383,36 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(imperium_dialog_scene("imperium_skill_milestone", [520.0, 620.0], |sim| {
         skill_check_fixture(sim);
         sim.skill_check.tab = 1;
-        sim.skill_check.export_open = true;
+    }));
+    v.push(imperium_dialog_scene("imperium_skill_plan_table", [760.0, 640.0], |sim| {
+        skill_check_fixture(sim);
+        sim.skills_window = false;
+        sim.skill_check.tab = 2;
+        sim.skill_check.plan.by_attributes = true;
+        sim.skill_check.plan_open = true;
+    }));
+    v.push(imperium_dialog_scene("imperium_skill_plan_refused", [760.0, 400.0], |sim| {
+        skill_check_fixture(sim);
+        sim.skills_window = false;
+        sim.skill_check.profile = Some("2".into());
+        sim.skill_check.plan_open = true;
+    }));
+    v.push(imperium_dialog_scene("imperium_skill_catalogue", [760.0, 600.0], |sim| {
+        skill_check_fixture(sim);
+        sim.skills_window = false;
+        sim.skill_check.tab = 1;
+        sim.skill_check.catalogue_open = true;
     }));
     v.push(imperium_dialog_scene("imperium_skill_import", [520.0, 560.0], |sim| {
         skill_check_fixture(sim);
         sim.skill_check.tab = 2;
         sim.skill_check.import = Some("Minmatar Frigate 4\nSmall Projectile Turret V\nDrones 3\n".into());
+    }));
+    v.push(imperium_scene_with("imperium_drone_counts", [1100.0, 760.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        sim.edit(spai_fit::history::EditKind::Drones, 1, |f| {
+            f.drones.push(spai_fit::fit::DroneStack { type_id: spai_fit::test_support::ids::DRONE, count: 125, active: true, launched: Some(5), mutation: None });
+            f.drones.push(spai_fit::fit::DroneStack { type_id: spai_fit::test_support::ids::WEB_DRONE, count: 3, active: false, launched: None, mutation: None });
+        });
     }));
     v.push(imperium_dialog_scene("imperium_link_refused", [480.0, 260.0], |sim| {
         sim.open_link("Zz9");
@@ -10462,4 +10490,28 @@ fn uitest_the_room_dialog_suggests_and_joins_listed_rooms() {
     let slot = app.borrow();
     let a = slot.as_ref().unwrap();
     assert!(a.settings.jabber_rooms.iter().any(|r| r == "fleet_capitals@conference.goonfleet.com"), "picking a listed room did not join it");
+}
+
+/// A drone count is typed in, three digits and all, and shown whole.
+#[test]
+fn uitest_sim_drone_count_is_typed_in() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = imperium_scene_with("sim_drone_count", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        sim.edit(spai_fit::history::EditKind::Drones, 1, |f| {
+            f.drones.push(spai_fit::fit::DroneStack { type_id: spai_fit::test_support::ids::DRONE, count: 7, active: false, launched: None, mutation: None });
+        });
+    });
+    let mut h = harness::build(&mut scene, false);
+    h.run_steps(3);
+    let field = || h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.value().as_deref() == Some("7")).expect("the count field");
+    field().focus();
+    h.run_steps(2);
+    h.key_press(egui::Key::Backspace);
+    h.event(egui::Event::Text("125".into()));
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let shown: Vec<String> = h.get_all_by_role(egui::accesskit::Role::TextInput).filter_map(|n| n.value()).collect();
+    assert!(shown.iter().any(|v| v == "125"), "the field shows the whole count: {shown:?}");
+    assert!(!shown.iter().any(|v| v == "7"), "{shown:?}");
 }

@@ -1077,7 +1077,15 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
                 (Some(n), None) => n.clone(),
                 (None, _) => tr!("Click to pick a charge").to_owned(),
             };
-            if r.on_hover_text(hover).clicked() {
+            let r = match charge {
+                Some(c) => {
+                    let as_loaded = tips.get(&DetailsTarget::Charge(slot, index));
+                    let note = loaded.map(|(count, m3)| trf!("{count} loaded, {m3} m³; click to pick another", count = text::num(count), m3 = text::num(m3))).unwrap_or_else(|| tr!("Click to pick another").to_owned());
+                    r.on_hover_ui(|ui| details::type_tip_with(ui, dogma, c, &note, as_loaded))
+                }
+                None => r.on_hover_text(hover),
+            };
+            if r.clicked() {
                 open_picker = Some(PickTarget::Charge(slot, index));
             }
         } else {

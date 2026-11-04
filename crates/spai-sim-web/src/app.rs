@@ -17,6 +17,8 @@ use crate::store::{Library, KEY};
 
 /// Where the panel sizes and tabs shown are kept between visits.
 const LAYOUT_KEY: &str = "spai.sim.layout";
+/// Each character's attributes and clone state as last read: `(id, attributes, refused, alpha)`.
+const TRAINING_KEY: &str = "spai.sim.training";
 /// Whether the pilot opted into keeping the library on the server.
 const SYNC_KEY: &str = "spai.sim.sync";
 
@@ -383,6 +385,12 @@ impl SimWebApp {
             .map(|(id, name, skills)| Profile { id: id.to_string(), name, skills: spai_fit::skills::SkillSet::from_esi(skills) })
             .collect();
         self.sim.handle(HostEvent::Profiles(profiles));
+        let training = page::load::<Vec<(i64, Option<[f64; 5]>, bool, bool)>>(TRAINING_KEY)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, attributes, refused, alpha)| (id.to_string(), spai_fit_ui::skill_plan::Training { attributes: attributes.map(spai_fit::skills::Attributes), refused, alpha }))
+            .collect();
+        self.sim.handle(HostEvent::Training(training));
     }
 
     /// Off to EVE once for both: the skills of the character and an EVE Spai session; back
@@ -419,11 +427,20 @@ impl SimWebApp {
                         page::save(ACCOUNTS_KEY, &*list);
                     }
                     let v = accounts::esi(&token, ehttp::Method::GET, &format!("/characters/{}/skills/", a.char_id)).await?;
-                    Ok::<_, String>(accounts::skill_levels(&v))
+                    // Skills held below their trained level: an Alpha clone.
+                    let alpha = v["skills"].as_array().is_some_and(|l| l.iter().any(|s| s["trained_skill_level"].as_u64() > s["active_skill_level"].as_u64()));
+                    let attrs = accounts::esi(&token, ehttp::Method::GET, &format!("/characters/{}/attributes/", a.char_id)).await;
+                    let refused = attrs.as_ref().err().is_some_and(|e| e.contains(" 403"));
+                    let attrs = attrs.ok().and_then(|v| Some([v["charisma"].as_f64()?, v["intelligence"].as_f64()?, v["memory"].as_f64()?, v["perception"].as_f64()?, v["willpower"].as_f64()?]));
+                    Ok::<_, String>((accounts::skill_levels(&v), (attrs, refused, alpha)))
                 }
                 .await;
                 match result {
-                    Ok(levels) => {
+                    Ok((levels, training)) => {
+                        let mut kept: Vec<(i64, Option<[f64; 5]>, bool, bool)> = page::load(TRAINING_KEY).unwrap_or_default();
+                        kept.retain(|(id, ..)| *id != a.char_id);
+                        kept.push((a.char_id, training.0, training.1, training.2));
+                        page::save(TRAINING_KEY, &kept);
                         let mut stored: Vec<(i64, String, Vec<(u32, u8)>)> = page::load("spai.sim.skills").unwrap_or_default();
                         stored.retain(|(id, _, _)| *id != a.char_id);
                         stored.push((a.char_id, a.name.clone(), levels.into_iter().filter_map(|(id, l)| Some((u32::try_from(id).ok()?, l.min(5) as u8))).collect()));
