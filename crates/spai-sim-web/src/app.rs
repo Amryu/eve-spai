@@ -19,6 +19,8 @@ use crate::store::{Library, KEY};
 const LAYOUT_KEY: &str = "spai.sim.layout";
 /// Each character's attributes and clone state as last read: `(id, attributes, refused, alpha)`.
 const TRAINING_KEY: &str = "spai.sim.training";
+/// When each character's skills were last read: `(id, when)`.
+const SKILLS_AT_KEY: &str = "spai.sim.skills.at";
 /// Whether the pilot opted into keeping the library on the server.
 const SYNC_KEY: &str = "spai.sim.sync";
 
@@ -44,6 +46,8 @@ pub struct SimWebApp {
     renewer: spai_webkit::sso::Renewer,
     /// Skills fetched this visit, by character.
     fetching: Rc<RefCell<usize>>,
+    /// When the characters' skills were last looked over for any due.
+    skills_checked: i64,
 }
 
 impl SimWebApp {
@@ -61,6 +65,7 @@ impl SimWebApp {
             session: page::load::<Session>(SESSION_KEY).filter(|s| s.usable(now)),
             renewer: Default::default(),
             fetching: Default::default(),
+            skills_checked: 0,
         };
         // The fleet work off the page: a big fight held the frame for seconds.
         if let Some(w) = worker_url().and_then(|url| crate::worker::FleetWorker::start(&cc.egui_ctx, &url)) {
@@ -385,11 +390,15 @@ impl SimWebApp {
             .map(|(id, name, skills)| Profile { id: id.to_string(), name, skills: spai_fit::skills::SkillSet::from_esi(skills) })
             .collect();
         self.sim.handle(HostEvent::Profiles(profiles));
-        let training = page::load::<Vec<(i64, Option<[f64; 5]>, bool, bool)>>(TRAINING_KEY)
-            .unwrap_or_default()
+        let read = page::load::<Vec<(i64, Option<[f64; 5]>, bool, bool)>>(TRAINING_KEY).unwrap_or_default();
+        // A character kept for its skills whose login has not the scope: EVE is not even asked.
+        let unscoped = self.sim.profiles.iter().filter_map(|p| p.id.parse::<i64>().ok()).filter(|id| !self.accounts.borrow().iter().any(|a| a.char_id == *id && a.can(SKILLS))).collect::<Vec<i64>>();
+        let mut training: Vec<(String, spai_fit_ui::skill_plan::Training)> = read
             .into_iter()
+            .filter(|r| !unscoped.contains(&r.0))
             .map(|(id, attributes, refused, alpha)| (id.to_string(), spai_fit_ui::skill_plan::Training { attributes: attributes.map(spai_fit::skills::Attributes), refused, alpha }))
             .collect();
+        training.extend(unscoped.into_iter().map(|id| (id.to_string(), spai_fit_ui::skill_plan::Training { refused: true, ..Default::default() })));
         self.sim.handle(HostEvent::Training(training));
     }
 
@@ -408,13 +417,23 @@ impl SimWebApp {
         page::go(&p.authorize_url(&format!("{}/wh/callback", page::origin())));
     }
 
-    fn fetch_skills(&mut self, ctx: &egui::Context) {
-        let list: Vec<Account> = self.accounts.borrow().iter().filter(|a| a.can(SKILLS)).cloned().collect();
+    /// The characters' skills and attributes from EVE: all of them when asked, else those due.
+    fn fetch_skills(&mut self, ctx: &egui::Context, asked: bool) {
+        let now = spai_core::clock::utc().timestamp();
+        let at: Vec<(i64, i64)> = page::load(SKILLS_AT_KEY).unwrap_or_default();
+        let read: Vec<(i64, Option<[f64; 5]>, bool, bool)> = page::load(TRAINING_KEY).unwrap_or_default();
+        let due = |id: i64| {
+            let r = read.iter().find(|r| r.0 == id);
+            spai_fit_ui::skill_plan::skills_due(now, at.iter().find(|a| a.0 == id).map(|a| a.1), r.is_some_and(|r| r.1.is_some()), r.is_some_and(|r| r.2))
+        };
+        let list: Vec<Account> = self.accounts.borrow().iter().filter(|a| a.can(SKILLS) && (asked || due(a.char_id))).cloned().collect();
         if list.is_empty() {
-            self.sim.handle(HostEvent::Status(tr!("Add a character with the skills scope first").to_owned()));
+            if asked {
+                self.sim.handle(HostEvent::Status(tr!("Add a character with the skills scope first").to_owned()));
+            }
             return;
         }
-        *self.fetching.borrow_mut() = list.len();
+        *self.fetching.borrow_mut() += list.len();
         for a in list {
             let (events, accounts, fetching, ctx) = (self.events.clone(), self.accounts.clone(), self.fetching.clone(), ctx.clone());
             wasm_bindgen_futures::spawn_local(async move {
@@ -441,6 +460,10 @@ impl SimWebApp {
                         kept.retain(|(id, ..)| *id != a.char_id);
                         kept.push((a.char_id, training.0, training.1, training.2));
                         page::save(TRAINING_KEY, &kept);
+                        let mut at: Vec<(i64, i64)> = page::load(SKILLS_AT_KEY).unwrap_or_default();
+                        at.retain(|(id, _)| *id != a.char_id);
+                        at.push((a.char_id, now));
+                        page::save(SKILLS_AT_KEY, &at);
                         let mut stored: Vec<(i64, String, Vec<(u32, u8)>)> = page::load("spai.sim.skills").unwrap_or_default();
                         stored.retain(|(id, _, _)| *id != a.char_id);
                         stored.push((a.char_id, a.name.clone(), levels.into_iter().filter_map(|(id, l)| Some((u32::try_from(id).ok()?, l.min(5) as u8))).collect()));
@@ -498,7 +521,7 @@ impl SimWebApp {
                 self.sim.handle(HostEvent::Fits(self.library.summaries()));
                 self.sync(ctx);
             }
-            HostRequest::FetchSkills => self.fetch_skills(ctx),
+            HostRequest::FetchSkills => self.fetch_skills(ctx, true),
             HostRequest::CopyText(t) => ctx.copy_text(t),
             HostRequest::SaveLayout(json) => page::save_raw(LAYOUT_KEY, &json),
             HostRequest::FetchPrices => {
@@ -694,6 +717,11 @@ impl eframe::App for SimWebApp {
                 self.sim.handle(HostEvent::Access { signed_in: false, imperium: false, admin: false });
             }
             _ => {}
+        }
+        let now = spai_core::clock::utc().timestamp();
+        if now - self.skills_checked >= spai_fit_ui::skill_plan::SKILLS_CHECK_SECS {
+            self.skills_checked = now;
+            self.fetch_skills(&ctx, false);
         }
         let events: Vec<HostEvent> = std::mem::take(&mut *self.events.lock().unwrap());
         for e in events {

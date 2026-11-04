@@ -604,7 +604,10 @@ pub fn fetch_skills(client_id: String, char_name: String, done: Box<dyn FnOnce(i
     let _ = std::thread::Builder::new().name("esi-skills".into()).spawn(move || {
         let Ok(store) = Store::open() else { return };
         let Some(character) = store.character_by_name(&char_name) else { return };
-        let Some(token) = current_access_token(&store, &client_id, character.id, character.expires_at) else { return };
+        let Some(token) = current_access_token(&store, &client_id, character.id, character.expires_at) else {
+            crate::esilog::record("skills", &format!("{char_name}: no access token"));
+            return;
+        };
         let Ok(client) = crate::http::client(20) else { return };
         #[derive(serde::Deserialize)]
         struct Skill {
@@ -626,15 +629,27 @@ pub fn fetch_skills(client_id: String, char_name: String, done: Box<dyn FnOnce(i
             skills: Vec<Skill>,
         }
         let url = format!("https://esi.evetech.net/latest/characters/{}/skills/?datasource=tranquility", character.id);
-        let Ok(resp) = client.get(url).bearer_auth(&token).send() else { return };
+        let resp = match client.get(url).bearer_auth(&token).send() {
+            Ok(r) => r,
+            Err(e) => {
+                crate::esilog::record("skills", &format!("{char_name}: {e}"));
+                return;
+            }
+        };
         match resp.error_for_status().and_then(|r| r.json::<Skills>()) {
             Ok(skills) => {
                 let alpha = skills.skills.iter().any(|s| s.trained_skill_level.is_some_and(|t| t > s.active_skill_level));
                 let url = format!("https://esi.evetech.net/latest/characters/{}/attributes/?datasource=tranquility", character.id);
                 let mut read = TrainingRead { alpha, ..Default::default() };
                 match client.get(url).bearer_auth(&token).send() {
-                    Ok(r) if r.status().as_u16() == 403 => read.refused = true,
-                    Ok(r) => read.attributes = r.error_for_status().and_then(|r| r.json::<Attrs>()).ok().map(|a| [a.charisma, a.intelligence, a.memory, a.perception, a.willpower]),
+                    Ok(r) if r.status().as_u16() == 403 => {
+                        crate::esilog::record("attributes", &format!("{char_name}: refused"));
+                        read.refused = true;
+                    }
+                    Ok(r) => match r.error_for_status().and_then(|r| r.json::<Attrs>()) {
+                        Ok(a) => read.attributes = Some([a.charisma, a.intelligence, a.memory, a.perception, a.willpower]),
+                        Err(e) => crate::esilog::record("attributes", &format!("{char_name}: {e}")),
+                    },
                     Err(e) => crate::esilog::record("attributes", &format!("{char_name}: {e}")),
                 }
                 done(character.id, skills.skills.into_iter().map(|s| (s.skill_id, s.active_skill_level)).collect(), read);

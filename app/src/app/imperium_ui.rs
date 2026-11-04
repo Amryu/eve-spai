@@ -12,8 +12,6 @@ pub(crate) type SimEvents = Arc<Mutex<Vec<HostEvent>>>;
 
 /// The mirror's prebaked fitting data, for a profile whose static-data build predates the blob.
 const BLOB_MIRROR: &str = "https://eve-spai.com/sde";
-/// Skills older than this are fetched again when the tab opens.
-const SKILLS_FRESH_SECS: i64 = 24 * 3600;
 const AFFILIATION_FRESH_SECS: i64 = 24 * 3600;
 
 impl SpaiApp {
@@ -63,9 +61,15 @@ impl SpaiApp {
             self.sim_list_fits();
             self.sim_list_doctrines();
             self.sim_load_profiles();
+            self.sim_skills_checked = crate::clock::utc().timestamp();
             self.sim_fetch_stale_skills(ui.ctx());
             self.sim_fetch_doctrines(ui.ctx());
             self.sim_sync(ui.ctx());
+        }
+        let now = crate::clock::utc().timestamp();
+        if now - self.sim_skills_checked >= spai_fit_ui::skill_plan::SKILLS_CHECK_SECS {
+            self.sim_skills_checked = now;
+            self.sim_fetch_stale_skills(ui.ctx());
         }
         let events: Vec<HostEvent> = std::mem::take(&mut *self.sim_events.lock().unwrap());
         for e in events {
@@ -554,8 +558,10 @@ impl SpaiApp {
             .characters
             .iter()
             .filter_map(|c| {
-                let read: crate::esi::TrainingRead = serde_json::from_str(&store.kv_get(&format!("sim.training.{}", c.id))?).ok()?;
-                Some((c.id.to_string(), spai_fit_ui::skill_plan::Training { attributes: read.attributes.map(spai_fit::skills::Attributes), refused: read.refused, alpha: read.alpha }))
+                // Signed in without the scope: EVE would refuse, and it is not even asked.
+                let unscoped = !c.scopes.contains("esi-skills.read_skills");
+                let read: crate::esi::TrainingRead = store.kv_get(&format!("sim.training.{}", c.id)).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+                (unscoped || read.attributes.is_some() || read.refused || read.alpha).then(|| (c.id.to_string(), spai_fit_ui::skill_plan::Training { attributes: read.attributes.map(spai_fit::skills::Attributes), refused: read.refused || unscoped, alpha: read.alpha }))
             })
             .collect();
         self.sim.handle(HostEvent::Training(training));
@@ -571,7 +577,13 @@ impl SpaiApp {
             .characters
             .iter()
             .filter(|c| c.scopes.contains("esi-skills.read_skills"))
-            .filter(|c| force || !self.store.as_ref().and_then(|s| s.skills_get(c.id)).is_some_and(|(_, at)| now - at < SKILLS_FRESH_SECS))
+            .filter(|c| {
+                force
+                    || self.store.as_ref().is_none_or(|s| {
+                        let read: crate::esi::TrainingRead = s.kv_get(&format!("sim.training.{}", c.id)).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+                        spai_fit_ui::skill_plan::skills_due(now, s.skills_get(c.id).map(|(_, at)| at), read.attributes.is_some(), read.refused)
+                    })
+            })
             .map(|c| c.name.clone())
             .collect();
         let client_id = super::non_empty_or(&self.settings.sso_client_id, crate::auth::DEFAULT_CLIENT_ID).to_owned();

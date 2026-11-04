@@ -18,6 +18,18 @@ pub struct Training {
     pub alpha: bool,
 }
 
+/// How often the hosts look for characters whose skills are due.
+pub const SKILLS_CHECK_SECS: i64 = 300;
+const SKILLS_FRESH_SECS: i64 = 3600;
+
+/// Whether a character's skills and attributes should be read again: never read, read over an
+/// hour ago, or read without attributes and EVE did not refuse them, which may pass.
+pub fn skills_due(now: i64, fetched_at: Option<i64>, attributes_known: bool, refused: bool) -> bool {
+    let Some(at) = fetched_at else { return true };
+    let age = now - at;
+    age >= SKILLS_FRESH_SECS || (!attributes_known && !refused && age >= SKILLS_CHECK_SECS)
+}
+
 pub fn attr_icon(a: Attr) -> &'static str {
     use egui_phosphor::regular as icon;
     match a {
@@ -356,5 +368,21 @@ impl SimUi {
             self.edit(spai_fit::history::EditKind::Other, now_ms, |f| f.milestones = milestones);
         }
         self.skill_check.catalogue_open = open;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::skills_due;
+
+    #[test]
+    fn skills_are_read_again_hourly_and_soon_when_attributes_are_missing() {
+        assert!(skills_due(1000, None, false, false), "never read");
+        assert!(!skills_due(4000, Some(1000), true, false), "known and under the hour");
+        assert!(skills_due(4600, Some(1000), true, false), "the hour is up");
+        assert!(skills_due(1300, Some(1000), false, false), "read before attributes were, or the read failed");
+        assert!(!skills_due(1100, Some(1000), false, false), "not on every check");
+        assert!(!skills_due(1300, Some(1000), false, true), "refused: asking again soon changes nothing");
+        assert!(skills_due(4600, Some(1000), false, true), "refused still reads the skills hourly");
     }
 }

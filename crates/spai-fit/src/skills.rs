@@ -526,28 +526,29 @@ pub fn plan_staged(dogma: &Dogma, fit: &Fit, fitting: &[(TypeId, u8)], pilot: &S
     }
     // Whatever a step stands on, if it is in the plan, comes first.
     let wanted: Vec<(TypeId, u8)> = steps.iter().map(|(s, l, _)| (*s, *l)).collect();
-    let mut out: Vec<(TypeId, u8)> = Vec::new();
-    fn place(dogma: &Dogma, step: (TypeId, u8), wanted: &[(TypeId, u8)], out: &mut Vec<(TypeId, u8)>, depth: u8) {
-        if out.contains(&step) || depth > 40 {
+    let mut out: Vec<(TypeId, u8, usize)> = Vec::new();
+    // A step pulled ahead for a later one trains in that one's stage, so stages never interleave.
+    fn place(dogma: &Dogma, step: (TypeId, u8), stage: usize, wanted: &[(TypeId, u8)], out: &mut Vec<(TypeId, u8, usize)>, depth: u8) {
+        let (skill, level) = step;
+        if out.iter().any(|x| x.0 == skill && x.1 == level) || depth > 40 {
             return;
         }
-        let (skill, level) = step;
         if level > 1 && wanted.contains(&(skill, level - 1)) {
-            place(dogma, (skill, level - 1), wanted, out, depth + 1);
+            place(dogma, (skill, level - 1), stage, wanted, out, depth + 1);
         }
         for (p, pl) in dogma.type_(skill).map(|t| t.required_skills.clone()).unwrap_or_default() {
             for l in 1..=pl {
                 if wanted.contains(&(p, l)) {
-                    place(dogma, (p, l), wanted, out, depth + 1);
+                    place(dogma, (p, l), stage, wanted, out, depth + 1);
                 }
             }
         }
-        out.push(step);
+        out.push((skill, level, stage));
     }
-    for step in &wanted {
-        place(dogma, *step, &wanted, &mut out, 0);
+    for (skill, level, key) in &steps {
+        place(dogma, (*skill, *level), key.0, &wanted, &mut out, 0);
     }
-    out.into_iter().map(|(s, l)| (s, l, steps.iter().find(|x| x.0 == s && x.1 == l).map_or(0, |x| x.2 .0))).collect()
+    out
 }
 
 /// The skills out of a pasted plan or list: a skill and a level a line, the level in digits or
@@ -599,6 +600,22 @@ pub fn before_milestone(dogma: &Dogma, fit: &Fit, fitting: &[(TypeId, u8)], inde
 /// Only what `skills` adds over `before`: a skill at a level `before` already reaches is dropped.
 pub fn added_over(skills: &[(TypeId, u8)], before: &[(TypeId, u8)]) -> Vec<(TypeId, u8)> {
     skills.iter().copied().filter(|(s, l)| !before.iter().any(|(b, bl)| b == s && bl >= l)).collect()
+}
+
+/// The milestones of a plan written for the fit: `required`, then `recommended` on top, each
+/// keeping only what it adds over what comes before, the computed minimum first. A milestone
+/// left with nothing is dropped. `fit` has its variations applied.
+pub fn milestones_over_minimum(dogma: &Dogma, fit: &Fit, required_skills: &[(TypeId, u8)], recommended: &[(TypeId, u8)], names: [&str; 2]) -> Vec<crate::fit::Milestone> {
+    let mut before = before_milestone(dogma, fit, &fitting_minimum(dogma, fit), 0);
+    let mut out = Vec::new();
+    for (name, skills) in names.into_iter().zip([required_skills, recommended]) {
+        let added = added_over(skills, &before);
+        if !added.is_empty() {
+            before.extend(added.iter().copied());
+            out.push(crate::fit::Milestone { name: name.to_owned(), skills: added });
+        }
+    }
+    out
 }
 
 /// A skill plan as the game imports it from the clipboard: a skill and a level a line.
@@ -845,5 +862,46 @@ mod tests {
         distinct.dedup();
         assert_eq!(runs.len(), distinct.len(), "each pair in one run per stage: {pairs:?}");
         assert!(steps.windows(2).all(|w| w[0].2 <= w[1].2), "stage by stage");
+    }
+
+    #[test]
+    fn stages_stay_in_order_when_an_earlier_one_needs_a_prerequisite_a_later_one_lists() {
+        use crate::test_support::ids;
+        let mut d = crate::test_support::dataset();
+        d.types.iter_mut().find(|t| t.id == ids::SKILL_CRUISE_SPEC).unwrap().required_skills = vec![(ids::SKILL_CRUISE, 3)];
+        for (skill, p) in [(ids::SKILL_CRUISE, 165.0), (ids::SKILL_CRUISE_SPEC, 167.0), (ids::SKILL_MF, 166.0)] {
+            d.types.iter_mut().find(|t| t.id == skill).unwrap().attrs.extend([(180, p), (181, 168.0)]);
+        }
+        let d = d.finish();
+        let mut fit = Fit::new(ids::SHIP, "Rifter");
+        fit.add_module(ids::LAUNCHER, crate::fit::Slot::High);
+        fit.milestones = vec![
+            crate::fit::Milestone { name: "First".into(), skills: vec![(ids::SKILL_MF, 3)] },
+            crate::fit::Milestone { name: "Second".into(), skills: vec![(ids::SKILL_CRUISE, 4)] },
+        ];
+        for sort in [true, false] {
+            for by_attributes in [true, false] {
+                let steps = plan_staged(&d, &fit, &[], &SkillSet::none(), PlanOptions { sort, by_attributes, ..PlanOptions::default() });
+                assert!(steps.windows(2).all(|w| w[0].2 <= w[1].2), "sort {sort}, attributes {by_attributes}: {steps:?}");
+                let at = |s: TypeId, l: u8| steps.iter().position(|x| x.0 == s && x.1 == l).unwrap();
+                assert!(at(ids::SKILL_CRUISE, 3) < at(ids::SKILL_CRUISE_SPEC, 1), "prerequisites still first: {steps:?}");
+                assert_eq!(steps[at(ids::SKILL_CRUISE, 3)].2, 0, "pulled into the stage that needs it: {steps:?}");
+                assert_eq!(steps[at(ids::SKILL_CRUISE, 4)].2, 2, "the level only the later milestone wants stays there: {steps:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_written_plan_becomes_milestones_that_only_add_to_the_minimum() {
+        use crate::test_support::ids;
+        let (d, cpu, _, fat) = fitting_data();
+        let (d, fit) = with_cpu(&d, fat, d.type_(ids::SHIP).unwrap().attr(attr::CPU_OUTPUT).unwrap() * 1.08);
+        // The hull asks Minmatar Frigate I and it takes CPU Management II to fit.
+        let m = milestones_over_minimum(&d, &fit, &[(ids::SKILL_MF, 1), (cpu, 2), (ids::SKILL_SPT, 3)], &[(ids::SKILL_SPT, 3), (ids::SKILL_MF, 4), (ids::SKILL_DRONES, 1)], ["Required", "Recommended"]);
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0].skills, vec![(ids::SKILL_SPT, 3)], "what the minimum has is stripped");
+        assert_eq!(m[1].skills, vec![(ids::SKILL_MF, 4), (ids::SKILL_DRONES, 1)], "and what the milestone before has");
+        let none = milestones_over_minimum(&d, &fit, &[(ids::SKILL_MF, 1)], &[(cpu, 1)], ["Required", "Recommended"]);
+        assert!(none.is_empty(), "nothing added, no milestone");
     }
 }

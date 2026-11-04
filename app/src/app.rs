@@ -1082,6 +1082,8 @@ pub struct SpaiApp {
     pub(crate) sim: spai_fit_ui::SimUi,
     pub(crate) sim_events: imperium_ui::SimEvents,
     pub(crate) sim_opened: bool,
+    /// When the characters' skills were last looked over for any due.
+    pub(crate) sim_skills_checked: i64,
     /// A fit sent to the Fitting tab, opened there once the dogma data is loaded.
     pub(crate) sim_pending_fit: Option<spai_fit::formats::esi_json::EsiFitting>,
     /// `(character, alliance, checked_at)` of the signed-in characters.
@@ -1956,6 +1958,7 @@ impl SpaiApp {
             sim: spai_fit_ui::SimUi::default(),
             sim_events: Default::default(),
             sim_opened: false,
+            sim_skills_checked: 0,
             sim_pending_fit: None,
             char_alliances: Vec::new(),
             char_alliances_requested: false,
