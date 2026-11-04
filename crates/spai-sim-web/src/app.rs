@@ -17,6 +17,8 @@ use crate::store::{Library, KEY};
 
 /// Where the panel sizes and tabs shown are kept between visits.
 const LAYOUT_KEY: &str = "spai.sim.layout";
+/// Whether the pilot opted into keeping the library on the server.
+const SYNC_KEY: &str = "spai.sim.sync";
 
 /// Where the fitting data is published, next to the mirrored static data.
 const BLOB_PATH: &str = "/sde/";
@@ -37,6 +39,7 @@ pub struct SimWebApp {
     events: Arc<Mutex<Vec<HostEvent>>>,
     accounts: Rc<RefCell<Vec<Account>>>,
     session: Option<Session>,
+    renewer: spai_webkit::sso::Renewer,
     /// Skills fetched this visit, by character.
     fetching: Rc<RefCell<usize>>,
 }
@@ -54,12 +57,15 @@ impl SimWebApp {
             events: Default::default(),
             accounts: Rc::new(RefCell::new(page::load(ACCOUNTS_KEY).unwrap_or_default())),
             session: page::load::<Session>(SESSION_KEY).filter(|s| s.usable(now)),
+            renewer: Default::default(),
             fetching: Default::default(),
         };
         // The fleet work off the page: a big fight held the frame for seconds.
         if let Some(w) = worker_url().and_then(|url| crate::worker::FleetWorker::start(&cc.egui_ctx, &url)) {
             app.sim.set_off_frame(w);
         }
+        app.sim.sharing.in_browser = true;
+        app.sim.handle(HostEvent::Sync(page::load::<bool>(SYNC_KEY).unwrap_or(false)));
         app.sim.handle(HostEvent::Fits(app.library.summaries()));
         app.sim.handle(HostEvent::OwnDoctrines(app.library.doctrine_docs()));
         if let Some(layout) = page::load_raw(LAYOUT_KEY) {
@@ -71,7 +77,13 @@ impl SimWebApp {
             // A fit in the address, in the fragment or the query, comes in once the data is loaded;
             // the address is cleaned so a reload does not bring it again.
             let (hash, search) = (loc.hash().unwrap_or_default(), loc.search().unwrap_or_default());
-            if let Some(text) = spai_fit::formats::link::param(&hash).or_else(|| spai_fit::formats::link::param(&search)).and_then(spai_fit::formats::link::decode) {
+            let shared = spai_fit_ui::sharing::link_id(&hash).or_else(|| spai_fit_ui::sharing::link_id(&search)).map(str::to_owned);
+            if let Some(link) = shared {
+                app.sim.open_link(&link);
+                if let Ok(history) = web_sys::window().expect("a window").history() {
+                    let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&path));
+                }
+            } else if let Some(text) = spai_fit::formats::link::param(&hash).or_else(|| spai_fit::formats::link::param(&search)).and_then(spai_fit::formats::link::decode) {
                 app.sim.import_when_ready(text);
                 if let Ok(history) = web_sys::window().expect("a window").history() {
                     let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&path));
@@ -203,6 +215,9 @@ impl SimWebApp {
     /// The browser's library against the server's: newer local saves go up, newer server copies
     /// come down, by revision.
     fn sync(&self, ctx: &egui::Context) {
+        if !self.sim.sharing.sync_on {
+            return;
+        }
         let Some(b) = self.bearer() else { return };
         let (events, ctx) = (self.events.clone(), ctx.clone());
         let mut lib = self.library.clone();
@@ -332,6 +347,33 @@ impl SimWebApp {
             events.lock().unwrap().push(HostEvent::Status("\u{0}reload".into()));
             ctx.request_repaint();
         });
+    }
+
+    /// One sharing call to the server, its answer turned into an event; a 404 is `MISSING`.
+    fn call(&self, ctx: &egui::Context, method: ehttp::Method, path: String, body: Option<serde_json::Value>, answer: impl FnOnce(Result<serde_json::Value, String>) -> Option<HostEvent> + 'static) {
+        let (events, bearer, ctx) = (self.events.clone(), self.bearer(), ctx.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            let mut req = ehttp::Request::post(Self::api(&path), body.map(|b| b.to_string().into_bytes()).unwrap_or_default());
+            req.method = method;
+            req.headers = ehttp::Headers::new(&[("Content-Type", "application/json")]);
+            if let Some(b) = &bearer {
+                req.headers.insert("Authorization", format!("Bearer {b}"));
+            }
+            let result = match ehttp::fetch_async(req).await {
+                Ok(r) if r.ok => serde_json::from_slice::<serde_json::Value>(&r.bytes).map_err(|e| e.to_string()),
+                Ok(r) if r.status == 404 => Err(spai_fit_ui::sharing::MISSING.to_owned()),
+                Ok(r) => Err(serde_json::from_slice::<serde_json::Value>(&r.bytes).ok().and_then(|v| v["error"].as_str().map(|e| e.trim_start_matches("bad request: ").to_owned())).unwrap_or_else(|| r.status.to_string())),
+                Err(e) => Err(e),
+            };
+            if let Some(e) = answer(result) {
+                events.lock().unwrap().push(e);
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    fn sharing_call(&self, ctx: &egui::Context, method: ehttp::Method, fit: String, path: String, body: Option<serde_json::Value>) {
+        self.call(ctx, method, path, body, move |r| Some(HostEvent::Sharing { fit, result: r.map(|v| spai_fit_ui::sharing::parse_sharing(&v)) }));
     }
 
     fn load_profiles(&mut self) {
@@ -513,11 +555,42 @@ impl SimWebApp {
                 self.sim.handle(HostEvent::Fleets(self.library.fleet_summaries()));
                 self.sync(ctx);
             }
+            // The page reads no characters' clones; the button is not shown.
+            HostRequest::FetchClones(_) => {}
+            HostRequest::SetSync(on) => {
+                page::save(SYNC_KEY, &on);
+                self.sim.handle(HostEvent::Sync(on));
+                self.sync(ctx);
+            }
+            HostRequest::ForgetServerLibrary => {
+                self.library.forget_server();
+                page::save_raw(KEY, &self.library.to_json());
+                self.call(ctx, ehttp::Method::DELETE, "/library".into(), None, |r| Some(HostEvent::Status(match r {
+                    Ok(_) => tr!("Your fits are off the server; they stay in this browser").to_owned(),
+                    Err(e) => trf!("Could not delete them from the server: {e}", e = e),
+                })));
+            }
+            HostRequest::Sharing(fit) => self.sharing_call(ctx, ehttp::Method::GET, fit.clone(), format!("/fits/{fit}/shares"), None),
+            HostRequest::ShareWith { fit, name } => self.sharing_call(ctx, ehttp::Method::PUT, fit.clone(), format!("/fits/{fit}/shares"), Some(serde_json::json!({ "name": name }))),
+            HostRequest::Unshare { fit, char_id } => self.sharing_call(ctx, ehttp::Method::DELETE, fit.clone(), format!("/fits/{fit}/shares/{char_id}"), None),
+            HostRequest::SetLinkPublic { fit, public } => self.sharing_call(ctx, ehttp::Method::PUT, fit.clone(), format!("/fits/{fit}/link"), Some(serde_json::json!({ "public": public }))),
+            HostRequest::ListShared => {
+                if self.session.is_some() {
+                    self.call(ctx, ehttp::Method::GET, "/shared".into(), None, |r| r.ok().map(|v| HostEvent::Shared(spai_fit_ui::sharing::parse_shared(&v))));
+                }
+            }
+            HostRequest::LeaveShared { owner_id, id } => self.call(ctx, ehttp::Method::DELETE, format!("/shared/{owner_id}/{id}"), None, |_| None),
+            HostRequest::OpenLink(link) => {
+                if spai_fit_ui::sharing::link_id(&format!("s={link}")).is_some() {
+                    self.call(ctx, ehttp::Method::GET, format!("/link/{link}"), None, |r| Some(HostEvent::Linked(r.and_then(|v| spai_fit_ui::sharing::parse_linked(&v)))));
+                }
+            }
         }
     }
 
     fn sign_out(&mut self, ctx: &egui::Context) {
         page::forget(SESSION_KEY);
+        page::forget(spai_webkit::sso::SESSION_RENEW_KEY);
         self.session = None;
         self.sim.handle(HostEvent::Access { signed_in: false, imperium: false, admin: false });
         self.sim.handle(HostEvent::Supplied(Vec::new()));
@@ -531,10 +604,7 @@ impl SimWebApp {
             ui.label(egui::RichText::new(tr!("EVE Spai fitting")).strong());
             ui.separator();
             let skilled: Vec<(i64, String)> = self.accounts.borrow().iter().filter(|a| a.can(SKILLS)).map(|a| (a.char_id, a.name.clone())).collect();
-            let note = match &self.session {
-                Some(_) => tr!("Fits are kept on eve-spai.com and in this browser"),
-                None => tr!("Fits are kept in this browser"),
-            };
+            let note = if self.session.is_some() && self.sim.sharing.sync_on { tr!("Fits are saved locally in this browser and synced to the server") } else { tr!("Fits are saved locally in this browser") };
             ui.label(egui::RichText::new(note).weak());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let title = match &self.session {
@@ -546,6 +616,7 @@ impl SimWebApp {
                     self.sign_in();
                 }
                 if title.is_empty() {
+                    self.sim.sync_button(ui);
                     return;
                 }
                 ui.menu_button(title, |ui| {
@@ -571,6 +642,7 @@ impl SimWebApp {
                         self.add_character();
                     }
                 });
+                self.sim.sync_button(ui);
             });
         });
         if sign_out {
@@ -589,6 +661,23 @@ impl SimWebApp {
 
 impl eframe::App for SimWebApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let repaint = ctx.clone();
+        match self.renewer.tick(self.session.as_ref(), move || repaint.request_repaint()) {
+            Some(Ok(s)) => {
+                let was_in = self.session.is_some();
+                self.session = Some(s);
+                if !was_in {
+                    self.fetch_doctrines(&ctx);
+                }
+            }
+            Some(Err(e)) if self.session.as_ref().is_some_and(|s| !s.usable(spai_core::clock::utc().timestamp())) => {
+                self.session = None;
+                self.sim.handle(HostEvent::Status(e));
+                self.sim.handle(HostEvent::Access { signed_in: false, imperium: false, admin: false });
+            }
+            _ => {}
+        }
         let events: Vec<HostEvent> = std::mem::take(&mut *self.events.lock().unwrap());
         for e in events {
             match e {

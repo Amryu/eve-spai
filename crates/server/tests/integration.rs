@@ -149,7 +149,7 @@ async fn pool() -> Option<PgPool> {
     let url = std::env::var("DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new().max_connections(5).connect(&url).await.unwrap();
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-    sqlx::query("TRUNCATE battle_reports, upload_quota, sim_doctrines, sim_fits, sim_fleets, sim_supplied, sim_own_doctrines").execute(&pool).await.unwrap();
+    sqlx::query("TRUNCATE battle_reports, upload_quota, sim_doctrines, sim_fit_shares, sim_fits, sim_fleets, sim_supplied, sim_own_doctrines").execute(&pool).await.unwrap();
     Some(pool)
 }
 
@@ -164,9 +164,19 @@ impl eve_spai_br::imperium::AffiliationSource for TestAffiliations {
     }
 }
 
+/// Character names without ESI: the pilots the tests mint.
+struct TestNames;
+
+impl eve_spai_br::names::NameSource for TestNames {
+    fn character(&self, name: String) -> eve_spai_br::names::Resolved {
+        let found = [(90000001, "Pilot A"), (90000002, "Pilot B"), (90000004, "Pilot C")].into_iter().find(|(_, n)| n.eq_ignore_ascii_case(&name)).map(|(id, n)| (id, n.to_owned()));
+        Box::pin(async move { Ok(found) })
+    }
+}
+
 fn app(pool: PgPool, cfg: Config) -> axum::Router {
     let verifier = Verifier::from_jwks(&test_jwks(), cfg.client_id.clone()).unwrap().with_extras(cfg.extra_client_ids.clone());
-    eve_spai_br::routes::router(AppState::new(pool, verifier, cfg).with_affiliations(Box::new(TestAffiliations)))
+    eve_spai_br::routes::router(AppState::new(pool, verifier, cfg).with_affiliations(Box::new(TestAffiliations)).with_names(Box::new(TestNames)))
 }
 
 fn lazy_app() -> axum::Router {
@@ -941,6 +951,66 @@ async fn sim_library_is_per_character_with_revisions_and_limits() {
     assert_eq!(send(&app, "DELETE", "/api/sim/fits/fit-1", Some(&a), None).await.0, StatusCode::NOT_FOUND);
     let (status, fleet) = send_json(&app, "PUT", "/api/sim/fleets/fleet-1", Some(&a), json!({"name": "Alpha", "rev": 0, "doc": {"size": 50}})).await;
     assert_eq!((status, fleet["rev"].as_i64()), (StatusCode::OK, Some(1)));
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (run with --ignored)"]
+async fn a_fit_is_read_only_by_its_owner_and_those_it_is_shared_with() {
+    let _g = LOCK.lock().await;
+    let Some(pool) = pool().await else { return };
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let app = app(pool, base_config(url));
+    let a = mint(&app, 90000001, "Pilot A").await;
+    let b = mint(&app, 90000002, "Pilot B").await;
+    let c = mint(&app, 90000004, "Pilot C").await;
+    let doc = json!({"v": 1, "ship": 587, "name": "Rifter", "modules": []});
+    assert_eq!(send_json(&app, "PUT", "/api/sim/fits/fit-1", Some(&a), json!({"name": "Rifter", "rev": 0, "doc": doc})).await.0, StatusCode::OK);
+    assert_eq!(send(&app, "GET", "/api/sim/fits/fit-1/shares", Some(&b), None).await.0, StatusCode::NOT_FOUND, "only the owner sees the sharing");
+    let (status, sharing) = send(&app, "GET", "/api/sim/fits/fit-1/shares", Some(&a), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let link = sharing["link"].as_str().unwrap().to_owned();
+    assert_eq!(link.len(), 10);
+    assert_eq!(send(&app, "GET", "/api/sim/fits/fit-1/shares", Some(&a), None).await.1["link"], link.as_str(), "one link per fit");
+    let at = format!("/api/sim/link/{link}");
+    assert_eq!(send(&app, "GET", &at, Some(&a), None).await.1["mine"], true);
+    assert_eq!(send(&app, "GET", &at, Some(&b), None).await.0, StatusCode::NOT_FOUND, "not shared yet");
+    assert_eq!(send(&app, "GET", &at, None, None).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(send_json(&app, "PUT", "/api/sim/fits/fit-1/shares", Some(&b), json!({"name": "Pilot C"})).await.0, StatusCode::NOT_FOUND, "only the owner shares");
+    assert_eq!(send_json(&app, "PUT", "/api/sim/fits/fit-1/shares", Some(&a), json!({"name": "Nobody Here"})).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(send_json(&app, "PUT", "/api/sim/fits/fit-1/shares", Some(&a), json!({"name": "pilot a"})).await.0, StatusCode::BAD_REQUEST, "not with oneself");
+    let (status, sharing) = send_json(&app, "PUT", "/api/sim/fits/fit-1/shares", Some(&a), json!({"name": "pilot b"})).await;
+    assert_eq!(status, StatusCode::OK, "{sharing:?}");
+    assert_eq!(sharing["grantees"], json!([{"char_id": 90000002, "name": "Pilot B"}]), "EVE's spelling is kept");
+    let (_, seen) = send(&app, "GET", "/api/sim/shared", Some(&b), None).await;
+    assert_eq!((seen[0]["owner_name"].as_str(), seen[0]["link"].as_str()), (Some("Pilot A"), Some(link.as_str())));
+    let (_, got) = send(&app, "GET", &at, Some(&b), None).await;
+    assert_eq!((got["doc"]["ship"].as_i64(), got["mine"].as_bool(), got["owner_name"].as_str()), (Some(587), Some(false), Some("Pilot A")));
+    assert_eq!(send_json(&app, "PUT", "/api/sim/fits/fit-1", Some(&a), json!({"name": "Rifter II", "rev": 1, "doc": doc})).await.0, StatusCode::OK);
+    assert_eq!(send(&app, "GET", &at, Some(&b), None).await.1["name"], "Rifter II", "the link follows the owner's saves");
+    assert_eq!(send(&app, "GET", &at, Some(&c), None).await.0, StatusCode::NOT_FOUND, "a third character reads nothing");
+    assert_eq!(send(&app, "GET", "/api/sim/shared", Some(&c), None).await.1, json!([]));
+    assert_eq!(send(&app, "GET", "/api/sim/fits/fit-1", Some(&b), None).await.0, StatusCode::NOT_FOUND, "a share is no way into the owner's library");
+    assert_eq!(send_json(&app, "PUT", "/api/sim/fits/fit-1", Some(&b), json!({"name": "Mine now", "rev": 0, "doc": doc})).await.0, StatusCode::OK);
+    assert_eq!(send(&app, "GET", &at, Some(&b), None).await.1["name"], "Rifter II", "the grantee's own fit of that id is its own");
+    assert_eq!(send_json(&app, "PUT", "/api/sim/fits/fit-1/link", Some(&b), json!({"public": true})).await.0, StatusCode::OK);
+    assert_eq!(send(&app, "GET", &at, None, None).await.0, StatusCode::NOT_FOUND, "the grantee opened its own fit, not the owner's");
+    assert_eq!(send_json(&app, "PUT", "/api/sim/fits/fit-1/link", Some(&a), json!({"public": true})).await.1["public"], true);
+    assert_eq!(send(&app, "GET", &at, None, None).await.0, StatusCode::OK, "anyone with the link, once allowed");
+    assert_eq!(send(&app, "GET", &at, Some(&c), None).await.0, StatusCode::OK);
+    send_json(&app, "PUT", "/api/sim/fits/fit-1/link", Some(&a), json!({"public": false})).await;
+    assert_eq!(send(&app, "GET", &at, None, None).await.0, StatusCode::NOT_FOUND);
+    let (_, sharing) = send(&app, "DELETE", "/api/sim/fits/fit-1/shares/90000002", Some(&a), None).await;
+    assert_eq!(sharing["grantees"], json!([]));
+    assert_eq!(send(&app, "GET", &at, Some(&b), None).await.0, StatusCode::NOT_FOUND, "revoked");
+    send_json(&app, "PUT", "/api/sim/fits/fit-1/shares", Some(&a), json!({"name": "Pilot C"})).await;
+    assert_eq!(send(&app, "DELETE", "/api/sim/shared/90000001/fit-1", Some(&c), None).await.0, StatusCode::OK);
+    assert_eq!(send(&app, "GET", "/api/sim/shared", Some(&c), None).await.1, json!([]), "left");
+    send_json(&app, "PUT", "/api/sim/fits/fit-1/shares", Some(&a), json!({"name": "Pilot C"})).await;
+    assert_eq!(send(&app, "DELETE", "/api/sim/library", Some(&a), None).await.0, StatusCode::OK);
+    assert_eq!(send(&app, "GET", "/api/sim/fits", Some(&a), None).await.1, json!([]));
+    assert_eq!(send(&app, "GET", "/api/sim/shared", Some(&c), None).await.1, json!([]), "a share goes with its fit");
+    assert_eq!(send(&app, "GET", &at, Some(&c), None).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(send(&app, "GET", "/api/sim/fits/fit-1", Some(&b), None).await.1["name"], "Mine now", "another's library stays");
 }
 
 #[tokio::test]

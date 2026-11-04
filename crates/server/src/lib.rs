@@ -8,6 +8,7 @@ pub mod error;
 pub mod imperium;
 pub mod sim;
 pub mod models;
+pub mod names;
 pub mod pipeline;
 pub mod routes;
 pub mod session;

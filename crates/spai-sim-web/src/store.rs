@@ -100,6 +100,17 @@ impl Library {
 
     /// After a sync that started from `self`: deletes made here meanwhile hold, those the server
     /// confirmed are forgotten.
+    /// The server's copy is gone: everything here goes up again at the next sync.
+    pub fn forget_server(&mut self) {
+        for e in self.fits.values_mut() {
+            (e.rev, e.server_rev) = (e.rev.max(1), 0);
+        }
+        for e in self.fleets.values_mut().chain(self.doctrines.values_mut()) {
+            (e.rev, e.server_rev) = (e.rev.max(1), 0);
+        }
+        self.deleted.clear();
+    }
+
     pub fn merge_deletes(&mut self, stored: &Library, confirmed: &[String]) {
         self.deleted.extend(stored.deleted.iter().cloned());
         for p in confirmed {

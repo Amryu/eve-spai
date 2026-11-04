@@ -28,6 +28,13 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route(&r("/doctrines/{id}"), axum::routing::put(put_doctrine).delete(delete_doctrine))
         .route(&r("/fits"), get(|s, me| list(s, me, "sim_fits")))
         .route(&r("/fits/{id}"), get(|s, me, p| fetch(s, me, p, "sim_fits")).put(|s, me, p, body| put(s, me, p, body, "sim_fits")).delete(|s, me, p| delete(s, me, p, "sim_fits")))
+        .route(&r("/fits/{id}/shares"), get(shares).put(add_share))
+        .route(&r("/fits/{id}/shares/{grantee}"), axum::routing::delete(remove_share))
+        .route(&r("/fits/{id}/link"), axum::routing::put(set_public))
+        .route(&r("/link/{sid}"), get(linked))
+        .route(&r("/shared"), get(shared))
+        .route(&r("/shared/{owner}/{id}"), axum::routing::delete(leave_share))
+        .route(&r("/library"), axum::routing::delete(delete_library))
         .route(&r("/supplied"), get(supplied))
         .route(&r("/supplied/{id}"), axum::routing::put(put_supplied).delete(delete_supplied))
         .route(&r("/own-doctrines"), get(|s, me| list(s, me, "sim_own_doctrines")))
@@ -379,6 +386,197 @@ async fn delete(State(st): State<AppState>, SessionIdentity(me): SessionIdentity
         return Err(AppError::NotFound);
     }
     Ok(Json(serde_json::json!({ "deleted": id })))
+}
+
+/// Characters one fit may be shared with.
+pub const MAX_SHARES: i64 = 50;
+
+#[derive(Serialize)]
+pub struct Grantee {
+    pub char_id: i64,
+    pub name: String,
+}
+
+#[derive(Serialize)]
+pub struct Sharing {
+    /// The fit's link id, for `/sim/#s=<id>`.
+    pub link: String,
+    /// Whether anyone holding the link may open it, signed in or not.
+    pub public: bool,
+    pub grantees: Vec<Grantee>,
+}
+
+async fn owned(st: &AppState, owner: i64, id: &str) -> Result<(), AppError> {
+    sqlx::query("SELECT 1 FROM sim_fits WHERE char_id = $1 AND id = $2").bind(owner).bind(id).fetch_optional(&st.db).await?.map(|_| ()).ok_or(AppError::NotFound)
+}
+
+/// The fit's sharing, its link made on the first ask.
+async fn sharing(st: &AppState, me: &crate::auth::Identity, id: &str) -> Result<Json<Sharing>, AppError> {
+    let row = sqlx::query(
+        "UPDATE sim_fits SET share_id = COALESCE(share_id, $3), owner_name = $4 WHERE char_id = $1 AND id = $2 RETURNING share_id, link_public",
+    )
+    .bind(me.char_id)
+    .bind(id)
+    .bind(crate::pipeline::generate_id())
+    .bind(&me.name)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    let rows = sqlx::query("SELECT grantee_id, grantee_name FROM sim_fit_shares WHERE owner_id = $1 AND fit_id = $2 ORDER BY lower(grantee_name)").bind(me.char_id).bind(id).fetch_all(&st.db).await?;
+    Ok(Json(Sharing { link: row.get(0), public: row.get(1), grantees: rows.iter().map(|r| Grantee { char_id: r.get(0), name: r.get(1) }).collect() }))
+}
+
+/// Who the caller's fit is shared with, and its link.
+async fn shares(State(st): State<AppState>, SessionIdentity(me): SessionIdentity, Path(id): Path<String>) -> Result<Json<Sharing>, AppError> {
+    sharing(&st, &me, &id).await
+}
+
+#[derive(Deserialize)]
+pub struct PublicIn {
+    pub public: bool,
+}
+
+async fn set_public(State(st): State<AppState>, SessionIdentity(me): SessionIdentity, Path(id): Path<String>, Json(d): Json<PublicIn>) -> Result<Json<Sharing>, AppError> {
+    owned(&st, me.char_id, &id).await?;
+    sqlx::query("UPDATE sim_fits SET link_public = $3 WHERE char_id = $1 AND id = $2").bind(me.char_id).bind(&id).bind(d.public).execute(&st.db).await?;
+    sharing(&st, &me, &id).await
+}
+
+#[derive(Serialize)]
+pub struct Linked {
+    pub link: String,
+    pub owner_id: i64,
+    pub owner_name: String,
+    /// The caller owns it; anyone else gets a copy to change.
+    pub mine: bool,
+    pub id: String,
+    pub name: String,
+    pub ship_type_id: i64,
+    pub rev: i32,
+    pub updated_at: i64,
+    pub doc: serde_json::Value,
+}
+
+/// The fit behind a link as its owner has it now, for the owner, those it is shared with, and
+/// anyone when the owner allows it. Refused the same as a link that does not exist.
+async fn linked(State(st): State<AppState>, OptionalSessionIdentity(me): OptionalSessionIdentity, Path(sid): Path<String>) -> Result<Json<Linked>, AppError> {
+    let caller = me.as_ref().map(|m| m.char_id).unwrap_or(0);
+    let row = sqlx::query(
+        "SELECT f.* FROM sim_fits f WHERE f.share_id = $1 AND (f.link_public OR f.char_id = $2
+             OR EXISTS (SELECT 1 FROM sim_fit_shares s WHERE s.owner_id = f.char_id AND s.fit_id = f.id AND s.grantee_id = $2))",
+    )
+    .bind(&sid)
+    .bind(caller)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    let owner: i64 = row.get("char_id");
+    Ok(Json(Linked {
+        link: sid,
+        owner_id: owner,
+        owner_name: row.get::<Option<String>, _>("owner_name").unwrap_or_default(),
+        mine: owner == caller,
+        id: row.get("id"),
+        name: row.get("name"),
+        ship_type_id: row.get("ship_type_id"),
+        rev: row.get("rev"),
+        updated_at: row.get::<chrono::DateTime<chrono::Utc>, _>("updated_at").timestamp(),
+        doc: row.get("doc"),
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct ShareIn {
+    pub name: String,
+}
+
+/// Shares the caller's fit with a character, by name as EVE knows it.
+async fn add_share(State(st): State<AppState>, SessionIdentity(me): SessionIdentity, Path(id): Path<String>, Json(d): Json<ShareIn>) -> Result<Json<Sharing>, AppError> {
+    owned(&st, me.char_id, &id).await?;
+    let name = d.name.trim();
+    if name.len() < 3 || name.len() > 37 {
+        return Err(AppError::BadRequest("a character name of 3 to 37 characters".into()));
+    }
+    let (grantee, grantee_name) = st.names.character(name.to_owned()).await.map_err(|e| AppError::Unavailable(format!("EVE did not answer: {e}")))?.ok_or_else(|| AppError::BadRequest(format!("no character is named {name}")))?;
+    if grantee == me.char_id {
+        return Err(AppError::BadRequest("the fit is yours already".into()));
+    }
+    let count: i64 = sqlx::query("SELECT count(*) FROM sim_fit_shares WHERE owner_id = $1 AND fit_id = $2").bind(me.char_id).bind(&id).fetch_one(&st.db).await?.get(0);
+    if count >= MAX_SHARES {
+        return Err(AppError::ForbiddenMsg(format!("shared with {MAX_SHARES}, the most one fit may be")));
+    }
+    sqlx::query(
+        "INSERT INTO sim_fit_shares (owner_id, fit_id, owner_name, grantee_id, grantee_name) VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (owner_id, fit_id, grantee_id) DO UPDATE SET grantee_name = EXCLUDED.grantee_name, owner_name = EXCLUDED.owner_name",
+    )
+    .bind(me.char_id)
+    .bind(&id)
+    .bind(&me.name)
+    .bind(grantee)
+    .bind(&grantee_name)
+    .execute(&st.db)
+    .await?;
+    sharing(&st, &me, &id).await
+}
+
+async fn remove_share(State(st): State<AppState>, SessionIdentity(me): SessionIdentity, Path((id, grantee)): Path<(String, i64)>) -> Result<Json<Sharing>, AppError> {
+    owned(&st, me.char_id, &id).await?;
+    sqlx::query("DELETE FROM sim_fit_shares WHERE owner_id = $1 AND fit_id = $2 AND grantee_id = $3").bind(me.char_id).bind(&id).bind(grantee).execute(&st.db).await?;
+    sharing(&st, &me, &id).await
+}
+
+#[derive(Serialize)]
+pub struct SharedSummary {
+    pub link: String,
+    pub owner_id: i64,
+    pub owner_name: String,
+    pub id: String,
+    pub name: String,
+    pub ship_type_id: i64,
+    pub rev: i32,
+    pub updated_at: i64,
+}
+
+/// The fits others have shared with the caller.
+async fn shared(State(st): State<AppState>, SessionIdentity(me): SessionIdentity) -> Result<Json<Vec<SharedSummary>>, AppError> {
+    let rows = sqlx::query(
+        "SELECT s.owner_id, s.owner_name, f.id, f.name, f.ship_type_id, f.rev, f.updated_at, f.share_id FROM sim_fit_shares s
+         JOIN sim_fits f ON f.char_id = s.owner_id AND f.id = s.fit_id WHERE s.grantee_id = $1 ORDER BY lower(s.owner_name), lower(f.name)",
+    )
+    .bind(me.char_id)
+    .fetch_all(&st.db)
+    .await?;
+    Ok(Json(
+        rows.iter()
+            .map(|r| SharedSummary {
+                link: r.get::<Option<String>, _>(7).unwrap_or_default(),
+                owner_id: r.get(0),
+                owner_name: r.get(1),
+                id: r.get(2),
+                name: r.get(3),
+                ship_type_id: r.get(4),
+                rev: r.get(5),
+                updated_at: r.get::<chrono::DateTime<chrono::Utc>, _>(6).timestamp(),
+            })
+            .collect(),
+    ))
+}
+
+/// Drops a fit someone shared from the caller's list.
+async fn leave_share(State(st): State<AppState>, SessionIdentity(me): SessionIdentity, Path((owner, id)): Path<(i64, String)>) -> Result<Json<serde_json::Value>, AppError> {
+    sqlx::query("DELETE FROM sim_fit_shares WHERE owner_id = $1 AND fit_id = $2 AND grantee_id = $3").bind(owner).bind(&id).bind(me.char_id).execute(&st.db).await?;
+    Ok(Json(serde_json::json!({ "left": id })))
+}
+
+/// Everything the caller keeps here, gone: fits with their shares, fleets and doctrines.
+async fn delete_library(State(st): State<AppState>, SessionIdentity(me): SessionIdentity) -> Result<Json<serde_json::Value>, AppError> {
+    let mut tx = st.db.begin().await?;
+    let mut n = 0;
+    for table in ["sim_fits", "sim_fleets", "sim_own_doctrines"] {
+        n += sqlx::query(&format!("DELETE FROM {table} WHERE char_id = $1")).bind(me.char_id).execute(&mut *tx).await?.rows_affected();
+    }
+    tx.commit().await?;
+    Ok(Json(serde_json::json!({ "deleted": n })))
 }
 
 #[cfg(test)]

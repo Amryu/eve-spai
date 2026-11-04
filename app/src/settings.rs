@@ -43,6 +43,9 @@ pub struct Settings {
     /// The fitting simulator's panel sizes and tabs, as the simulator hands them over (JSON).
     #[serde(default)]
     pub sim_layout: String,
+    /// The fitting library is kept on eve-spai.com too; off keeps it on this computer only.
+    #[serde(default)]
+    pub sim_sync: bool,
     /// Shows what is still being worked on: the fitting and fleet simulator tab.
     #[serde(default)]
     /// Once gated the fitting tab; kept so saved settings still parse.
@@ -1614,6 +1617,7 @@ impl Default for Settings {
             lookup_hidden_columns: Vec::new(),
             lookup_hide_blues: false,
             sim_layout: String::new(),
+            sim_sync: false,
             beta_features: false,
             alert_enabled: true,
             alert_within_jumps: 5,

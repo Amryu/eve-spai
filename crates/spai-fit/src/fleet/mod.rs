@@ -490,7 +490,7 @@ pub fn shortcut_booster(dogma: &Dogma, b: &crate::fit::BoostShortcut) -> Option<
 
 fn shortcut_booster_with(dogma: &Dogma, b: &crate::fit::BoostShortcut, module: crate::ids::TypeId, charges: &[crate::ids::TypeId]) -> Option<(Fit, SkillSet)> {
     use crate::fit::{Module, Slot};
-    let hull = b.hull.or_else(|| plain_hull(dogma, b.kind))?;
+    let hull = b.hull.or_else(|| plain_hull(dogma, b.kind, module))?;
     let mut fit = Fit::new(hull, "boost");
     if let Some(sub) = boost_subsystem(dogma, hull, b.kind) {
         let index = dogma.type_(sub).and_then(|t| dogma.subsystem_groups(hull).iter().position(|g| *g == t.group)).unwrap_or(0) as u8;
@@ -556,9 +556,11 @@ pub fn fit_has_burst(dogma: &Dogma, fit: &Fit, kind: BurstKind) -> bool {
 
 /// A hull that gives the kind no bonus, for a shortcut without one: a battlecruiser or bigger
 /// that is not among the boosting hulls.
-fn plain_hull(dogma: &Dogma, kind: BurstKind) -> Option<crate::ids::TypeId> {
+fn plain_hull(dogma: &Dogma, kind: BurstKind, module: crate::ids::TypeId) -> Option<crate::ids::TypeId> {
     let groups: Vec<&str> = vec!["Battlecruiser", "Attack Battlecruiser", "Battleship"];
-    dogma.types.iter().filter(|t| t.published && t.category == crate::ids::category::SHIP).filter(|t| dogma.groups.iter().any(|g| g.id == t.group && groups.contains(&g.name.as_str()))).find(|t| !hull_boosts(dogma, t.id, kind)).map(|t| t.id).or_else(|| dogma.types.iter().find(|t| t.category == crate::ids::category::SHIP && !hull_boosts(dogma, t.id, kind)).map(|t| t.id))
+    // One that can fit the burst at all: the module names the hull groups it goes on.
+    let plain = |t: &&crate::dogma::TypeDef| t.category == crate::ids::category::SHIP && !hull_boosts(dogma, t.id, kind) && dogma.fits_hull(module, t.id);
+    dogma.types.iter().filter(|t| t.published && dogma.groups.iter().any(|g| g.id == t.group && groups.contains(&g.name.as_str()))).find(plain).map(|t| t.id).or_else(|| dogma.types.iter().find(plain).map(|t| t.id))
 }
 
 /// The bursts a booster fit gives: every active burst module's charge names up to four buffs.

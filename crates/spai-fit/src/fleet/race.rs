@@ -116,8 +116,9 @@ struct Ship {
     alive: bool,
     /// The damage by type that reached it last, for its hardener to adapt to.
     last_hit: [f64; 4],
-    /// A breacher pod's damage a second on it, and until when.
+    /// A breacher pod's damage a second on it, from when the first pod lands and until when.
     dot: f64,
+    dot_from: f64,
     dot_until: f64,
     /// A breach control's share of breacher damage let through and how long it runs; none once used.
     breach: Option<(f64, f64)>,
@@ -160,7 +161,7 @@ fn ships(dogma: &crate::Dogma, side: &Side, adc: bool) -> Vec<Ship> {
         let adc = if adc { adc_of(dogma, s) } else { None };
         let breach = breach_of(dogma, s);
         for _ in 0..s.count {
-            out.push(Ship { slot: k, role: s.role, hp, max: hp, resonance, rah, adc, adc_until: 0.0, sup: sup.map(|(_, d)| d), sup_until: 0.0, alive: true, last_hit: [0.0; 4], dot: 0.0, dot_until: 0.0, breach, breach_until: 0.0 });
+            out.push(Ship { slot: k, role: s.role, hp, max: hp, resonance, rah, adc, adc_until: 0.0, sup: sup.map(|(_, d)| d), sup_until: 0.0, alive: true, last_hit: [0.0; 4], dot: 0.0, dot_from: 0.0, dot_until: 0.0, breach, breach_until: 0.0 });
         }
     }
     out
@@ -497,7 +498,13 @@ impl RaceRun {
                             // One pod's damage runs on a ship at a time: the strongest, renewed.
                             let ship = &mut fleets[1 - side][p];
                             let total: f64 = ship.max.iter().sum();
-                            ship.dot = if ship.dot_until > t { ship.dot.max(d.on(total)) } else { d.on(total) };
+                            if ship.dot_until > t {
+                                ship.dot = ship.dot.max(d.on(total));
+                            } else {
+                                ship.dot = d.on(total);
+                                // Nothing ticks while the pod is still flying.
+                                ship.dot_from = t + flight;
+                            }
                             ship.dot_until = t + flight + d.duration_s;
                             // Its breach control goes on once, as the first pod lands.
                             if let Some((cut, duration)) = ship.breach.filter(|b| b.1 > 0.0) {
@@ -565,7 +572,7 @@ impl RaceRun {
                     }).sum::<f64>() * eff;
                 }
                 // Breacher pods tick on whatever they were put on, through no resistance.
-                for (i, ship) in fleets[1 - side].iter_mut().enumerate().filter(|(_, s)| s.alive && s.dot_until > t) {
+                for (i, ship) in fleets[1 - side].iter_mut().enumerate().filter(|(_, s)| s.alive && s.dot_until > t && t >= s.dot_from) {
                     let cut = if t < ship.breach_until { ship.breach.map_or(1.0, |b| b.0) } else { 1.0 };
                     let rate = ship.dot * cut;
                     landed[side] += rate;

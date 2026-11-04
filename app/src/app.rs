@@ -3756,8 +3756,7 @@ impl SpaiApp {
                     .filter(|v| *v != nav::View::Rescue || has_rescue)
                     .filter(|v| *v != nav::View::Fleet || has_fleet)
                     .collect();
-                let member = self.is_imperium_member();
-                let selected = nav::rail(ui, self.view, &mut expanded, badged, warned, &rows, &move |v| v.label_for(member));
+                let selected = nav::rail(ui, self.view, &mut expanded, badged, warned, &rows, &|v| v.label());
                 if selected != self.view {
                     self.view = selected;
                     if selected == nav::View::Map {

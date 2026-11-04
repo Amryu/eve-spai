@@ -17,11 +17,6 @@ const SKILLS_FRESH_SECS: i64 = 24 * 3600;
 const AFFILIATION_FRESH_SECS: i64 = 24 * 3600;
 
 impl SpaiApp {
-    /// Whether a signed-in character's alliance is in the Imperium, or the intel channels say so.
-    pub(crate) fn is_imperium_member(&self) -> bool {
-        self.is_imperium() || self.char_alliances.iter().any(|(_, a, _)| a.is_some_and(br_core::packs::is_imperium))
-    }
-
     /// Looks up the alliances of the signed-in characters, when they have not been looked up today.
     pub(crate) fn refresh_affiliations(&mut self, ctx: &egui::Context) {
         let now = crate::clock::utc().timestamp();
@@ -59,6 +54,8 @@ impl SpaiApp {
             self.sim_opened = true;
             // Links from the desktop open in the web simulator.
             self.sim.link_base = Some("https://eve-spai.com/sim/".to_owned());
+            self.sim.sharing.button_in_bar = true;
+            self.sim.handle(HostEvent::Sync(self.settings.sim_sync));
             if !self.settings.sim_layout.is_empty() {
                 let layout = self.settings.sim_layout.clone();
                 self.sim.handle(HostEvent::Layout(layout));
@@ -97,6 +94,15 @@ impl SpaiApp {
             let fit = spai_fit::formats::esi_json::import(&dogma, doc);
             self.sim_pending_fit = None;
             self.sim.open_fit(fit, (ui.input(|i| i.time) * 1000.0) as u64);
+        }
+        // The character in use first, as the clone dialog opens on it.
+        let mut clone_chars: Vec<String> = self.characters.iter().map(|c| c.name.clone()).collect();
+        if let Some(i) = clone_chars.iter().position(|n| *n == self.active_character) {
+            let me = clone_chars.remove(i);
+            clone_chars.insert(0, me);
+        }
+        if self.sim.clone_characters != clone_chars {
+            self.sim.clone_characters = clone_chars;
         }
         self.sim.show(ui);
         for r in self.sim.take_requests() {
@@ -202,7 +208,90 @@ impl SpaiApp {
                 }
                 self.sim_list_fleets();
             }
+            HostRequest::FetchClones(character) => {
+                let events = self.sim_events.clone();
+                let client_id = super::non_empty_or(&self.settings.sso_client_id, crate::auth::DEFAULT_CLIENT_ID).to_owned();
+                let who = character.clone();
+                crate::esi::fetch_clones(
+                    client_id,
+                    character,
+                    Box::new(move |result| {
+                        let clones = result.map(|rows| rows.into_iter().map(|r| spai_fit_ui::clones::JumpClone { label: r.label, active: r.active, implants: r.implants.into_iter().filter_map(|t| u32::try_from(t).ok()).collect() }).collect());
+                        events.lock().unwrap().push(HostEvent::Clones { character: who, clones });
+                    }),
+                    ctx.clone(),
+                );
+            }
+            HostRequest::SetSync(on) => {
+                if self.settings.sim_sync != on {
+                    self.settings.sim_sync = on;
+                    self.needs_save = true;
+                }
+                self.sim.handle(HostEvent::Sync(on));
+                self.sim_sync(ctx);
+            }
+            HostRequest::ForgetServerLibrary => {
+                if let Some(s) = &self.store {
+                    let _ = s.sim_forget_server();
+                }
+                self.sim_call(ctx, reqwest::Method::DELETE, "/library".into(), None, |r| {
+                    Some(HostEvent::Status(match r {
+                        Ok(_) => spai_ui::tr!("Your fits are off the server; they stay on this computer").to_owned(),
+                        Err(e) => spai_ui::trf!("Could not delete them from the server: {e}", e = e),
+                    }))
+                });
+            }
+            HostRequest::Sharing(fit) => self.sim_sharing_call(ctx, reqwest::Method::GET, fit.clone(), format!("/fits/{fit}/shares"), None),
+            HostRequest::ShareWith { fit, name } => self.sim_sharing_call(ctx, reqwest::Method::PUT, fit.clone(), format!("/fits/{fit}/shares"), Some(serde_json::json!({ "name": name }))),
+            HostRequest::Unshare { fit, char_id } => self.sim_sharing_call(ctx, reqwest::Method::DELETE, fit.clone(), format!("/fits/{fit}/shares/{char_id}"), None),
+            HostRequest::SetLinkPublic { fit, public } => self.sim_sharing_call(ctx, reqwest::Method::PUT, fit.clone(), format!("/fits/{fit}/link"), Some(serde_json::json!({ "public": public }))),
+            HostRequest::ListShared => self.sim_call(ctx, reqwest::Method::GET, "/shared".into(), None, |r| r.ok().map(|v| HostEvent::Shared(spai_fit_ui::sharing::parse_shared(&v)))),
+            HostRequest::LeaveShared { owner_id, id } => self.sim_call(ctx, reqwest::Method::DELETE, format!("/shared/{owner_id}/{id}"), None, |_| None),
+            HostRequest::OpenLink(link) => {
+                if spai_fit_ui::sharing::link_id(&format!("s={link}")).is_some() {
+                    self.sim_call(ctx, reqwest::Method::GET, format!("/link/{link}"), None, |r| Some(HostEvent::Linked(r.and_then(|v| spai_fit_ui::sharing::parse_linked(&v)))));
+                }
+            }
         }
+    }
+
+    /// One sharing call to the server as the simulator's character, signed in or not; the answer
+    /// becomes an event, a 404 `sharing::MISSING`.
+    fn sim_call(&self, ctx: &egui::Context, method: reqwest::Method, path: String, body: Option<serde_json::Value>, answer: impl FnOnce(Result<serde_json::Value, String>) -> Option<HostEvent> + Send + 'static) {
+        let events = self.sim_events.clone();
+        let (char_id, store) = (self.sim_character(), self.store.as_ref().map(|s| s.path().to_path_buf()));
+        let ctx = ctx.clone();
+        let _ = std::thread::Builder::new().name("sim-share".into()).spawn(move || {
+            let result = (|| -> Result<serde_json::Value, String> {
+                let bearer = char_id.zip(store).and_then(|(c, p)| crate::brshare::valid_session(&p, c));
+                let client = crate::http::client(30).map_err(|e| e.to_string())?;
+                let mut req = client.request(method, format!("{}/api/sim{path}", crate::brshare::api_base()));
+                if let Some(b) = &bearer {
+                    req = req.bearer_auth(b);
+                }
+                if let Some(b) = &body {
+                    req = req.json(b);
+                }
+                let resp = req.send().map_err(|e| e.to_string())?;
+                let status = resp.status();
+                if status.as_u16() == 404 {
+                    return Err(spai_fit_ui::sharing::MISSING.to_owned());
+                }
+                let v = resp.json::<serde_json::Value>().unwrap_or_default();
+                if !status.is_success() {
+                    return Err(v["error"].as_str().map(|e| e.trim_start_matches("bad request: ").to_owned()).unwrap_or_else(|| status.to_string()));
+                }
+                Ok(v)
+            })();
+            if let Some(e) = answer(result) {
+                events.lock().unwrap().push(e);
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    fn sim_sharing_call(&self, ctx: &egui::Context, method: reqwest::Method, fit: String, path: String, body: Option<serde_json::Value>) {
+        self.sim_call(ctx, method, path, body, move |r| Some(HostEvent::Sharing { fit, result: r.map(|v| spai_fit_ui::sharing::parse_sharing(&v)) }));
     }
 
     fn sim_list_doctrines(&mut self) {
@@ -332,6 +421,9 @@ impl SpaiApp {
 
     /// Pushes what changed here, takes what the server has newer, then lists the library again.
     fn sim_sync(&mut self, ctx: &egui::Context) {
+        if !self.settings.sim_sync {
+            return;
+        }
         let events = self.sim_events.clone();
         let (char_id, path) = (self.sim_character(), self.store.as_ref().map(|s| s.path().to_path_buf()));
         let ctx = ctx.clone();

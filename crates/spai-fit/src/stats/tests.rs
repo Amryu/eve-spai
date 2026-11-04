@@ -669,6 +669,35 @@ fn yielding_to_a_limit_puts_the_last_of_the_group_offline_and_spares_the_module_
     assert_eq!(f, before);
 }
 
+#[test]
+fn an_afterburner_and_a_microwarpdrive_both_stay_online_with_one_running() {
+    let mut d = dataset();
+    let group = d.type_(ids::MWD).unwrap().group;
+    for t in d.types.iter_mut().filter(|t| t.id == ids::MWD || t.id == ids::AB) {
+        t.group = group;
+        t.attrs.retain(|(a, _)| *a != ids::MAX_GROUP_ACTIVE);
+        t.attrs.push((ids::MAX_GROUP_ACTIVE, 1.0));
+    }
+    let d = d.finish();
+    let mut f = Fit::new(ids::SHIP, "prop");
+    f.modules.push(running(ids::AB, Slot::Mid, 0));
+    f.modules.push(running(ids::MWD, Slot::Mid, 1));
+    let state = |f: &Fit, i: u8| f.module(Slot::Mid, i).unwrap().state;
+    // The pilot just switched the microwarpdrive on: the afterburner stops, still online.
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    let shown = f.clone();
+    assert!(crate::calc::yield_to_limits(&d, &mut f, &shown, &c.capped, Some((Slot::Mid, 1))));
+    assert_eq!((state(&f, 0), state(&f, 1)), (State::Online, State::Active));
+    // And back: the microwarpdrive steps down to online.
+    f.module_mut(Slot::Mid, 0).unwrap().state = State::Active;
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    let shown = f.clone();
+    assert!(crate::calc::yield_to_limits(&d, &mut f, &shown, &c.capped, Some((Slot::Mid, 0))));
+    assert_eq!((state(&f, 0), state(&f, 1)), (State::Active, State::Online));
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    assert!(c.capped.is_empty(), "{:?}", c.capped);
+}
+
 const LEGION_BOOST: &str = "[Legion, GSF - SAC - Boost - ]
 Damage Control II
 Syndicate 1600mm Steel Plates
@@ -777,4 +806,48 @@ fn an_ancillary_repairer_counts_its_cycles_a_load() {
     let info = |index| stats.iter().find(|m| m.slot == Slot::Low && m.index == index).and_then(|m| m.info).unwrap();
     assert_eq!(info(0).per_load, Some((8, 60.0)), "0.08 m3 of 0.01 m3 paste, one a cycle, a minute's reload");
     assert_eq!(info(1).per_load, None, "a plain repairer burns nothing");
+}
+
+/// Breacher pod launchers go on their own hull alone, and their pods take every skill bonus.
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_breacher_launchers_fit_their_hull_and_take_skills() {
+    let d = crate::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let id = |n: &str| d.type_named(n).unwrap().id;
+    let (small, medium, tholos, cenotaph) = (id("Small Breacher Pod Launcher"), id("Medium Breacher Pod Launcher"), id("Tholos"), id("Cenotaph"));
+    assert!(d.fits_hull(small, tholos) && d.fits_hull(medium, cenotaph));
+    assert!(!d.fits_hull(small, cenotaph) && !d.fits_hull(medium, tholos) && !d.fits_hull(small, id("Rifter")));
+    let mut f = Fit::new(tholos, "b");
+    f.modules.push(running(small, Slot::High, 0).with_charge(id("SCARAB Breacher Pod S")));
+    let dot = |skills: &SkillSet| compute(&d, &f, skills, &env()).weapons.iter().find(|w| w.kind == WeaponKind::Breacher).map(|w| (w.dot.unwrap(), w.cycle_s, w.optimal)).unwrap();
+    let (base, cycle0, reach0) = dot(&SkillSet::none());
+    let (v, cycle5, reach5) = dot(&SkillSet::all_v());
+    assert!(close(v.per_tick, base.per_tick * 1.25) && close(v.hp_pct, base.hp_pct * 1.25) && close(v.duration_s, base.duration_s * 1.5), "{base:?} {v:?}");
+    assert!(close(cycle5, cycle0 * 0.5) && close(reach5, reach0 * 1.5));
+}
+
+/// A launcher that names the hull group it fits on: on any other hull it is left out, with an error.
+#[test]
+fn a_module_naming_its_hulls_goes_on_those_alone() {
+    use crate::test_support::attr_def;
+    const CAN_FIT_GROUP: crate::ids::AttrId = 1298;
+    let mut d = dataset();
+    let frigates = d.type_(ids::SHIP).unwrap().group;
+    d.attributes.push(attr_def(CAN_FIT_GROUP, "canFitShipGroup01", true, true, 0.0));
+    d.types.iter_mut().find(|t| t.id == ids::BREACHER_LAUNCHER).unwrap().attrs.push((CAN_FIT_GROUP, f32::from(frigates)));
+    let d = d.finish();
+    assert!(d.fits_hull(ids::BREACHER_LAUNCHER, ids::SHIP) && !d.fits_hull(ids::BREACHER_LAUNCHER, ids::TITAN));
+    assert!(d.fits_hull(ids::GUN, ids::TITAN), "a module naming no hulls goes anywhere");
+    assert!(d.fits_hull(ids::BREACHER_LAUNCHER, 0), "nor is anything refused before a hull is picked");
+    let mut f = Fit::new(ids::TITAN, "wrong hull");
+    f.modules.push(running(ids::BREACHER_LAUNCHER, Slot::High, 0).with_charge(ids::BREACHER_POD));
+    let c = compute(&d, &f, &SkillSet::all_v(), &env());
+    assert!(c.weapons.iter().all(|w| w.kind != WeaponKind::Breacher), "left out of the numbers");
+    assert_eq!(c.capped.iter().map(|c| (c.index, c.limit, c.state)).collect::<Vec<_>>(), vec![(0, crate::calc::GroupLimit::Hull, State::Offline)]);
+    let w = crate::warnings::check(&d, &f, &c, &[]);
+    assert!(w.iter().any(|w| w.severity == crate::warnings::Severity::Error && matches!(w.kind, crate::warnings::WarningKind::GroupLimit { limit: crate::calc::GroupLimit::Hull, .. })), "{w:?}");
+    let shown = f.clone();
+    assert!(!crate::calc::yield_to_limits(&d, &mut f, &shown, &c.capped, None), "the fit keeps it as set; only the numbers leave it out");
+    f.ship = ids::SHIP;
+    assert!(compute(&d, &f, &SkillSet::all_v(), &env()).weapons.iter().any(|w| w.kind == WeaponKind::Breacher), "on its own hull it fires");
 }

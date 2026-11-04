@@ -259,3 +259,15 @@ fn fitting_xml_keeps_each_module_at_its_slot() {
     let at = |slot: Slot| f.rack(slot).map(|m| m.index).collect::<Vec<_>>();
     assert_eq!((at(Slot::High), at(Slot::Mid), at(Slot::Low)), (vec![2], vec![1], vec![0]));
 }
+
+#[test]
+fn a_simulator_link_imports_the_fit_it_holds() {
+    let d = dataset();
+    let fit = eft::import(&d, TEXT).unwrap().fit;
+    let link = format!("https://eve-spai.com/sim/#fit={}", link::encode(&crate::doc::to_json(&fit)));
+    let got = import_any(&d, &link);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].fit.name, "Test fit");
+    assert_eq!(import_any(&d, &format!("#fit={}", link::encode(TEXT)))[0].fit.name, "Test fit", "an EFT link too");
+    assert!(import_any(&d, "https://eve-spai.com/sim/").is_empty());
+}

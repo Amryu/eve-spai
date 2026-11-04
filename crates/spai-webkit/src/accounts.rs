@@ -50,28 +50,31 @@ pub fn keep(list: &mut Vec<Account>, a: Account) {
 }
 
 /// A usable access token, renewed first when it is about to expire; `Ok((token, renewed))`, the
-/// renewed account to be kept by the caller.
+/// renewed account to be kept by the caller. EVE hands out a new refresh token with each renewal,
+/// so the copy kept in the browser goes first and the renewed one is written back at once: the
+/// other app, or another tab, may hold this character too.
 #[cfg(target_arch = "wasm32")]
 pub async fn fresh_token(a: &Account, now: i64) -> Result<(String, Option<Account>), String> {
+    let mut kept: Vec<Account> = crate::page::load(crate::sso::ACCOUNTS_KEY).unwrap_or_default();
+    let held = a;
+    let a = kept.iter().find(|k| k.char_id == a.char_id && k.expires_at >= a.expires_at).unwrap_or(a).clone();
     if a.expires_at > now + 60 {
-        return Ok((a.access.clone(), None));
+        return Ok((a.access.clone(), (a != *held).then_some(a)));
     }
     if a.refresh.is_empty() {
         return Err("signed out: add the character again".into());
     }
-    let mut req = ehttp::Request::post(crate::sso::TOKEN, crate::sso::refresh_form(&a.refresh).into_bytes());
-    req.headers = ehttp::Headers::new(&[("Content-Type", "application/x-www-form-urlencoded"), ("Accept", "application/json")]);
-    let r = ehttp::fetch_async(req).await?;
-    if !r.ok {
-        return Err(format!("EVE refused to renew the login ({}): add the character again", r.status));
-    }
-    let t: TokenReply = serde_json::from_slice(&r.bytes).map_err(|e| e.to_string())?;
+    let t = crate::sso::refresh(&a.refresh).await.map_err(|e| format!("{e}: add the character again"))?;
     let mut renewed = a.clone();
     renewed.access = t.access_token.clone();
     if let Some(rt) = t.refresh_token {
         renewed.refresh = rt;
     }
     renewed.expires_at = now + t.expires_in.unwrap_or(1199);
+    if kept.iter().any(|k| k.char_id == renewed.char_id) {
+        keep(&mut kept, renewed.clone());
+        crate::page::save(crate::sso::ACCOUNTS_KEY, &kept);
+    }
     Ok((t.access_token, Some(renewed)))
 }
 

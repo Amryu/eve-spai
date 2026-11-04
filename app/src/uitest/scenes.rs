@@ -1,5 +1,5 @@
 use super::fixtures::{self, IntelArgs};
-use super::harness::{self, Scene};
+use super::harness::{self, Draw, Scene};
 use crate::nav::View;
 
 fn intel_scene(name: &'static str, report: crate::intel::IntelReport, width: f32) -> Scene {
@@ -499,6 +499,10 @@ fn imperium_scene(name: &'static str, size: [f32; 2], extreme: bool, pane: spai_
 
 /// A picker or dialog over the fit: `setup` runs once the fixture fit is open.
 fn imperium_scene_with(name: &'static str, size: [f32; 2], extreme: bool, pane: spai_fit_ui::Pane, setup: impl Fn(&mut spai_fit_ui::SimUi) + 'static) -> Scene {
+    imperium_scene_app(name, size, extreme, pane, move |a| setup(&mut a.sim))
+}
+
+fn imperium_scene_app(name: &'static str, size: [f32; 2], extreme: bool, pane: spai_fit_ui::Pane, setup: impl Fn(&mut crate::app::SpaiApp) + 'static) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ui(name, size, move |ui| {
@@ -538,7 +542,7 @@ fn imperium_scene_with(name: &'static str, size: [f32; 2], extreme: bool, pane: 
                 .map(|i| spai_fit_ui::FitSummary { id: format!("f{i}"), name: if extreme && i == 0 { "An absurdly long saved fit name that keeps going".into() } else { format!("Rifter fit {i}") }, ship: ids::SHIP, updated_at: 0 })
                 .collect();
             a.sim.handle(spai_fit_ui::HostEvent::Fits(summaries));
-            setup(&mut a.sim);
+            setup(&mut a);
             a
         });
         app.apply_language();
@@ -650,6 +654,34 @@ fn doctrine_fixture(sim: &mut spai_fit_ui::SimUi, extreme: bool) {
     sim.handle(spai_fit_ui::HostEvent::OwnDoctrines(docs));
     sim.doctrine_tab.opened.insert("d:x-1".into());
     sim.doctrine_tab.opened.insert("d:own-1".into());
+}
+
+/// The clone dialog for a character with three clones, the second picked.
+fn clones_dialog(sim: &mut spai_fit_ui::SimUi) {
+    use spai_fit::test_support::ids;
+    use spai_fit_ui::clones::JumpClone;
+    sim.clone_characters = vec!["Kaelen Varro".into(), "Kaelen Alt".into()];
+    spai_fit_ui::clones::open(sim);
+    let clones = vec![
+        JumpClone { label: String::new(), active: true, implants: vec![ids::IMPLANT, ids::SHIELD_MINDLINK] },
+        JumpClone { label: "C-J6MT - Keepstar of the Imperium's longest named staging fortress".into(), active: false, implants: vec![ids::SKIRM_MINDLINK] },
+        JumpClone { label: "Jita IV - Moon 4 - Caldari Navy Assembly Plant".into(), active: false, implants: Vec::new() },
+    ];
+    sim.handle(spai_fit_ui::HostEvent::Clones { character: "Kaelen Varro".into(), clones: Ok(clones) });
+    if let Some(d) = sim.clones_dialog.as_mut() {
+        d.selected = Some(1);
+    }
+}
+
+/// A dialog with the pointer resting at `at`, its tooltip shown without the wait.
+fn imperium_dialog_tip_scene(name: &'static str, size: [f32; 2], open: impl Fn(&mut spai_fit_ui::SimUi) + 'static, at: [f32; 2]) -> Scene {
+    let mut inner = imperium_dialog_scene(name, size, open);
+    let Draw::Ctx(mut f) = std::mem::replace(&mut inner.draw, Draw::Ctx(Box::new(|_| {}))) else { unreachable!() };
+    inner.draw = Draw::Ctx(Box::new(move |ctx| {
+        ctx.global_style_mut(|s| s.interaction.tooltip_delay = 0.0);
+        f(ctx);
+    }));
+    inner.hovered_at(at)
 }
 
 fn imperium_dialog_scene(name: &'static str, size: [f32; 2], open: impl Fn(&mut spai_fit_ui::SimUi) + 'static) -> Scene {
@@ -3083,6 +3115,39 @@ pub(crate) fn all() -> Vec<Scene> {
             sim.graph_targets = vec![first, second];
         }));
     }
+    fn volley_with_ewar(sim: &mut spai_fit_ui::SimUi) {
+        use spai_fit::fit::{Module, ProjectedFit, Slot, State};
+        use spai_fit::history::EditKind;
+        use spai_fit::test_support::ids;
+        let me = sim.sessions()[0].id.clone();
+        sim.edit(EditKind::AddModule, 1, |f| {
+            f.name = "Brawler".into();
+            f.modules.push(Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
+            f.modules.push(Module::new(ids::GUN, Slot::High, 1).with_charge(ids::AMMO).with_state(State::Active));
+            f.modules.push(Module::new(ids::WEB, Slot::Mid, 0).with_state(State::Active));
+        });
+        sim.new_fit(ids::SHIP, 2);
+        sim.edit(EditKind::AddModule, 3, |f| {
+            f.name = "Webber support".into();
+            f.modules.push(Module::new(ids::WEB, Slot::Mid, 0).with_state(State::Active));
+            f.modules.push(Module::new(ids::WEB, Slot::Mid, 1).with_state(State::Overload));
+        });
+        let webber = sim.sessions()[1].id.clone();
+        sim.new_fit(ids::SHIP, 4);
+        sim.edit(EditKind::AddModule, 5, |f| {
+            f.name = "Target Rifter".into();
+            f.modules.push(Module::new(ids::DC, Slot::Low, 0).with_state(State::Active));
+        });
+        let target = sim.sessions()[2].id.clone();
+        sim.activate(0);
+        let _ = me;
+        sim.edit(EditKind::Other, 6, move |f| f.projected_fits.push(ProjectedFit { fit_id: webber.clone(), count: 2, active: true, variation: None, charges: Vec::new() }));
+        sim.graph = spai_fit::graphs::GraphKind::VolleyVsDistance;
+        sim.graph_targets = vec![target];
+        sim.graph_ideal = false;
+        sim.graph_window = true;
+    }
+    v.push(imperium_dialog_tip_scene("imperium_graph_volley_critical_mass", [1200.0, 720.0], volley_with_ewar, [520.0, 420.0]));
     v.push(imperium_dialog_scene("imperium_graph_window", [1160.0, 700.0], |sim| {
         use spai_fit::fit::{Module, Slot, State};
         use spai_fit::test_support::ids;
@@ -3229,6 +3294,13 @@ pub(crate) fn all() -> Vec<Scene> {
         sim.set_side_effect(ids::BOOSTER, Some(310), true, 2);
         sim.side_window = Some(ids::BOOSTER);
     }));
+    v.push(imperium_dialog_scene("imperium_clones", [560.0, 420.0], clones_dialog));
+    // The dock's implants panel, its clone button beside Add once a character is signed in.
+    v.push(imperium_scene_app("imperium_dock_clone_button", [1440.0, 900.0], true, spai_fit_ui::Pane::Fit, |a| {
+        a.characters = vec![crate::store::CharacterRow { id: 1, name: "Kaelen Varro".into(), expires_at: 0, scopes: crate::auth::DEFAULT_SCOPES.join(" ") }];
+    }));
+    v.push(imperium_dialog_tip_scene("imperium_clones_row_tip", [560.0, 520.0], clones_dialog, [200.0, 150.0]));
+    v.push(imperium_dialog_tip_scene("imperium_clones_icon_tip", [560.0, 420.0], clones_dialog, [25.0, 125.0]));
     v.push(imperium_dialog_scene("imperium_project_picker", [460.0, 520.0], |sim| {
         use spai_fit::fit::{Module, Slot, State};
         use spai_fit::test_support::ids;
@@ -3272,8 +3344,36 @@ pub(crate) fn all() -> Vec<Scene> {
         use spai_fit::test_support::ids;
         sim.compare = Some(spai_fit_ui::compare::CompareWindow { items: vec![ids::GUN, ids::WEB, ids::DC, ids::LAUNCHER, ids::CAP_BOOSTER], all: true, by_attribute: false, ..Default::default() });
     }));
+    v.push(imperium_dialog_scene("imperium_share", [560.0, 480.0], |sim| {
+        sim.handle(spai_fit_ui::HostEvent::Access { signed_in: true, imperium: true, admin: false });
+        sim.handle(spai_fit_ui::HostEvent::Sync(true));
+        let fit = sim.sessions()[0].id.clone();
+        sim.sharing.dialog = Some(spai_fit_ui::sharing::ShareDialog {
+            fit_id: fit,
+            fit_name: "Kiting Rifter with a rather long name for the title".into(),
+            info: Some(Ok(spai_fit_ui::sharing::SharingInfo { link: "Ab3dEf7hJk".into(), public: false, grantees: vec![(1, "Ducky Pilot".into()), (2, "A Character With A Very Long Name".into())] })),
+            ..Default::default()
+        });
+    }));
+    v.push(imperium_dialog_scene("imperium_share_sync_off", [560.0, 300.0], |sim| {
+        sim.handle(spai_fit_ui::HostEvent::Access { signed_in: true, imperium: true, admin: false });
+        sim.start_share();
+    }));
+    v.push(imperium_dialog_scene("imperium_shared_with_you", [520.0, 400.0], |sim| {
+        sim.handle(spai_fit_ui::HostEvent::Access { signed_in: true, imperium: true, admin: false });
+        let f = |n: &str, o: &str| spai_fit_ui::sharing::SharedFit { link: "Q9".into(), owner_id: 7, owner_name: o.into(), id: n.into(), name: n.into(), ship: spai_fit::test_support::ids::SHIP, updated_at: 0 };
+        sim.handle(spai_fit_ui::HostEvent::Shared(vec![f("Brawler", "Ducky Pilot"), f("A shared fit with a name long enough to be cut short", "Someone Else")]));
+        sim.sharing.shared_open = true;
+    }));
+    v.push(imperium_scene_with("imperium_shared_fit", [1280.0, 800.0], false, spai_fit_ui::Pane::Fit, |sim| {
+        let fit = spai_fit::fit::Fit::new(spai_fit::test_support::ids::SHIP, "Brawler".to_owned());
+        sim.sharing.button_in_bar = true;
+        sim.handle(spai_fit_ui::HostEvent::Access { signed_in: true, imperium: true, admin: true });
+        sim.open_link("Ab3dEf7hJk");
+        sim.handle(spai_fit_ui::HostEvent::Linked(Ok(spai_fit_ui::sharing::LinkedFit { link: "Ab3dEf7hJk".into(), owner_name: "Ducky Pilot".into(), mine: false, id: "x".into(), rev: 1, doc: spai_fit::doc::to_json(&fit) })));
+    }));
     v.push(imperium_dialog_scene("imperium_import", [520.0, 440.0], |sim| {
-        sim.import = Some(spai_fit_ui::ImportDialog { text: "[Rifter, pasted]\nDamage Control II\nNope Module\n".into(), error: Some("Unknown: Nope Module".into()) });
+        sim.import = Some(spai_fit_ui::ImportDialog { text: "[Rifter, pasted]\nDamage Control II\nNope Module\n".into(), error: Some("No fit found: paste EFT text, ESI's JSON, the game's fitting XML, a DNA string or a link.".into()) });
     }));
     // Names on the map keep an edge against their own colour, not a fixed black one.
     v.push({
@@ -9771,7 +9871,7 @@ fn uitest_sim_layout_is_restored() {
 fn uitest_sim_drag_onto_an_empty_slot() {
     use egui_kittest::kittest::Queryable as _;
     for copy in [false, true] {
-        let mut scene = imperium_scene("sim_drag_empty", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit);
+        let mut scene = imperium_scene("sim_drag_empty", [1440.0, 1000.0], false, spai_fit_ui::Pane::Fit);
         let mut h = harness::build(&mut scene, false);
         h.run_steps(3);
         let ys = |h: &egui_kittest::Harness<'_>, name: &str| h.query_all_by_label_contains(name).map(|n| n.rect().min.y).collect::<Vec<f32>>();
@@ -9861,7 +9961,7 @@ fn drag_between(h: &mut egui_kittest::Harness<'_>, from: egui::Pos2, to: egui::P
 #[test]
 fn uitest_sim_modules_move_between_cargo_and_racks() {
     use egui_kittest::kittest::Queryable as _;
-    let mut scene = imperium_scene_with("sim_cargo_drag", [1440.0, 900.0], false, spai_fit_ui::Pane::Fit, |sim| {
+    let mut scene = imperium_scene_with("sim_cargo_drag", [1440.0, 1000.0], false, spai_fit_ui::Pane::Fit, |sim| {
         use spai_fit::test_support::ids;
         sim.edit(spai_fit::history::EditKind::Cargo, 1, |f| f.cargo.push(spai_fit::fit::CargoItem { type_id: ids::GYRO, quantity: 1, hold: None }));
         sim.dock.first = 3;

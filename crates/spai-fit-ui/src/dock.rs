@@ -38,7 +38,7 @@ impl DockTab {
 
 /// Width one panel wants; the dock shows as many as fit.
 pub const PANEL_W: f32 = 300.0;
-pub const DOCK_H: f32 = 168.0;
+pub const DOCK_H: f32 = 268.0;
 const TAB_W: f32 = 100.0;
 const TAB_ROW_H: f32 = 24.0;
 /// Room under the panels, so they do not run into the window's edge.
@@ -163,6 +163,9 @@ fn panel(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, tab: DockTab, height
                     DockTab::Projected => PickTarget::Projected,
                 };
                 picker::open(sim, target);
+            }
+            if tab == DockTab::Implants && !sim.clone_characters.is_empty() && ui.small_button(trf!("{icon} From clone", icon = icon::USER_SWITCH)).on_hover_text(tr!("Puts in the implants of one of your characters' clones")).clicked() {
+                crate::clones::open(sim);
             }
         });
         // The cargo tab keeps its hold's fill at its foot, the list scrolling above it.

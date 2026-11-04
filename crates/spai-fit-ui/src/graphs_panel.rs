@@ -163,7 +163,7 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     // A fixed height above the plot whatever it holds, so nothing in it moves the plot: one line
     // wide, room for the target's settings, scrolled if need be, when narrow.
     // The window's dock button needs room on that line too.
-    let one_line = width >= if sim.graph_in_window { 980.0 } else { 880.0 };
+    let one_line = width >= if sim.graph_in_window { 1080.0 } else { 980.0 };
     let top_h = if wide || !damage {
         if one_line {
             30.0
@@ -178,6 +178,21 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         180.0
     } else {
         150.0
+    };
+    let reaches = if kind.axes().1 == GraphX::Distance {
+        let mut attackers: Vec<(String, String, std::sync::Arc<spai_fit::stats::Computed>)> = Vec::new();
+        let name_of = |id: &str| open.iter().find(|(o, _)| o == id).map(|(_, n)| n.clone()).unwrap_or_default();
+        if sim.graph_current {
+            attackers.push((current.clone(), name_of(&current), computed.clone()));
+        }
+        for id in sim.graph_attackers.clone() {
+            if let Some(c) = sim.computed_of(&id) {
+                attackers.push((id.clone(), name_of(&id), c));
+            }
+        }
+        sim.graph_reaches(&attackers)
+    } else {
+        Vec::new()
     };
     let (top, _) = ui.allocate_exact_size(egui::vec2(width, top_h), egui::Sense::hover());
     let mut top_ui = ui.new_child(egui::UiBuilder::new().max_rect(top).layout(egui::Layout::top_down(egui::Align::Min)));
@@ -221,6 +236,9 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         });
         range_box(ui, "sim_graph_x_to", tr!("X up to"), &mut sim.graph_x_to, x, x_fmt(x), x_parse(x), x_step(x));
         range_box(ui, "sim_graph_y_to", tr!("Y up to"), &mut sim.graph_y_to, y, |v| text::num(v), leading_number, 1.0);
+        if !reaches.is_empty() {
+            crate::graph_ewar::button(ui, &reaches, &mut sim.graph_ewar_hidden);
+        }
         if sim.graph_in_window && ui.button(format!("{} {}", egui_phosphor::regular::ARROW_SQUARE_IN, tr!("Dock"))).on_hover_text(tr!("Dock the graphs beside the fit, above the bottom dock")).clicked() {
             sim.dock_graphs(true);
         }
@@ -268,7 +286,9 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     }
     let shooter_top = computed.mobility.max_velocity;
     let motion = sim.graph_motion;
-    let spec = GraphSpec { include_drones: sim.graph_drones, x_to: sim.graph_x_to.get(&kind.axes().1).copied(), projection: graphs::Projection { target: None, across: Some(motion.across(shooter_top)) }, ..GraphSpec::new(kind, motion.apply(&target, shooter_top)) };
+    let rah = if sim.graph_rah_adapted { graphs::RahMode::Adapted } else { graphs::RahMode::Uniform };
+    let ewar = crate::graph_ewar::markers(&reaches, &sim.graph_ewar_hidden);
+    let spec = GraphSpec { rah, include_drones: sim.graph_drones, x_to: sim.graph_x_to.get(&kind.axes().1).copied(), projection: graphs::Projection { target: None, across: Some(motion.across(shooter_top)) }, ..GraphSpec::new(kind, motion.apply(&target, shooter_top)) };
     let area = egui::Rect::from_min_max(area.min, egui::pos2(area.max.x - if right_w > 0.0 { right_w + 8.0 } else { 0.0 }, area.max.y));
     let width = area.width();
     let col_w = if !ships_right && width >= 640.0 { SHIPS_W } else { 0.0 };
@@ -295,11 +315,12 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let alone = sim.graph_current && sim.graph_attackers.is_empty() && (!with_targets || (sim.graph_ideal || !damage) && sim.graph_targets.is_empty());
     if !alone {
         let plot = compare_plot(sim, ui, &spec, &target, motion, &open, &current, &computed, with_targets);
-        let Some(plot) = plot else {
+        let Some(mut plot) = plot else {
             ui.add_space(8.0);
             ui.label(egui::RichText::new(tr!("Nothing to draw: the fit has no module of that kind running.")).weak());
             return;
         };
+        plot.markers = ewar;
         let height = ui.available_height().max(200.0);
         ui.allocate_ui_with_layout(egui::vec2(width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
             ui.set_max_width(width);
@@ -321,8 +342,9 @@ fn body(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         fmt_y,
         y_to: sim.graph_y_to.get(&kind.axes().0).copied(),
         bands: Vec::new(),
-        markers: Vec::new(),
-        readout: None,
+        markers: ewar,
+        // Alone, the graph shoots at the test target, which has no hit points to kill.
+        readout: kind.is_volley().then(|| -> Box<dyn Fn(f64) -> Vec<String>> { Box::new(|_| vec![tr!("Critical mass: add a fit as the target").to_owned()]) }),
         levels: if kind.is_damage() { max_level(graphs::max_damage(&computed, &spec), fmt_y, ui.visuals().text_color()).into_iter().collect() } else { Vec::new() },
         series: series
             .iter()
@@ -543,6 +565,33 @@ fn target_controls(sim: &mut SimUi, ui: &mut egui::Ui, kind: GraphKind, target: 
     ui.allocate_ui_with_layout(egui::vec2(160.0, 26.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.checkbox(&mut sim.graph_drones, tr!("Include drones"));
     });
+    let rah_target = (kind.is_volley() || kind.is_effective()) && !kind.is_over_time() && sim.graph_targets.clone().iter().any(|id| sim.computed_of(id).is_some_and(|c| c.tank.rah.is_some()));
+    if kind.is_volley() || rah_target {
+        if stacked {
+            ui.add_space(8.0);
+        }
+        heading(ui, tr!("Critical mass"), tr!("How many ships volleying together kill a target fit in one hit, shown under the pointer."));
+    }
+    if kind.is_volley() {
+        let mut pct = sim.graph_volley_efficiency * 100.0;
+        let (changed, r) = ctl(ui, tr!("Volley efficiency"), &mut pct, 10.0..=100.0, false, &|v| format!("{v:.0}%"), &leading_number, true);
+        if changed {
+            sim.graph_volley_efficiency = (pct / 100.0).clamp(0.1, 1.0);
+        }
+        r.on_hover_text(tr!("The share of the ships' volleys that land together: the rest fire late or miss the moment."));
+    }
+    if rah_target {
+        use spai_ui::widgets::SteadySelect as _;
+        ui.allocate_ui_with_layout(egui::vec2(330.0f32.min(ui.max_rect().width()), 26.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.label(tr!("Reactive hardener"));
+            if ui.menu_label(!sim.graph_rah_adapted, tr!("Uniform")).on_hover_text(tr!("Its resistances even, as it starts")).clicked() {
+                sim.graph_rah_adapted = false;
+            }
+            if ui.menu_label(sim.graph_rah_adapted, tr!("Adapted")).on_hover_text(tr!("Settled against the damage coming in")).clicked() {
+                sim.graph_rah_adapted = true;
+            }
+        });
+    }
 }
 
 /// The test target's four resistances on one line of the row layout, each a box to drag or type
@@ -768,6 +817,7 @@ fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit
     let (x_label, y_label, fmt_x, fmt_y) = axes(spec.kind);
     let mut lines: Vec<PlotSeries> = Vec::new();
     let mut levels: Vec<crate::plot::PlotLevel> = Vec::new();
+    let mut crit: Vec<(String, std::sync::Arc<spai_fit::stats::Computed>, GraphSpec)> = Vec::new();
     for (a_name, c) in &attackers {
         for (t_name, t, t_fit) in &targets {
             let projection = graphs::Projection { target: t_fit.clone(), across: Some(motion.across(c.mobility.max_velocity)) };
@@ -787,6 +837,9 @@ fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit
                 Some(t) => trf!("{shooter} vs {target}", shooter = text::clip(a_name, 22), target = text::clip(t, 22)),
                 None => text::clip(a_name, 40),
             };
+            if spec.kind.is_volley() && t_fit.is_some() {
+                crit.push((label.clone(), c.clone(), one.clone()));
+            }
             lines.push(PlotSeries { label, color: series_color(lines.len()), points: total.points.clone() });
         }
     }
@@ -795,7 +848,26 @@ fn compare_plot(sim: &mut SimUi, ui: &egui::Ui, spec: &GraphSpec, raw: &spai_fit
     }
     let _ = ui;
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(LINES), lines.len()));
-    Some(Plot { x_label: x_label.to_owned(), y_label: y_label.to_owned(), fmt_x, fmt_y, y_to: sim.graph_y_to.get(&spec.kind.axes().0).copied(), series: lines, bands: Vec::new(), markers: Vec::new(), levels, readout: None })
+    let readout = spec.kind.is_volley().then(|| critical_readout(crit, f64::from(sim.graph_volley_efficiency)));
+    Some(Plot { x_label: x_label.to_owned(), y_label: y_label.to_owned(), fmt_x, fmt_y, y_to: sim.graph_y_to.get(&spec.kind.axes().0).copied(), series: lines, bands: Vec::new(), markers: Vec::new(), levels, readout })
+}
+
+/// The readout's critical mass at the pointer: per shooter and target fit, the ships whose
+/// volleys together kill it in one hit.
+pub(crate) fn critical_readout(crit: Vec<(String, std::sync::Arc<spai_fit::stats::Computed>, GraphSpec)>, efficiency: f64) -> Box<dyn Fn(f64) -> Vec<String>> {
+    Box::new(move |x| {
+        if crit.is_empty() {
+            return vec![tr!("Critical mass: add a fit as the target").to_owned()];
+        }
+        let mut out = vec![trf!("Critical mass, {pct}% of volleys landing:", pct = format!("{:.0}", efficiency * 100.0))];
+        for (label, c, spec) in &crit {
+            out.push(match graphs::critical_mass(c, spec, x, efficiency) {
+                Some(n) => trf!("{line}: {n} volleys", line = label, n = n),
+                None => trf!("{line}: no volley lands", line = label),
+            });
+        }
+        out
+    })
 }
 
 /// A dashed line at what the fit lands with perfect application, labelled with it.
@@ -861,7 +933,6 @@ pub fn docked(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         });
         return;
     }
-    // The racks keep room for their names and numbers beside it.
     // The racks keep room for their names and numbers beside it.
     let max = (ui.available_width() - 260.0).max(360.0);
     let default = ui.available_width() / 2.0;

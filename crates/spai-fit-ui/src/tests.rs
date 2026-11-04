@@ -231,7 +231,7 @@ fn doctrines_open_as_copies_and_admins_publish_the_open_fit() {
         (d.id, d.name, d.side, d.tags, sess.fit.variations.iter().filter_map(|v| v.refit_key.clone()).collect::<Vec<_>>(), spai_fit::doc::to_json(&sess.fit))
     };
     s.request(HostRequest::PublishDoctrine { id: id.clone(), side, name: name.clone(), tags: tags.split(',').map(|t| t.trim().to_owned()).collect(), refit_keys: keys.clone(), doc });
-    let reqs = s.take_requests();
+    let reqs: Vec<HostRequest> = s.take_requests().into_iter().filter(|r| *r != HostRequest::ListShared).collect();
     assert!(matches!(&reqs[0], HostRequest::PublishDoctrine { side: DoctrineSide::Enemy, refit_keys, tags, .. } if refit_keys == &vec!["prop:ab".to_owned()] && tags == &vec!["alpha".to_owned(), "kiting".to_owned()]), "{reqs:?}");
     let json = serde_json::to_string(&s.doctrines[0]).unwrap();
     assert!(json.contains("\"side\":\"imperium\"") && json.contains("\"ship_type_id\""));
@@ -893,7 +893,7 @@ fn the_slot_picker_offers_what_the_hull_and_the_fit_leave_room_for() {
     use crate::picker::{fits, FitFilter, FitRoom};
     let d = dataset();
     let gun = d.type_(ids::GUN).unwrap();
-    let room = |turrets_free: u32, cpu_left: f64| FitRoom { ship: ids::SHIP, ship_group: 25, rig_size: None, cpu_total: 130.0, power_total: 40.0, cpu_left, power_left: 40.0, turrets_total: 3, launchers_total: 2, turrets_free, launchers_free: 2, costs: Default::default(), slot_group: None };
+    let room = |turrets_free: u32, cpu_left: f64| FitRoom { ship: ids::SHIP, rig_size: None, cpu_total: 130.0, power_total: 40.0, cpu_left, power_left: 40.0, turrets_total: 3, launchers_total: 2, turrets_free, launchers_free: 2, costs: Default::default(), slot_group: None };
     assert!(fits(&d, gun, &room(1, 100.0), FitFilter::Left));
     assert!(!fits(&d, gun, &room(0, 100.0), FitFilter::Left), "no turret hardpoint free");
     assert!(fits(&d, gun, &room(0, 100.0), FitFilter::Totals), "but it fits an empty hull");
@@ -1318,10 +1318,10 @@ fn drones_launched_with_a_variation_on_count_and_show() {
     assert_eq!(s.computed().unwrap().drones.active, 4);
 }
 
-/// Past a group limit the editor puts the extra module offline, as the game would refuse it, and
-/// the module the pilot just set is the one that stays.
+/// Past a group's running limit the editor stops the extra module, online, as the game would refuse
+/// to run it, and the module the pilot just set is the one that stays.
 #[test]
-fn a_group_limit_puts_the_extra_module_offline_and_spares_the_one_just_set() {
+fn a_group_limit_stops_the_extra_module_and_spares_the_one_just_set() {
     let mut d = dataset();
     d.types.iter_mut().find(|t| t.id == ids::HARDENER).unwrap().attrs.push((ids::MAX_GROUP_ACTIVE, 1.0));
     let mut s = SimUi::default();
@@ -1335,13 +1335,13 @@ fn a_group_limit_puts_the_extra_module_offline_and_spares_the_one_just_set() {
         s.computed();
         (0..2).map(|i| s.session().unwrap().fit.module(Slot::Mid, i).unwrap().state).collect::<Vec<_>>()
     };
-    assert_eq!(states(&mut s), vec![State::Active, State::Offline]);
+    assert_eq!(states(&mut s), vec![State::Active, State::Online]);
     assert!(s.session().unwrap().warnings.iter().all(|w| !matches!(w.kind, spai_fit::warnings::WarningKind::OfflineModule { .. } | spai_fit::warnings::WarningKind::GroupLimit { .. })), "{:?}", s.session().unwrap().warnings);
     s.edit(EditKind::SetState, 2, |f| f.module_mut(Slot::Mid, 1).unwrap().state = State::Active);
     s.touch(Slot::Mid, 1);
-    assert_eq!(states(&mut s), vec![State::Offline, State::Active], "the one just set stays, the other yields");
+    assert_eq!(states(&mut s), vec![State::Online, State::Active], "the one just set stays, the other yields");
     s.undo();
-    assert_eq!(states(&mut s), vec![State::Active, State::Offline]);
+    assert_eq!(states(&mut s), vec![State::Active, State::Online]);
 }
 
 #[test]
@@ -1364,7 +1364,7 @@ fn a_group_limit_holds_through_a_variation_and_leaves_the_base_alone() {
     s.edit(EditKind::Variation, 2, |f| spai_fit::variations::activate(f, 7));
     s.computed();
     let fit = s.session().unwrap().fit.clone();
-    assert_eq!(states(&spai_fit::variations::resolve(&d, &fit)), vec![State::Active, State::Offline], "the variation's second running one yields");
+    assert_eq!(states(&spai_fit::variations::resolve(&d, &fit)), vec![State::Active, State::Online], "the variation's second running one yields");
     assert_eq!(states(&fit), vec![State::Active, State::Online], "the base fit is not what changed");
     assert!(s.session().unwrap().warnings.iter().all(|w| !matches!(w.kind, spai_fit::warnings::WarningKind::GroupLimit { .. })), "{:?}", s.session().unwrap().warnings);
     s.edit(EditKind::Variation, 3, |f| f.active_variations.clear());
@@ -1373,7 +1373,7 @@ fn a_group_limit_holds_through_a_variation_and_leaves_the_base_alone() {
 }
 
 #[test]
-fn a_fleet_page_switching_one_more_on_than_the_limit_allows_puts_another_off() {
+fn a_fleet_page_switching_one_more_on_than_the_limit_allows_stops_another() {
     use crate::fleet_ships::page_states_after;
     let mut d = dataset();
     d.types.iter_mut().find(|t| t.id == ids::HARDENER).unwrap().attrs.push((ids::MAX_GROUP_ACTIVE, 1.0));
@@ -1385,12 +1385,12 @@ fn a_fleet_page_switching_one_more_on_than_the_limit_allows_puts_another_off() {
     let now = base.clone();
     assert_eq!(page_states_after(&d, &base, &now, (Slot::High, 0, State::Offline)), vec![(Slot::High, 0, State::Offline)], "an unrelated switch changes that one alone");
     let after = page_states_after(&d, &base, &now, (Slot::Mid, 1, State::Active));
-    assert_eq!(after, vec![(Slot::Mid, 0, State::Offline), (Slot::Mid, 1, State::Active)], "the one just switched on runs, the other yields");
+    assert_eq!(after, vec![(Slot::Mid, 0, State::Online), (Slot::Mid, 1, State::Active)], "the one just switched on runs, the other yields");
     let mut now = base.clone();
     for (sl, i, st) in &after {
         now.module_mut(*sl, *i).unwrap().state = *st;
     }
-    assert_eq!(page_states_after(&d, &base, &now, (Slot::Mid, 1, State::Online)), vec![(Slot::Mid, 0, State::Offline)], "switching it back down leaves the rest as set");
+    assert_eq!(page_states_after(&d, &base, &now, (Slot::Mid, 1, State::Online)), vec![(Slot::Mid, 0, State::Online)], "switching it back down leaves the rest as set");
 }
 
 #[test]
@@ -2589,3 +2589,208 @@ fn a_modules_skills_and_the_hulls_are_the_ones_that_matter_to_them() {
     assert!(all.iter().flat_map(|(_, r)| r).all(|r| d.type_(r.skill).unwrap().name.to_lowercase().contains("cruise")));
 }
 
+
+#[test]
+fn a_clone_replaces_every_implant_and_switches_them_on() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 1);
+    s.edit(EditKind::Implants, 2, |f| {
+        f.implants = vec![ids::IMPLANT, ids::SHIELD_MINDLINK];
+        f.disabled = vec![ids::IMPLANT, ids::SKIRM_MINDLINK];
+    });
+    // A booster and a type the data does not have come from the ESI too; neither is worn.
+    s.use_clone(&[ids::SKIRM_MINDLINK, ids::BOOSTER, 999_999], 3);
+    let fit = s.session().unwrap().fit.clone();
+    assert_eq!(fit.implants, vec![ids::SKIRM_MINDLINK], "the slot the clone leaves empty is emptied");
+    assert!(fit.disabled.is_empty(), "the clone's implants are in use, the old ones' switches gone");
+    s.undo();
+    assert_eq!(s.session().unwrap().fit.implants, vec![ids::IMPLANT, ids::SHIELD_MINDLINK], "one undo brings the old set back");
+}
+
+#[test]
+fn the_clone_dialog_asks_once_per_character_and_keeps_the_answer() {
+    let mut s = sim();
+    crate::clones::open(&mut s);
+    assert!(s.clones_dialog.is_none(), "no characters, no dialog");
+    s.clone_characters = vec!["Main".into(), "Alt".into()];
+    crate::clones::open(&mut s);
+    assert_eq!(s.clones_dialog.as_ref().map(|d| d.character.as_str()), Some("Main"), "opens on the character in use");
+    let ctx = egui::Context::default();
+    for _ in 0..2 {
+        let _ = ctx.run_ui(Default::default(), |ui| s.show_dialogs(ui.ctx(), 0));
+    }
+    let asked: Vec<_> = s.take_requests().into_iter().filter(|r| matches!(r, HostRequest::FetchClones(_))).collect();
+    assert_eq!(asked, vec![HostRequest::FetchClones("Main".into())]);
+    let clone = crate::clones::JumpClone { label: "Jita".into(), active: false, implants: vec![ids::IMPLANT] };
+    s.handle(HostEvent::Clones { character: "Main".into(), clones: Ok(vec![clone.clone()]) });
+    assert_eq!(s.clones_dialog.as_ref().and_then(|d| d.loaded.get("Main")).cloned(), Some(Ok(vec![clone])));
+}
+
+#[test]
+fn an_implants_summary_lists_what_its_effects_read() {
+    let d = dataset();
+    let listed = crate::clones::effect_attrs(&d, ids::IMPLANT);
+    assert!(listed.iter().all(|(a, _)| *a != spai_fit::dogma::attr::IMPLANTNESS), "the slot is no effect: {listed:?}");
+    assert_eq!(crate::clones::implants_of(&d, &[ids::SHIELD_MINDLINK, ids::IMPLANT, ids::BOOSTER]), vec![ids::IMPLANT, ids::SHIELD_MINDLINK], "slot order, implants only");
+}
+
+#[test]
+#[ignore = "needs SPAI_DOGMA_BLOB"]
+fn real_data_an_implants_summary_holds_its_bonuses_only() {
+    let d = spai_fit::dogma::blob::decode(&std::fs::read(std::env::var("SPAI_DOGMA_BLOB").unwrap()).unwrap()).unwrap();
+    let snake = d.type_named("Low-grade Snake Alpha").unwrap().id;
+    let names: Vec<String> = crate::clones::effect_attrs(&d, snake).iter().map(|(a, _)| d.attr(*a).unwrap().name.clone()).collect();
+    assert!(names.contains(&"velocityBonus".to_owned()) && names.contains(&"implantSetSerpentis".to_owned()), "{names:?}");
+    assert!(!names.iter().any(|n| ["implantness", "volume", "techLevel", "charismaBonus"].contains(&n.as_str())), "no slot, size or zero attribute bonus: {names:?}");
+}
+
+#[test]
+fn a_module_the_hull_does_not_take_is_refused_however_it_is_added() {
+    use crate::browser::{drop_on, quick_add, DropTarget};
+    const CAN_FIT_TYPE: spai_fit::ids::AttrId = 1302;
+    let mut d = dataset();
+    d.attributes.push(spai_fit::test_support::attr_def(CAN_FIT_TYPE, "canFitShipType1", true, true, 0.0));
+    d.types.iter_mut().find(|t| t.id == ids::BREACHER_LAUNCHER).unwrap().attrs.push((CAN_FIT_TYPE, ids::TITAN as f32));
+    let mut s = SimUi::default();
+    s.handle(HostEvent::Dogma(Arc::new(d.finish())));
+    s.new_fit(ids::SHIP, 1);
+    assert!(!quick_add(&mut s, ids::BREACHER_LAUNCHER, 2), "a double click puts it nowhere");
+    assert!(!drop_on(&mut s, DropTarget::Module(Slot::High, 0), ids::BREACHER_LAUNCHER, 3), "nor does a drop on a slot");
+    assert!(s.session().unwrap().fit.modules.is_empty());
+    assert!(quick_add(&mut s, ids::GUN, 4), "an unrestricted module still goes on");
+}
+
+#[test]
+fn the_graph_shows_the_ewar_of_the_attacker_and_of_its_projected_fits_each_switched_off_alone() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    let support = s.session().unwrap().id.clone();
+    s.edit(EditKind::Other, 1, |f| f.name = "Webber".into());
+    apply(&mut s, PickTarget::Module(Slot::Mid, 0), ids::WEB, 2);
+    s.edit(EditKind::SetState, 3, |f| f.module_mut(Slot::Mid, 0).unwrap().state = State::Active);
+    s.new_fit(ids::SHIP, 4);
+    s.edit(EditKind::Other, 5, |f| f.name = "Shooter".into());
+    let me = s.session().unwrap().id.clone();
+    let c = s.computed().unwrap();
+    assert!(s.graph_reaches(&[(me.clone(), "Shooter".into(), c.clone())]).is_empty(), "nothing of its own reaches out");
+    let id = support.clone();
+    s.edit(EditKind::Other, 6, move |f| f.projected_fits.push(spai_fit::fit::ProjectedFit { fit_id: id, ..Default::default() }));
+    let c = s.computed().unwrap();
+    let reaches = s.graph_reaches(&[(me.clone(), "Shooter".into(), c.clone())]);
+    assert_eq!(reaches.len(), 1, "the projected tab's web: {reaches:?}");
+    assert_eq!((reaches[0].source.as_str(), reaches[0].kind), ("Webber", spai_fit::stats::RemoteKind::Web));
+    assert!(reaches[0].optimal > 0.0);
+    assert_eq!(crate::graph_ewar::markers(&reaches, &[]).len(), 1);
+    assert!(crate::graph_ewar::markers(&reaches, &[("Webber".into(), spai_fit::stats::RemoteKind::Web)]).is_empty(), "switched off, it leaves the graph");
+    // Switched off in the Projected tab, it reaches nothing.
+    s.edit(EditKind::Other, 7, |f| f.projected_fits[0].active = false);
+    let c = s.computed().unwrap();
+    assert!(s.graph_reaches(&[(me, "Shooter".into(), c)]).is_empty());
+    // Drawn, with the button over the graph.
+    s.edit(EditKind::Other, 8, |f| {
+        f.projected_fits[0].active = true;
+        f.modules.push(spai_fit::fit::Module::new(ids::GUN, Slot::High, 0).with_charge(ids::AMMO).with_state(State::Active));
+    });
+    s.graph_window = true;
+    s.pane = crate::Pane::Graphs;
+    let ctx = egui::Context::default();
+    for t in 0..3 {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))), time: Some(f64::from(t) * 0.05), ..Default::default() };
+        let _ = ctx.run_ui(input, |ui| s.show(ui));
+    }
+    assert!(crate::plot::last_rect(&ctx).is_some());
+}
+
+#[test]
+fn the_volley_readout_counts_the_ships_to_kill_each_target_fit() {
+    use spai_fit::graphs::{GraphKind, GraphSpec, Projection};
+    let mut s = sim();
+    for t in [1, 3] {
+        s.new_fit(ids::SHIP, t);
+        apply(&mut s, PickTarget::Module(Slot::High, 0), ids::GUN, t + 1);
+        s.edit(EditKind::SetState, t + 1, |f| {
+            let m = f.module_mut(Slot::High, 0).unwrap();
+            m.state = State::Active;
+            m.charge = Some(ids::AMMO);
+        });
+    }
+    let c = s.computed().unwrap();
+    let target = s.computed_of(&s.sessions()[0].id.clone()).unwrap();
+    let spec = GraphSpec { projection: Projection { target: Some(target), across: None }, ..GraphSpec::new(GraphKind::VolleyVsDistance, Default::default()) };
+    let n = spai_fit::graphs::critical_mass(&c, &spec, 1000.0, 0.85).unwrap();
+    let lines = crate::graphs_panel::critical_readout(vec![("A vs B".into(), c.clone(), spec.clone())], 0.85)(1000.0);
+    assert_eq!(lines, vec!["Critical mass, 85% of volleys landing:".to_owned(), format!("A vs B: {n} volleys")]);
+    assert_eq!(crate::graphs_panel::critical_readout(Vec::new(), 0.85)(1000.0), vec!["Critical mass: add a fit as the target".to_owned()]);
+    // Drawn against the other tab, with the efficiency and the hardener controls beside it.
+    s.graph = GraphKind::VolleyVsDistance;
+    s.graph_targets = vec![s.sessions()[0].id.clone()];
+    s.graph_ideal = false;
+    s.graph_window = true;
+    s.pane = crate::Pane::Graphs;
+    let ctx = egui::Context::default();
+    for t in 0..3 {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))), time: Some(f64::from(t) * 0.05), ..Default::default() };
+        let _ = ctx.run_ui(input, |ui| s.show(ui));
+    }
+    assert_eq!(crate::graphs_panel::last_line_count(&ctx), 1);
+}
+
+#[test]
+fn a_shared_fit_follows_its_owner_until_edited_into_a_copy_of_ones_own() {
+    let mut s = sim();
+    let owners = |name: &str| spai_fit::doc::to_json(&Fit::new(ids::SHIP, name.to_owned()));
+    assert!(s.import_text("https://eve-spai.com/sim/#s=Ab3dEf7hJk", 1), "a sharing link is taken as one");
+    assert_eq!(s.take_requests(), vec![HostRequest::OpenLink("Ab3dEf7hJk".into())]);
+    let linked = |rev: i64, name: &str, mine: bool| HostEvent::Linked(Ok(sharing::LinkedFit { link: "Ab3dEf7hJk".into(), owner_name: "Pilot A".into(), mine, id: "owner-fit".into(), rev, doc: owners(name) }));
+    s.handle(linked(1, "Brawler", false));
+    let tab = s.session().unwrap();
+    assert_eq!((tab.fit.name.as_str(), tab.dirty), ("Brawler", false), "shown, not saved");
+    assert_ne!(tab.id, "owner-fit", "never the owner's id");
+    assert_eq!(tab.linked.as_ref().map(|l| l.owner.as_str()), Some("Pilot A"));
+    s.autosave(10_000);
+    assert!(!s.take_requests().iter().any(|r| matches!(r, HostRequest::SaveFit { .. })), "an untouched shared fit is not saved");
+    // The owner saves again; the next follow-up brings it in.
+    s.handle(linked(2, "Brawler II", false));
+    assert_eq!(s.sessions().len(), 1, "the same tab");
+    assert_eq!(s.session().unwrap().fit.name, "Brawler II");
+    s.follow_links(sharing::FOLLOW_MS + 1);
+    assert!(s.take_requests().contains(&HostRequest::OpenLink("Ab3dEf7hJk".into())), "open links are asked for again");
+    // An edit makes it the pilot's own, saved under its own id, and it stops following.
+    let own_id = s.session().unwrap().id.clone();
+    apply(&mut s, PickTarget::Module(Slot::Mid, 0), ids::MWD, 20_000);
+    s.follow_links(20_001);
+    assert!(s.session().unwrap().linked.is_none());
+    s.autosave(30_000);
+    assert!(s.take_requests().iter().any(|r| matches!(r, HostRequest::SaveFit { id, .. } if *id == own_id)));
+    s.handle(linked(3, "Brawler III", false));
+    assert_eq!(s.session().unwrap().fit.name, "Brawler II", "a copy keeps its own edits");
+    // One's own link opens the library fit.
+    s.handle(HostEvent::Fits(vec![FitSummary { id: "owner-fit".into(), name: "Mine".into(), ship: ids::SHIP, updated_at: 0 }]));
+    let _ = s.take_requests();
+    s.open_link("Ab3dEf7hJk");
+    let _ = s.take_requests();
+    s.handle(linked(3, "Mine", true));
+    assert_eq!(s.take_requests(), vec![HostRequest::LoadFit("owner-fit".into())]);
+}
+
+#[test]
+fn sharing_waits_for_sync_and_the_fit_to_reach_the_server() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    let fit = s.session().unwrap().id.clone();
+    s.handle(HostEvent::Access { signed_in: true, imperium: false, admin: false });
+    assert_eq!(s.take_requests(), vec![HostRequest::ListShared]);
+    s.start_share();
+    assert!(!s.take_requests().iter().any(|r| matches!(r, HostRequest::Sharing(_))), "sync off: nothing is asked of the server");
+    s.set_sync(true);
+    assert_eq!(s.take_requests(), vec![HostRequest::SetSync(true)]);
+    s.start_share();
+    assert!(s.take_requests().contains(&HostRequest::Sharing(fit.clone())));
+    s.handle(HostEvent::Sharing { fit: fit.clone(), result: Err(sharing::MISSING.into()) });
+    assert!(matches!(&s.sharing.dialog.as_ref().unwrap().info, Some(Err(e)) if e == sharing::MISSING));
+    let info = sharing::SharingInfo { link: "Q9".into(), public: false, grantees: vec![(7, "Pilot B".into())] };
+    s.handle(HostEvent::Sharing { fit: fit.clone(), result: Ok(info.clone()) });
+    s.handle(HostEvent::Sharing { fit: fit.clone(), result: Err("no character is named X".into()) });
+    assert_eq!(s.sharing.dialog.as_ref().unwrap().info, Some(Ok(info)), "a refused add keeps the list");
+    assert_eq!(s.share_link("Q9"), "https://eve-spai.com/sim/#s=Q9");
+}

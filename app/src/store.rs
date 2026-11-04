@@ -896,6 +896,16 @@ impl Store {
         stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, i64>(4)? == 1))).map(|rows| rows.flatten().collect()).unwrap_or_default()
     }
 
+    /// The server's copy of the library is gone: rows deleted here are gone for good, the rest
+    /// goes up again at the next sync.
+    pub fn sim_forget_server(&self) -> Result<()> {
+        for table in ["fits", "fleets", "own_doctrines"] {
+            self.exec_essential(&format!("DELETE FROM {table} WHERE deleted = 1"), params![])?;
+            self.exec_essential(&format!("UPDATE {table} SET server_rev = 0, rev = MAX(rev, 1)"), params![])?;
+        }
+        Ok(())
+    }
+
     fn coll_mark_synced(&self, table: &str, id: &str, server_rev: i64) -> Result<()> {
         self.exec_essential(&format!("DELETE FROM {table} WHERE id = ?1 AND deleted = 1"), params![id])?;
         self.exec_essential(&format!("UPDATE {table} SET server_rev = ?2, rev = ?2 WHERE id = ?1"), params![id, server_rev]).map(|_| ())

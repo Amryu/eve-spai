@@ -279,6 +279,31 @@ fn ship_details_item(ui: &mut egui::Ui, separate: bool) {
     }
 }
 
+/// Over someone's shared fit: whose it is, and the way to a copy of one's own.
+fn linked_banner(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
+    use egui_phosphor::regular as icon;
+    let Some(owner) = sim.session().and_then(|s| s.linked.as_ref()).map(|l| l.owner.clone()) else { return };
+    let mut copy = false;
+    egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(4).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                copy = ui.button(trf!("{icon} Make a copy", icon = icon::COPY)).on_hover_text(tr!("A fit of your own to change; editing does the same")).clicked();
+                let w = ui.available_width();
+                let text = trf!("{icon} Shared by {owner}: it follows their changes", icon = icon::SHARE_NETWORK, owner = owner);
+                ui.add_sized([w, ui.spacing().interact_size.y], egui::Label::new(text).truncate());
+            });
+        });
+    });
+    ui.add_space(4.0);
+    if copy {
+        if let Some(s) = sim.session_mut() {
+            s.dirty = true;
+            s.edited_at = now_ms;
+            s.save_sent = false;
+        }
+    }
+}
+
 pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let Some(dogma) = sim.dogma.clone() else { return };
     if !sim.has_hull() {
@@ -302,16 +327,19 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
                 if ui.add_sized([120.0, 26.0], egui::Button::new(tr!("Pick a hull"))).clicked() {
                     picker::open(sim, if empty_tab { PickTarget::Ship } else { PickTarget::NewFit });
                 }
-                if ui.add_sized([120.0, 26.0], egui::Button::new(tr!("Import EFT"))).clicked() {
+                if ui.add_sized([120.0, 26.0], egui::Button::new(tr!("Import"))).clicked() {
                     sim.import = Some(crate::ImportDialog::default());
                 }
             });
         });
         return;
     }
-    egui::Panel::bottom("sim_dock").resizable(true).default_size(sim.dock_h.unwrap_or(crate::dock::DOCK_H)).min_size(90.0).show_inside(ui, |ui| {
+    let max = (ui.available_height() - 160.0).max(120.0);
+    let mut h = sim.dock_h;
+    crate::dock_panel(ui, egui::Id::new("sim_dock"), crate::DockSide::Bottom, &mut h, crate::dock::DOCK_H, 90.0..=max, |ui| {
         crate::dock::show(sim, ui, now_ms);
     });
+    sim.dock_h = h;
     if sim.graph_docked && sim.mode == crate::Mode::Fits && ui.available_width() >= 620.0 {
         crate::graphs_panel::docked(sim, ui, now_ms);
     }
@@ -327,6 +355,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
             ui.spacing_mut().item_spacing.y = 2.0;
             fit_tabs(sim, ui);
             ui.add_space(4.0);
+            linked_banner(sim, ui, now_ms);
             header(sim, ui, &dogma, now_ms);
             variation_tabs(sim, ui, now_ms);
             crate::warnings_panel::strip(sim, ui);
@@ -409,7 +438,15 @@ fn fit_tabs(sim: &mut SimUi, ui: &mut egui::Ui) {
                 });
             }
         });
-        if ui.add_sized([plus_w, spai_ui::widgets::TAB_H], egui::Button::new(icon::PLUS).frame_when_inactive(false)).on_hover_text(tr!("Another fit")).clicked() {
+        // Painted by hand: a hovered button's frame is drawn past its rect, which moved the row.
+        let (rect, plus) = ui.allocate_exact_size(egui::vec2(plus_w, spai_ui::widgets::TAB_H), egui::Sense::click());
+        plus.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tr!("Another fit")));
+        let look = ui.style().interact(&plus);
+        if plus.hovered() {
+            ui.painter().rect_filled(rect, 0.0, look.weak_bg_fill);
+        }
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon::PLUS, egui::TextStyle::Button.resolve(ui.style()), look.text_color());
+        if plus.on_hover_text(tr!("Another fit")).clicked() {
             add = true;
         }
     });
@@ -857,6 +894,9 @@ fn accept_cargo_drop(sim: &mut SimUi, r: &egui::Response, slot: Slot, index: u8,
     let Some(item) = sim.shown_fit().and_then(|f| f.cargo.get(from.0).cloned()) else { return };
     if dogma.slot_of(item.type_id) != Some(slot) {
         sim.note(trf!("{name} does not go there", name = spai_fit::formats::name_of(&dogma, item.type_id)));
+        return;
+    }
+    if !sim.hull_takes(&dogma, item.type_id) {
         return;
     }
     let state = spai_fit::formats::default_state(&dogma, item.type_id);
@@ -1317,7 +1357,7 @@ fn module_row(sim: &mut SimUi, ui: &mut egui::Ui, dogma: &Dogma, cols: &Cols, sl
             }
         });
     }
-    if let Some(v) = replace {
+    if let Some(v) = replace.filter(|v| sim.hull_takes(dogma, *v)) {
         sim.edit(EditKind::AddModule, now_ms, |f| {
             for (s, i) in &targets {
                 if let Some(m) = f.module_mut(*s, *i) {

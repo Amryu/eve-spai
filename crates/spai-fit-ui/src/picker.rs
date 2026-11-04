@@ -67,7 +67,6 @@ pub enum FitFilter {
 #[derive(Clone, Debug, PartialEq)]
 pub struct FitRoom {
     pub ship: TypeId,
-    pub ship_group: spai_fit::ids::GroupId,
     pub rig_size: Option<f32>,
     pub cpu_total: f64,
     pub power_total: f64,
@@ -91,10 +90,7 @@ pub fn fits(dogma: &Dogma, t: &spai_fit::dogma::TypeDef, room: &FitRoom, filter:
     if filter == FitFilter::All {
         return true;
     }
-    let named = |prefix: &str| -> Vec<f32> { t.attrs.iter().filter(|(a, _)| dogma.attr(*a).is_some_and(|d| d.name.starts_with(prefix))).map(|(_, v)| *v).collect() };
-    let groups = named("canFitShipGroup");
-    let ships = named("canFitShipType");
-    if (!groups.is_empty() || !ships.is_empty()) && !groups.iter().any(|g| *g as u32 == u32::from(room.ship_group)) && !ships.iter().any(|s| *s as u32 == room.ship) {
+    if !dogma.fits_hull(t.id, room.ship) {
         return false;
     }
     if room.slot_group.is_some_and(|g| t.group != g) {
@@ -174,7 +170,6 @@ impl SimUi {
         let costs = slot_costs(&dogma, &rest, skills, &env, slot);
         Some(FitRoom {
             ship: ship.id,
-            ship_group: ship.group,
             rig_size: dogma.attr_named("rigSize").and_then(|a| ship.attr(a.id)),
             cpu_total: f.cpu_total,
             power_total: f.power_total,
@@ -567,6 +562,7 @@ pub fn apply(sim: &mut SimUi, target: PickTarget, type_id: TypeId, now_ms: u64) 
                 sim.new_fit(type_id, now_ms);
             }
         }
+        PickTarget::Module(_, _) if !sim.hull_takes(&dogma, type_id) => {}
         PickTarget::Module(slot, index) => sim.edit(EditKind::AddModule, now_ms, |f| {
             f.remove_module(slot, index);
             let mut m = spai_fit::fit::Module::new(type_id, slot, index);

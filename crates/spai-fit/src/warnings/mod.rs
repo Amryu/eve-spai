@@ -210,7 +210,7 @@ pub fn check(dogma: &Dogma, fit: &Fit, computed: &Computed, missing_skills: &[Mi
         }
     }
     for c in &computed.capped {
-        let severity = if c.limit == crate::calc::GroupLimit::Fitted { Severity::Error } else { Severity::Warn };
+        let severity = if matches!(c.limit, crate::calc::GroupLimit::Fitted | crate::calc::GroupLimit::Hull) { Severity::Error } else { Severity::Warn };
         out.push(warn(severity, WarningKind::GroupLimit { slot: c.slot, index: c.index, limit: c.limit, max: c.max }));
     }
     for m in fit.modules.iter().filter(|m| m.charge.is_some_and(|c| !dogma.takes_charge(m.type_id, c))) {

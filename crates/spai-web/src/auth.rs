@@ -110,10 +110,34 @@ pub fn start(ctx: &egui::Context, accounts: &crate::accounts::web::Shared, added
         }
         return auth;
     }
-    if let Some(s) = page::load::<Session>(SESSION).filter(|s| s.usable(now)) {
-        *auth.lock().unwrap() = Auth::SignedIn(s);
+    match page::load::<Session>(SESSION) {
+        Some(s) if s.usable(now) => *auth.lock().unwrap() = Auth::SignedIn(s),
+        // Lapsed: the renewer brings it back from the EVE login it came from.
+        Some(s) if spai_webkit::sso::renewable(&s) => *auth.lock().unwrap() = Auth::Working(RENEWING.into()),
+        _ => {}
     }
     auth
+}
+
+pub const RENEWING: &str = "Renewing the sign-in\u{2026}";
+
+/// Renews the session before it lapses, and brings back one that lapsed while the page was shut.
+pub fn renew(auth: &Shared, renewer: &spai_webkit::sso::Renewer, ctx: &egui::Context) {
+    let state = auth.lock().unwrap().clone();
+    let current = match &state {
+        Auth::SignedIn(s) => Some(s.clone()),
+        Auth::Working(w) if w == RENEWING => None,
+        _ => return,
+    };
+    let repaint = ctx.clone();
+    let Some(r) = renewer.tick(current.as_ref(), move || repaint.request_repaint()) else { return };
+    let now = spai_core::clock::utc().timestamp();
+    let mut a = auth.lock().unwrap();
+    match r {
+        Ok(s) => *a = Auth::SignedIn(s),
+        Err(_) if matches!(&*a, Auth::SignedIn(s) if s.usable(now)) => {}
+        Err(e) => *a = Auth::Failed(e),
+    }
 }
 
 /// Off to EVE to add a character with `scopes`; the page comes back to `callback`.
@@ -132,6 +156,7 @@ pub fn sign_in() {
 
 pub fn sign_out(auth: &Shared) {
     page::forget(SESSION);
+    page::forget(spai_webkit::sso::SESSION_RENEW_KEY);
     *auth.lock().unwrap() = Auth::SignedOut;
 }
 
@@ -142,5 +167,6 @@ async fn token(p: &Pending, code: &str) -> Result<TokenReply, String> {
 
 async fn exchange(p: &Pending, code: &str) -> Result<Session, String> {
     let token = spai_webkit::sso::token(p, code).await?;
+    spai_webkit::sso::keep_renewal(&token);
     spai_webkit::sso::session(&page::origin(), &token.access_token).await
 }

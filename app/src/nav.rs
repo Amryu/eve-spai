@@ -1,5 +1,4 @@
 use spai_ui::i18n::Tr;
-use spai_ui::tr_noop;
 use egui_phosphor::regular as icon;
 use serde::{Deserialize, Serialize};
 
@@ -61,16 +60,8 @@ impl View {
             View::Fleet => "Fleet",
             View::Rescue => "Rescue",
             View::Assistant => "Assistant",
-            View::Imperium => "Imperium",
+            View::Imperium => "Fitting",
             View::Settings => "Settings",
-        }
-    }
-
-    /// The label for a pilot who is, or is not, in the Imperium.
-    pub fn label_for(self, imperium_member: bool) -> &'static str {
-        match self {
-            View::Imperium if !imperium_member => tr_noop!("Fitting"),
-            v => v.label(),
         }
     }
 

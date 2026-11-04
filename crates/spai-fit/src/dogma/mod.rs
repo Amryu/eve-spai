@@ -506,6 +506,30 @@ impl Dogma {
         self.index.type_by_name.get(&name.trim().to_lowercase()).and_then(|&id| self.type_(id))
     }
 
+    /// Whether `ship` may carry the module: one that names the hulls or hull groups it fits on
+    /// (`canFitShipType*`, `canFitShipGroup*`) goes on those alone, as a breacher pod launcher on
+    /// its Tholos or Cenotaph. No hull yet takes anything.
+    pub fn fits_hull(&self, type_id: TypeId, ship: TypeId) -> bool {
+        let (Some(t), Some(s)) = (self.type_(type_id), self.type_(ship)) else { return true };
+        let mut listed = false;
+        for (a, v) in &t.attrs {
+            let Some(name) = self.attr(*a).map(|d| d.name.as_str()) else { continue };
+            let v = *v as u32;
+            if name.starts_with("canFitShipType") {
+                listed = true;
+                if v == ship {
+                    return true;
+                }
+            } else if name.starts_with("canFitShipGroup") {
+                listed = true;
+                if v == u32::from(s.group) {
+                    return true;
+                }
+            }
+        }
+        !listed
+    }
+
     /// The rack a module goes in, from the slot effect its type carries.
     pub fn slot_of(&self, type_id: TypeId) -> Option<crate::fit::Slot> {
         use crate::fit::Slot;

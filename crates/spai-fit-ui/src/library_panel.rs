@@ -228,6 +228,14 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
         if ui.small_button(trf!("{icon} New", icon = icon::PLUS)).on_hover_text(tr!("Start a fit from a hull")).clicked() {
             picker::open(sim, PickTarget::NewFit);
         }
+        if sim.access.signed_in {
+            let n = sim.sharing.shared.len();
+            let label = if n == 0 { trf!("{icon} Shared", icon = icon::USERS) } else { trf!("{icon} Shared ({n})", icon = icon::USERS, n = n) };
+            if ui.small_button(label).on_hover_text(tr!("Fits others share with you")).clicked() {
+                sim.sharing.shared_open = !sim.sharing.shared_open;
+                sim.request(HostRequest::ListShared);
+            }
+        }
     });
     ui.horizontal(|ui| {
         ui.add_space(rows::GAP);
@@ -257,6 +265,7 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     let mut toggle: Option<String> = None;
     let mut edit_tags: Option<(String, Vec<String>)> = None;
     let mut copy: Option<String> = None;
+    let mut share: Option<String> = None;
     let indent = fit_indent(sim.library_state.grouping);
     let under_hull = sim.library_state.grouping == Grouping::Hull;
     let folded = sim.library_state.folded.clone();
@@ -340,6 +349,10 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
                             copy = Some(e.id.clone());
                             ui.close();
                         }
+                        if ui.button(trf!("{icon}  Share…", icon = icon::SHARE_NETWORK)).clicked() {
+                            share = Some(e.id.clone());
+                            ui.close();
+                        }
                         if ui.button(trf!("{icon}  Tags…", icon = icon::TAG)).clicked() {
                             edit_tags = Some((e.id.clone(), e.tags.clone()));
                             ui.close();
@@ -358,6 +371,9 @@ pub fn show(sim: &mut SimUi, ui: &mut egui::Ui, now_ms: u64) {
     }
     if let Some(id) = copy {
         sim.copy_fit(&id, now_ms);
+    }
+    if let Some(id) = share {
+        sim.share_saved(&id);
     }
     if let Some(t) = new_hull {
         sim.new_fit(t, now_ms);

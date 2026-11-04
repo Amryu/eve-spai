@@ -71,6 +71,7 @@ pub struct WebApp {
     view: WhGraphView,
     error: Option<String>,
     auth: auth::Shared,
+    renewer: spai_webkit::sso::Renewer,
     sync: Option<Sync>,
     /// The store's generation the map last took its holes at.
     shown: u64,
@@ -148,7 +149,7 @@ impl WebApp {
         let accounts = crate::accounts::web::load();
         let added: auth::Added = Default::default();
         let auth = auth::start(&cc.egui_ctx, &accounts, &added);
-        WebApp { loading, host: None, view: WhGraphView::default(), error: None, auth, sync: None,
+        WebApp { loading, host: None, view: WhGraphView::default(), error: None, auth, renewer: Default::default(), sync: None,
             shown: u64::MAX,
             joined: false,
             tried_app: false,
@@ -741,6 +742,7 @@ impl eframe::App for WebApp {
                 None => {}
             }
         }
+        auth::renew(&self.auth, &self.renewer, ui.ctx());
         let state = self.auth.lock().unwrap().clone();
         let access = match &state {
             Auth::SignedIn(s) => {

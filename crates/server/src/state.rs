@@ -24,6 +24,7 @@ pub struct AppState {
     ip_buckets: Arc<Mutex<HashMap<String, (f64, Instant)>>>,
     /// Who is in The Imperium, which wormhole sharing is for.
     pub imperium: Arc<crate::imperium::Gate>,
+    pub names: Arc<dyn crate::names::NameSource>,
 }
 
 impl AppState {
@@ -42,7 +43,14 @@ impl AppState {
             buckets: Arc::new(Mutex::new(HashMap::new())),
             ip_buckets: Arc::new(Mutex::new(HashMap::new())),
             imperium,
+            names: Arc::new(crate::names::Esi::default()),
         }
+    }
+
+    /// The same state, with character names looked up in `source` instead of ESI.
+    pub fn with_names(mut self, source: Box<dyn crate::names::NameSource>) -> Self {
+        self.names = Arc::from(source);
+        self
     }
 
     /// The same state, with alliances read from `source` instead of ESI.

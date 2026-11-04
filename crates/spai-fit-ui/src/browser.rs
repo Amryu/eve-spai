@@ -167,6 +167,18 @@ fn wear_slot(dogma: &Dogma, type_id: TypeId) -> Option<u8> {
 /// goes into the cargo otherwise, a module takes the first
 /// free slot of its kind, a charge loads every module that takes it, drones and fighters go to
 /// their bays, an implant or booster replaces the one in its slot. `false` when it has no place.
+impl SimUi {
+    /// Whether the hull on screen takes the module; the status line says so when it does not.
+    pub(crate) fn hull_takes(&mut self, dogma: &Dogma, type_id: TypeId) -> bool {
+        let ship = self.shown_fit().map_or(0, |f| f.ship);
+        if dogma.fits_hull(type_id, ship) {
+            return true;
+        }
+        self.status(trf!("{name} does not go on this hull", name = formats::name_of(dogma, type_id)));
+        false
+    }
+}
+
 pub fn quick_add(sim: &mut SimUi, type_id: TypeId, now_ms: u64) -> bool {
     let Some(dogma) = sim.dogma.clone() else { return false };
     let Some(t) = dogma.type_(type_id) else { return false };
@@ -203,6 +215,7 @@ pub fn quick_add(sim: &mut SimUi, type_id: TypeId, now_ms: u64) -> bool {
                 f.modules.push(spai_fit::fit::Module::new(type_id, Slot::Subsystem, index));
             });
         }
+        Place::Module(_) if !sim.hull_takes(&dogma, type_id) => return false,
         Place::Module(slot) => {
             let total = sim.computed().map_or(0, |c| c.fitting.slots[Slot::ALL.iter().position(|s| *s == slot).unwrap_or(0)].1);
             let view = sim.view_fit();
@@ -275,6 +288,9 @@ pub fn drop_on(sim: &mut SimUi, target: DropTarget, type_id: TypeId, now_ms: u64
             true
         }
         (DropTarget::Module(slot, index), Place::Module(kind)) if kind == slot => {
+            if !sim.hull_takes(&dogma, type_id) {
+                return false;
+            }
             sim.edit(EditKind::AddModule, now_ms, |f| {
                 f.remove_module(slot, index);
                 let mut m = spai_fit::fit::Module::new(type_id, slot, index);

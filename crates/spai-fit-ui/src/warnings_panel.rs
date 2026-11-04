@@ -52,6 +52,7 @@ pub fn describe(dogma: &Dogma, w: &Warning) -> String {
             spai_fit::calc::GroupLimit::Fitted => trf!("Only {max} of its kind fits: {at} left out", max = max, at = at(*slot, *index)),
             spai_fit::calc::GroupLimit::Online => trf!("Only {max} of its kind can be online: {at} counted offline", max = max, at = at(*slot, *index)),
             spai_fit::calc::GroupLimit::Active => trf!("Only {max} of its kind can run: {at} counted online", max = max, at = at(*slot, *index)),
+            spai_fit::calc::GroupLimit::Hull => trf!("{at} does not fit on this hull and is left out", at = at(*slot, *index)),
         },
         WarningKind::WrongCharge { slot, index } => trf!("The charge in {at} does not fit the module and is left out", at = at(*slot, *index)),
         WarningKind::SquadronOver { fighter, count, max } => trf!("{n} {fighter} in one squadron, it holds {max}", n = count, fighter = name(*fighter), max = max),

@@ -160,6 +160,10 @@ pub fn name_of(dogma: &Dogma, type_id: TypeId) -> String {
 /// `fitting:...` or inside a game link. Empty when it is none of them.
 pub fn import_any(dogma: &Dogma, text: &str) -> Vec<eft::Imported> {
     let t = text.trim();
+    if t.starts_with("http") || t.starts_with("#fit=") || t.starts_with("fit=") {
+        let fit = t.split(['#', '?']).find_map(link::param).and_then(link::decode);
+        return fit.filter(|f| !f.trim_start().starts_with("http")).map(|f| import_any(dogma, &f)).unwrap_or_default();
+    }
     if t.contains("<fitting ") {
         return xml::import(dogma, t);
     }

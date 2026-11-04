@@ -15,6 +15,9 @@ use spai_fit::Dogma;
 use spai_ui::{tr, trf};
 
 pub mod browser;
+pub mod clones;
+pub mod graph_ewar;
+pub mod sharing;
 pub mod combo;
 pub mod compare;
 pub mod details;
@@ -175,6 +178,22 @@ pub enum HostRequest {
     LoadFleetDoc(String),
     SaveFleet { id: String, name: String, doc: String },
     DeleteFleet(String),
+    /// A character's clones and their implants; answered with `HostEvent::Clones`.
+    FetchClones(String),
+    /// Keep the library on the server too, or locally only.
+    SetSync(bool),
+    /// Delete the character's library from the server, local copies kept.
+    ForgetServerLibrary,
+    /// A saved fit's link and who it is shared with; answered with `HostEvent::Sharing`.
+    Sharing(String),
+    ShareWith { fit: String, name: String },
+    Unshare { fit: String, char_id: i64 },
+    SetLinkPublic { fit: String, public: bool },
+    /// The fits others share with this character; answered with `HostEvent::Shared`.
+    ListShared,
+    LeaveShared { owner_id: i64, id: String },
+    /// The fit behind a sharing link; answered with `HostEvent::Linked`.
+    OpenLink(String),
 }
 
 /// What the host tells the screens.
@@ -203,6 +222,14 @@ pub enum HostEvent {
     Fleet { id: String, doc: String },
     FleetDoc { id: String, doc: String },
     FleetSaved(String),
+    Clones { character: String, clones: Result<Vec<clones::JumpClone>, String> },
+    /// Whether the library is kept on the server too.
+    Sync(bool),
+    /// A fit's sharing, or why not; `sharing::MISSING` when the fit is not on the server.
+    Sharing { fit: String, result: Result<sharing::SharingInfo, String> },
+    Shared(Vec<sharing::SharedFit>),
+    /// A link's fit, or why not; `sharing::MISSING` when it opens nothing for this character.
+    Linked(Result<sharing::LinkedFit, String>),
 }
 
 /// The fit on screen with its undo history and what it computes to.
@@ -228,6 +255,8 @@ pub struct Session {
     touched: Option<(spai_fit::fit::Slot, u8)>,
     /// The doctrine fit this tab is a copy of, so opening that fit again comes back to it.
     pub origin: Option<String>,
+    /// Someone's shared fit, shown as they keep it until edited here.
+    pub linked: Option<sharing::LinkRef>,
 }
 
 /// How long a fit sits unchanged before it is saved.
@@ -240,7 +269,7 @@ impl Session {
     }
 
     pub fn new(id: String, fit: Fit) -> Self {
-        Session { id, fit, history: History::default(), rev: 0, computed_for: None, computed: None, warnings: Vec::new(), missing: Vec::new(), module_stats: Vec::new(), dirty: false, edited_at: 0, save_sent: false, touched: None, origin: None }
+        Session { id, fit, history: History::default(), rev: 0, computed_for: None, computed: None, warnings: Vec::new(), missing: Vec::new(), module_stats: Vec::new(), dirty: false, edited_at: 0, save_sent: false, touched: None, origin: None, linked: None }
     }
 
     fn refresh(&mut self, dogma: &Dogma, profile: usize, skills: &SkillSet, outside: &Outside, into_variation: bool) {
@@ -253,8 +282,8 @@ impl Session {
             let (resolved, env) = outside.apply(dogma, &self.fit, skills);
             let calc = Calc::new(dogma, &resolved, skills, &env);
             let computed = spai_fit::stats::compute_with(&calc, &resolved);
-            // One more of a group than it may online or run goes offline, as the game refuses
-            // it, and the numbers are figured again without it.
+            // One more of a group than it may online goes offline, one more than it may run goes
+            // online, as the game refuses it, and the numbers are figured again.
             if self.yield_to_limits(dogma, &computed.capped, keep.take(), into_variation) {
                 self.rev += 1;
                 continue;
@@ -270,7 +299,7 @@ impl Session {
         self.computed_for = Some((self.rev, profile, key));
     }
 
-    /// Puts what a group limit holds back offline. With a variation on, the change goes through
+    /// Steps what a group limit holds back down to the state the game allows. With a variation on, the change goes through
     /// the last one switched on, as every edit does while it shows: the base fit may hold the
     /// module offline already, with the variation switching it on.
     fn yield_to_limits(&mut self, dogma: &Dogma, capped: &[spai_fit::calc::Capped], keep: Option<(spai_fit::fit::Slot, u8)>, into_variation: bool) -> bool {
@@ -589,6 +618,13 @@ pub struct SimUi {
     pub graph_ideal: bool,
     /// How the shooter and the target move, for the damage graphs' transversal.
     pub graph_motion: graphs_panel::Motion,
+    /// The share of the volleys landing together, for the volley graphs' critical mass.
+    pub graph_volley_efficiency: f32,
+    /// Whether a target fit's reactive hardener meets the graph's damage settled or even.
+    pub graph_rah_adapted: bool,
+    /// Ewar reaches left off the graphs, by the fit they come from and their kind.
+    pub graph_ewar_hidden: Vec<(String, spai_fit::stats::RemoteKind)>,
+    graph_ewar_cache: std::collections::HashMap<u64, Arc<Computed>>,
     /// The page address a fit link starts with, where the host can open one (the web).
     pub link_base: Option<String>,
     /// A fit handed over before the data is in, imported once it is.
@@ -604,6 +640,7 @@ pub struct SimUi {
     pub own_doctrines: Vec<spai_fit::doctrine::Doctrine>,
     pub doctrine_tab: doctrine_panel::TabState,
     pub access: Access,
+    pub sharing: sharing::SharingState,
     pub publish: Option<PublishDialog>,
     pub mode: Mode,
     pub fleets: Vec<FleetSummary>,
@@ -623,6 +660,9 @@ pub struct SimUi {
     pub(crate) fleet_sent: Option<u64>,
     /// The save under way was an autosave, which says nothing.
     pub(crate) fleet_quiet: bool,
+    /// The characters whose clones the host can read, the one in use first; none hides the button.
+    pub clone_characters: Vec<String>,
+    pub clones_dialog: Option<clones::ClonesDialog>,
     status: Option<(String, f64)>,
     requests: Vec<HostRequest>,
     next_id: u32,
@@ -699,6 +739,10 @@ impl Default for SimUi {
             graph_current: true,
             graph_ideal: true,
             graph_motion: graphs_panel::Motion::default(),
+            graph_volley_efficiency: 0.85,
+            graph_rah_adapted: false,
+            graph_ewar_hidden: Vec::new(),
+            graph_ewar_cache: Default::default(),
             link_base: None,
             pending_import: None,
             graph_x_to: Default::default(),
@@ -710,6 +754,7 @@ impl Default for SimUi {
             own_doctrines: Vec::new(),
             doctrine_tab: doctrine_panel::TabState::default(),
             access: Access::default(),
+            sharing: Default::default(),
             publish: None,
             mode: Mode::Fits,
             fleets: Vec::new(),
@@ -722,6 +767,8 @@ impl Default for SimUi {
             fleet_edit: None,
             fleet_sent: None,
             fleet_quiet: false,
+            clone_characters: Vec::new(),
+            clones_dialog: None,
             status: None,
             requests: Vec::new(),
             next_id: 0,
@@ -821,7 +868,18 @@ impl SimUi {
                 let ids: Vec<String> = self.own_doctrines.iter().flat_map(|d| d.fits.iter().filter(|f| f.fit.is_none()).map(|f| f.fit_id.clone())).collect();
                 self.want_fit_docs(ids.into_iter());
             }
-            HostEvent::Access { signed_in, imperium, admin } => self.access = Access { signed_in, imperium, admin },
+            HostEvent::Access { signed_in, imperium, admin } => {
+                self.access = Access { signed_in, imperium, admin };
+                if signed_in {
+                    self.requests.push(HostRequest::ListShared);
+                } else {
+                    self.sharing.shared.clear();
+                }
+            }
+            HostEvent::Sync(on) => self.sharing.sync_on = on,
+            HostEvent::Sharing { fit, result } => self.sharing_answer(fit, result, self.now_ms),
+            HostEvent::Shared(list) => self.sharing.shared = list,
+            HostEvent::Linked(result) => self.linked(result, self.now_ms),
             HostEvent::FitDocs(docs) => {
                 for (id, doc) in docs {
                     if let Ok(fit) = spai_fit::doc::from_json(&doc) {
@@ -830,6 +888,11 @@ impl SimUi {
                 }
             }
             HostEvent::Fleets(list) => self.fleets = list,
+            HostEvent::Clones { character, clones } => {
+                if let Some(d) = &mut self.clones_dialog {
+                    d.loaded.insert(character, clones);
+                }
+            }
             HostEvent::Fleet { id, doc } => match serde_json::from_str::<spai_fit::fleet::Fleet>(&doc) {
                 Ok(fleet) => {
                     self.fleet_docs.insert(id.clone(), fleet.clone());
@@ -907,7 +970,7 @@ impl SimUi {
         let mut open = true;
         let mut go = false;
         let size = egui::vec2(420.0, 220.0);
-        egui::Window::new(tr!("Publish as doctrine")).open(&mut open).collapsible(false).resizable(false).default_size(size).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
+        egui::Window::new(tr!("Add to doctrines")).open(&mut open).collapsible(false).resizable(false).default_size(size).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
             use spai_ui::widgets::SteadySelect as _;
             egui::Grid::new("sim_publish").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                 ui.label(tr!("Name"));
@@ -924,9 +987,9 @@ impl SimUi {
                 ui.add(egui::TextEdit::singleline(&mut dialog.tags).desired_width(280.0).hint_text(tr!("comma separated")));
                 ui.end_row();
             });
-            ui.add(egui::Label::new(egui::RichText::new(tr!("Refit keys come from the fit's variations. Publishing again replaces the preset with the same id.")).weak()).wrap());
+            ui.add(egui::Label::new(egui::RichText::new(tr!("Refit keys come from the fit's variations. Adding it again replaces the preset with the same id.")).weak()).wrap());
             ui.add_space(6.0);
-            if ui.add_enabled(!dialog.name.trim().is_empty(), egui::Button::new(tr!("Publish"))).clicked() {
+            if ui.add_enabled(!dialog.name.trim().is_empty(), egui::Button::new(tr!("Add"))).clicked() {
                 go = true;
             }
         });
@@ -1026,6 +1089,11 @@ impl SimUi {
 
     /// Imports any fit format; `false` when it holds none. Unknown names are noted, not refused.
     pub fn import_text(&mut self, text: &str, now_ms: u64) -> bool {
+        if let Some(link) = sharing::link_id(text) {
+            let link = link.to_owned();
+            self.open_link(&link);
+            return true;
+        }
         let Some(dogma) = self.dogma.clone() else { return false };
         let found = spai_fit::formats::import_any(&dogma, text);
         if found.is_empty() {
@@ -1269,7 +1337,8 @@ impl SimUi {
         if let Some(w) = l.left_w {
             self.left_w = Some(w);
         }
-        if let Some(h) = l.dock_h {
+        // The old default, never dragged, is kept as a size; it takes the new default instead.
+        if let Some(h) = l.dock_h.filter(|h| !(160.0..=176.0).contains(h)) {
             self.dock_h = Some(h);
         }
         if let Some(b) = l.show_library {
@@ -1670,6 +1739,7 @@ impl SimUi {
                 }
             }
         }
+        self.follow_links(now_ms);
         self.autosave(now_ms);
         self.computed();
         let narrow = ui.available_width() < NARROW;
@@ -1790,6 +1860,8 @@ impl SimUi {
         picker::show_window(self, ctx, now_ms);
         self.import_window(ctx, now_ms);
         self.publish_window(ctx);
+        self.sharing_window(ctx, now_ms);
+        self.shared_window(ctx);
         doctrine_panel::windows(self, ctx, now_ms);
         warnings_panel::skills_window(self, ctx);
         graphs_panel::window(self, ctx, now_ms);
@@ -1802,6 +1874,7 @@ impl SimUi {
         skill_profiles::skills_window(self, ctx);
         skill_profiles::profiles_dialog(self, ctx);
         details::side_effects_window(self, ctx, now_ms);
+        clones::window(self, ctx, now_ms);
         mutation::window(self, ctx, now_ms);
         editor::traits_window(self, ctx);
         library_panel::project_picker(self, ctx, now_ms);
@@ -1940,25 +2013,33 @@ impl SimUi {
                         item(ui, tr!("Fitting XML"), &|| spai_fit::formats::xml::export(&d, &[&fit]));
                         item(ui, tr!("DNA"), &|| spai_fit::formats::dna::export(&fit));
                         item(ui, tr!("Multibuy"), &|| spai_fit::formats::multibuy::export(&d, &fit));
+                        // The fit whole, every variation, as it is now: a link that never changes.
+                        if let Some(base) = self.link_base.clone() {
+                            ui.separator();
+                            let doc = spai_fit::doc::to_json(&s.fit);
+                            if ui.button(tr!("Link, as it is now")).on_hover_text(tr!("A link holding this fit and its variations as they are now; later edits do not reach it")).clicked() {
+                                copy = Some((format!("{base}#fit={}", spai_fit::formats::link::encode(&doc)), tr!("Link")));
+                                ui.close();
+                            }
+                        }
 
                     })
                     .response
                     .on_hover_text(tr!("Copy the fit on screen, with its active variations, in a format of your choice"));
                 });
-                // The fit on screen as a link to the web simulator, the fit whole: every variation, the
-                // ones switched on still on.
-                if let (Some(base), true) = (self.link_base.clone(), self.mode != Mode::Fleets) {
-                    if ui.add_enabled(has_fit, egui::Button::new(labelled(icon::LINK, tr!("Copy link")))).on_hover_text(tr!("A link that opens this fit, with all its variations, in the web simulator")).clicked() {
-                        if let Some(s) = self.session() {
-                            copy = Some((format!("{base}#fit={}", spai_fit::formats::link::encode(&spai_fit::doc::to_json(&s.fit))), tr!("Link")));
-                        }
+                // Sharing needs the server, so the button waits for a sign-in.
+                if self.mode != Mode::Fleets && self.access.signed_in {
+                    let linked = self.session().is_some_and(|s| s.linked.is_some());
+                    let tip = if linked { tr!("Someone else's fit: edit it to make your own copy, then share that") } else { tr!("A link that always opens this fit as you keep it, for you and those you share it with") };
+                    if ui.add_enabled(has_fit && !linked, egui::Button::new(labelled(icon::SHARE_NETWORK, tr!("Share")))).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
+                        self.start_share();
                     }
                 }
                 if let Some((text, what)) = copy {
                     self.requests.push(HostRequest::CopyText(text));
                     self.status(trf!("{what} copied", what = what));
                 }
-                if self.access.admin && ui.add_enabled(has_fit, egui::Button::new(labelled(icon::UPLOAD_SIMPLE, tr!("Publish")))).on_hover_text(tr!("Publish as doctrine")).clicked() {
+                if self.access.admin && ui.add_enabled(has_fit, egui::Button::new(labelled(icon::SEAL_CHECK, tr!("Add to doctrines")))).on_hover_text(tr!("Add this fit to the doctrine presets of the side you pick")).clicked() {
                     self.start_publish();
                 }
                 ui.separator();
@@ -2025,6 +2106,10 @@ impl SimUi {
                         self.toggle_graphs();
                     }
                 }
+                if self.sharing.button_in_bar {
+                    ui.separator();
+                    self.sync_button(ui);
+                }
                 // A fixed slot for notes, so one appearing never moves the buttons; it takes what
                 // is left and nothing more.
                 let room = ui.available_width() - ui.spacing().item_spacing.x;
@@ -2048,47 +2133,31 @@ impl SimUi {
     fn import_window(&mut self, ctx: &egui::Context, now_ms: u64) {
         let Some(dialog) = &mut self.import else { return };
         let mut open = true;
-        let mut done: Option<Result<Fit, String>> = None;
-        let size = egui::vec2(480.0, 360.0);
-        egui::Window::new(tr!("Import EFT")).open(&mut open).collapsible(false).resizable(true).default_size(size).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
-            ui.label(tr!("Paste a fit in EFT format (as the game's fitting window copies it)."));
-            // A fixed box: the text scrolls inside, the Import button stays where it is.
-            egui::ScrollArea::vertical().max_height(260.0).min_scrolled_height(260.0).show(ui, |ui| {
-                ui.set_min_height(260.0);
-                ui.add(egui::TextEdit::multiline(&mut dialog.text).desired_width(f32::INFINITY).desired_rows(14).font(egui::TextStyle::Monospace));
+        let mut submit: Option<String> = None;
+        let size = egui::vec2(480.0, 380.0);
+        egui::Window::new(tr!("Import")).open(&mut open).collapsible(false).resizable([true, false]).default_size(size).default_pos(ctx.content_rect().center() - size / 2.0).show(ctx, |ui| {
+            ui.label(tr!("Paste one fit or several: EFT, ESI JSON, the game's fitting XML, DNA, or a link to the simulator."));
+            // The scroll area is as tall as the box's rows, so nothing is left between it and the button.
+            const ROWS: usize = 14;
+            let h = ui.text_style_height(&egui::TextStyle::Monospace) * ROWS as f32 + 2.0 * ui.spacing().button_padding.y + 4.0;
+            egui::ScrollArea::vertical().max_height(h).auto_shrink([false, true]).show(ui, |ui| {
+                ui.add(egui::TextEdit::multiline(&mut dialog.text).desired_width(f32::INFINITY).desired_rows(ROWS).font(egui::TextStyle::Monospace));
             });
-            let slot = egui::vec2(ui.available_width(), 20.0);
-            ui.add_sized(slot, egui::Label::new(egui::RichText::new(dialog.error.clone().unwrap_or_default()).color(ui.visuals().error_fg_color)).truncate());
-            if ui.button(tr!("Import")).clicked() {
-                done = Some(match self.dogma.as_ref().map(|d| spai_fit::formats::eft::import(d, &dialog.text)) {
-                    Some(Some(imp)) if imp.fit.ship != 0 => {
-                        if imp.unknown.is_empty() {
-                            Ok(imp.fit)
-                        } else {
-                            dialog.error = Some(trf!("Unknown: {names}", names = imp.unknown.join(", ")));
-                            Ok(imp.fit)
-                        }
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(tr!("Import")).clicked() {
+                        submit = Some(dialog.text.clone());
                     }
-                    Some(Some(imp)) => Err(trf!("No such ship: {names}", names = imp.unknown.first().cloned().unwrap_or_default())),
-                    _ => Err(tr!("That is not an EFT fit: the first line must be [Ship, Name].").to_owned()),
+                    ui.add(egui::Label::new(egui::RichText::new(dialog.error.clone().unwrap_or_default()).color(ui.visuals().error_fg_color)).truncate());
                 });
-            }
+            });
         });
-        match done {
-            Some(Ok(fit)) => {
-                let note = self.import.as_ref().and_then(|d| d.error.clone());
+        if let Some(text) = submit {
+            if self.import_text(&text, now_ms) {
                 self.import = None;
-                self.place_import(fit, now_ms);
-                if let Some(n) = note {
-                    self.status(n);
-                }
+            } else if let Some(d) = &mut self.import {
+                d.error = Some(tr!("No fit found: paste EFT text, ESI's JSON, the game's fitting XML, a DNA string or a link.").to_owned());
             }
-            Some(Err(e)) => {
-                if let Some(d) = &mut self.import {
-                    d.error = Some(e);
-                }
-            }
-            None => {}
         }
         if !open {
             self.import = None;

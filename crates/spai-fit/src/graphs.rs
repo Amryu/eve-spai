@@ -184,12 +184,23 @@ pub struct GraphSpec {
     pub target: TargetProfile,
     pub include_drones: bool,
     pub projection: Projection,
+    pub rah: RahMode,
 }
 
 impl GraphSpec {
     pub fn new(kind: GraphKind, target: TargetProfile) -> Self {
-        GraphSpec { kind, x_to: None, points: 400, target, include_drones: true, projection: Projection::default() }
+        GraphSpec { kind, x_to: None, points: 400, target, include_drones: true, projection: Projection::default(), rah: RahMode::default() }
     }
+}
+
+/// How a target fit's reactive hardener meets the damage of the graphs that take no time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RahMode {
+    /// As it starts, its resistances even.
+    #[default]
+    Uniform,
+    /// Settled against the damage coming in.
+    Adapted,
 }
 
 /// How the attacker's running webs and painters land on the target of a damage graph.
@@ -320,6 +331,37 @@ impl TargetTank {
         spec.kind.is_effective().then(|| spec.projection.target.as_deref().map(TargetTank::of).unwrap_or_else(|| TargetTank::flat(spec.target.resist)))
     }
 
+    /// The armor's resonances with the hardener as `mode` has it against `incoming`; none without one.
+    pub fn armor_with(&self, incoming: [f64; 4], mode: RahMode) -> Option<[f64; 4]> {
+        let r = self.rah?;
+        let sum: f64 = incoming.iter().sum();
+        let res = match mode {
+            RahMode::Adapted if r.shift > 0.0 && sum > 0.0 => crate::calc::patch::adapt(r.start, r.armor_before, incoming.map(|x| x / sum), r.shift),
+            _ => r.start,
+        };
+        Some(std::array::from_fn(|i| r.armor_before[i] * (1.0 - res[i])))
+    }
+
+    /// The damage, split as `incoming`, that takes the shield, armor and hull off in one hit.
+    pub fn to_kill(&self, incoming: [f64; 4], mode: RahMode) -> f64 {
+        let sum: f64 = incoming.iter().sum();
+        if sum <= 0.0 {
+            return f64::INFINITY;
+        }
+        let split = incoming.map(|v| v / sum);
+        let armor = self.armor_with(incoming, mode);
+        self.layers
+            .iter()
+            .enumerate()
+            .filter(|(_, (hp, _))| *hp > 0.0)
+            .map(|(k, (hp, res))| {
+                let res = if k == 1 { armor.unwrap_or(*res) } else { *res };
+                let through: f64 = (0..4).map(|i| split[i] * res[i]).sum();
+                if through > 0.0 { hp / through } else { f64::INFINITY }
+            })
+            .sum()
+    }
+
     /// The resonances the damage coming in meets, the layers blended by the share of the kill each
     /// takes: a weapon's damage through them sums with the others' to the fit's hit points over
     /// its effective hit points against the whole. `armor` stands in for the armor's when a
@@ -379,7 +421,8 @@ pub fn max_damage(c: &Computed, spec: &GraphSpec) -> f64 {
         .collect();
     let Some(tank) = tank else { return full.iter().map(|(_, y)| y).sum() };
     let landed: Vec<[f64; 4]> = full.iter().map(|(w, y)| split_of(w, *y)).collect();
-    let res = tank.blended(sum_splits(&landed), None);
+    let incoming = sum_splits(&landed);
+    let res = tank.blended(incoming, tank.armor_with(incoming, spec.rah));
     full.iter().zip(&landed).map(|((w, y), d)| through(w, *y, d, &res, &tank)).sum()
 }
 
@@ -432,7 +475,8 @@ fn damage_series(c: &Computed, spec: &GraphSpec, xs: impl Iterator<Item = f64>, 
             None => applied,
             Some(tank) => {
                 let landed: Vec<[f64; 4]> = weapons.iter().zip(&applied).map(|(w, y)| split_of(w, *y)).collect();
-                let res = tank.blended(sum_splits(&landed), None);
+                let incoming = sum_splits(&landed);
+                let res = tank.blended(incoming, tank.armor_with(incoming, spec.rah));
                 weapons.iter().zip(&applied).zip(&landed).map(|((w, y), d)| through(w, *y, d, &res, tank)).collect()
             }
         };
@@ -447,6 +491,37 @@ fn damage_series(c: &Computed, spec: &GraphSpec, xs: impl Iterator<Item = f64>, 
     out
 }
 
+/// The distance and the target a damage graph's `x` stands for, under the shooter's webs and
+/// painters.
+fn point_at(c: &Computed, spec: &GraphSpec, x: f64) -> (f64, TargetProfile) {
+    let base = spec.target.clone();
+    let d = f64::from(base.distance);
+    match spec.kind.axes().1 {
+        GraphX::Distance => (x, projected_on(c, &spec.projection, spec.projection.across, x, base)),
+        // The axis is the target's own speed with its transversal; the webs cut both.
+        GraphX::TargetSpeed => (d, projected_on(c, &spec.projection, None, d, TargetProfile { velocity: x as f32, transversal: x as f32, ..base })),
+        GraphX::TargetSignature => (d, projected_on(c, &spec.projection, spec.projection.across, d, TargetProfile { signature: x as f32, ..base })),
+        _ => (d, base),
+    }
+}
+
+/// Ships volleying together that kill the target fit at `x` in one hit, `efficiency` of their
+/// volleys landing: its hit points against one ship's alpha as it applies there, by damage type
+/// through each layer. Drones and breacher pods kill nothing in one hit and are left out.
+pub fn critical_mass(c: &Computed, spec: &GraphSpec, x: f64, efficiency: f64) -> Option<u32> {
+    use crate::stats::WeaponKind;
+    if !spec.kind.is_volley() {
+        return None;
+    }
+    let tank = TargetTank::of(spec.projection.target.as_deref()?);
+    let (distance, target) = point_at(c, spec, x);
+    let landed: Vec<[f64; 4]> = c.weapons.iter().filter(|w| w.alpha() && w.kind != WeaponKind::Breacher).map(|w| split_of(w, w.volley.total() * applied_factor(w, distance, &target, 0.0, c.drones.control_range))).collect();
+    let incoming = sum_splits(&landed);
+    let volley: f64 = incoming.iter().sum::<f64>() * efficiency.clamp(0.01, 1.0);
+    let need = tank.to_kill(incoming, spec.rah);
+    (volley > 0.0 && need.is_finite()).then(|| (need / volley).ceil().max(1.0) as u32)
+}
+
 /// The curves for the graph.
 pub fn sample(c: &Computed, spec: &GraphSpec) -> Vec<Series> {
     let n = spec.points.max(2);
@@ -454,20 +529,10 @@ pub fn sample(c: &Computed, spec: &GraphSpec) -> Vec<Series> {
         GraphKind::DamageVsDistance | GraphKind::VolleyVsDistance | GraphKind::EffectiveDamageVsDistance | GraphKind::EffectiveVolleyVsDistance => {
             let reach = c.weapons.iter().map(|w| w.reach()).fold(10_000.0, f64::max);
             let to = spec.x_to.unwrap_or(reach * 1.1);
-            let t = spec.target.clone();
-            damage_series(c, spec, with_edges(grid(0.0, to, n), &damage_edges(c, spec.include_drones)).into_iter(), |x| (x, projected_on(c, &spec.projection, spec.projection.across, x, t.clone())))
+            damage_series(c, spec, with_edges(grid(0.0, to, n), &damage_edges(c, spec.include_drones)).into_iter(), |x| point_at(c, spec, x))
         }
-        GraphKind::DamageVsTargetSpeed | GraphKind::VolleyVsTargetSpeed | GraphKind::EffectiveDamageVsTargetSpeed | GraphKind::EffectiveVolleyVsTargetSpeed => {
-            let to = spec.x_to.unwrap_or(3000.0);
-            let base = spec.target.clone();
-            // The axis is the target's own speed with its transversal; the webs cut both.
-            damage_series(c, spec, grid(0.0, to, n), |x| (f64::from(base.distance), projected_on(c, &spec.projection, None, f64::from(base.distance), TargetProfile { velocity: x as f32, transversal: x as f32, ..base.clone() })))
-        }
-        GraphKind::DamageVsTargetSignature | GraphKind::VolleyVsTargetSignature | GraphKind::EffectiveDamageVsTargetSignature | GraphKind::EffectiveVolleyVsTargetSignature => {
-            let to = spec.x_to.unwrap_or(2000.0);
-            let base = spec.target.clone();
-            damage_series(c, spec, grid(1.0, to, n), |x| (f64::from(base.distance), projected_on(c, &spec.projection, spec.projection.across, f64::from(base.distance), TargetProfile { signature: x as f32, ..base.clone() })))
-        }
+        GraphKind::DamageVsTargetSpeed | GraphKind::VolleyVsTargetSpeed | GraphKind::EffectiveDamageVsTargetSpeed | GraphKind::EffectiveVolleyVsTargetSpeed => damage_series(c, spec, grid(0.0, spec.x_to.unwrap_or(3000.0), n), |x| point_at(c, spec, x)),
+        GraphKind::DamageVsTargetSignature | GraphKind::VolleyVsTargetSignature | GraphKind::EffectiveDamageVsTargetSignature | GraphKind::EffectiveVolleyVsTargetSignature => damage_series(c, spec, grid(1.0, spec.x_to.unwrap_or(2000.0), n), |x| point_at(c, spec, x)),
         GraphKind::CapacitorOverTime => {
             let horizon = spec.x_to.unwrap_or_else(|| c.cap.lasts_s.map_or(600.0, |t| (t * 1.2).max(60.0)));
             // A target fit feeds the nosferatu as far as the game lets it.
@@ -796,6 +861,50 @@ mod tests {
         let across = GraphSpec { projection: Projection { target: None, across: Some((0.0, 1.0)) }, ..GraphSpec::new(GraphKind::DamageVsTargetSignature, target) };
         let projected = projected_on(&active, &across.projection, across.projection.across, 5000.0, across.target.clone());
         assert!((projected.velocity - 600.0).abs() < 1e-3 && (projected.transversal - 600.0).abs() < 1e-3, "{projected:?}");
+    }
+
+    #[test]
+    fn critical_mass_is_the_target_fits_hit_points_over_each_ships_landed_alpha() {
+        let d = dataset();
+        let mut f = fit();
+        f.drones.clear();
+        let c = compute(&d, &f, &SkillSet::all_v(), &Env::default());
+        let target = std::sync::Arc::new(compute(&d, &Fit::new(ids::SHIP, "target"), &SkillSet::all_v(), &Env::default()));
+        let profile = TargetProfile { signature: 400.0, distance: 2000.0, ..Default::default() };
+        let spec = |kind| GraphSpec { projection: Projection { target: Some(target.clone()), across: None }, ..GraphSpec::new(kind, profile.clone()) };
+        let volley = spec(GraphKind::VolleyVsDistance);
+        let (distance, t) = point_at(&c, &volley, 2000.0);
+        let mut incoming = [0.0; 4];
+        for w in &c.weapons {
+            let f = applied_factor(w, distance, &t, 0.0, c.drones.control_range);
+            for (i, v) in [w.volley.em, w.volley.thermal, w.volley.kinetic, w.volley.explosive].into_iter().enumerate() {
+                incoming[i] += v * f;
+            }
+        }
+        let sum: f64 = incoming.iter().sum();
+        let tk = &target.tank;
+        let need: f64 = [&tk.shield, &tk.armor, &tk.hull].iter().filter(|l| l.hp > 0.0).map(|l| l.hp / (0..4).map(|i| incoming[i] / sum * l.resonance[i]).sum::<f64>()).sum();
+        let want = (need / (sum * 0.85)).ceil() as u32;
+        assert_eq!(critical_mass(&c, &volley, 2000.0, 0.85), Some(want), "each layer through its own resistances");
+        assert!(critical_mass(&c, &volley, 2000.0, 0.5).unwrap() > want, "fewer volleys landing, more ships");
+        assert_eq!(critical_mass(&c, &spec(GraphKind::DamageVsDistance), 2000.0, 0.85), None, "a damage graph has no alpha");
+        assert_eq!(critical_mass(&c, &GraphSpec::new(GraphKind::VolleyVsDistance, profile.clone()), 2000.0, 0.85), None, "the test target has no hit points");
+        let far = critical_mass(&c, &volley, 60_000.0, 0.85);
+        assert!(far.is_none_or(|n| n > want), "out in the falloff it takes more: {far:?}");
+    }
+
+    #[test]
+    fn a_hardener_adapted_to_the_damage_takes_more_to_break_than_an_even_one() {
+        let rah = crate::calc::Rah { armor_before: [1.0, 0.8, 0.6, 0.5], start: [0.15; 4], shift: 0.06, cycle_s: 10.0 };
+        let tank = TargetTank { layers: [(1000.0, [1.0; 4]), (1000.0, [1.0; 4]), (1000.0, [1.0; 4])], rah: Some(rah), hp: Some(3000.0) };
+        let kinetic = [0.0, 0.0, 100.0, 0.0];
+        let even = tank.to_kill(kinetic, RahMode::Uniform);
+        assert!((even - (2000.0 + 1000.0 / (0.6 * 0.85))).abs() < 1e-6, "even, the armor holds 15% off its own: {even}");
+        assert!(tank.to_kill(kinetic, RahMode::Adapted) > even * 1.05, "adapted to kinetic it holds more of it");
+        let shifting = GraphSpec { rah: RahMode::Adapted, ..GraphSpec::new(GraphKind::EffectiveDamageVsDistance, TargetProfile::default()) };
+        assert_eq!(shifting.rah, RahMode::Adapted);
+        let plain = TargetTank { rah: None, ..tank.clone() };
+        assert_eq!(plain.to_kill(kinetic, RahMode::Adapted), plain.to_kill(kinetic, RahMode::Uniform), "no hardener, nothing to adapt");
     }
 }
 

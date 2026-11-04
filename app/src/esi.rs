@@ -617,6 +617,88 @@ pub fn fetch_skills(client_id: String, char_name: String, done: Box<dyn FnOnce(i
     });
 }
 
+/// The implants of the clone in use need their own scope; signed in before it was added, a
+/// character lacks it until it signs in again.
+pub(crate) const IMPLANTS_SCOPE: &str = "esi-clones.read_implants.v1";
+/// The names of player structures, where most jump clones sit.
+pub(crate) const STRUCTURES_SCOPE: &str = "esi-universe.read_structures.v1";
+
+/// One clone as the fitting screen lists it: where it sits, whether it is the one in use, and its
+/// implants' type ids.
+pub struct CloneRow {
+    pub label: String,
+    pub active: bool,
+    pub implants: Vec<i64>,
+}
+
+/// A character's clone in use and its jump clones, each with its implants.
+pub fn fetch_clones(client_id: String, char_name: String, done: Box<dyn FnOnce(Result<Vec<CloneRow>, String>) + Send>, ctx: egui::Context) {
+    let _ = std::thread::Builder::new().name("esi-clones".into()).spawn(move || {
+        let result = clones_with_implants(&client_id, &char_name);
+        if let Err(e) = &result {
+            crate::esilog::record("clones", &format!("{char_name}: {e}"));
+        }
+        done(result);
+        ctx.request_repaint();
+    });
+}
+
+fn clones_with_implants(client_id: &str, char_name: &str) -> Result<Vec<CloneRow>, String> {
+    let store = Store::open().map_err(|e| e.to_string())?;
+    let character = store.character_by_name(char_name).ok_or_else(|| spai_ui::trf!("{name} is not signed in", name = char_name))?;
+    let has = |s: &str| character.scopes.split_whitespace().any(|x| x == s);
+    if !has(CLONES_SCOPE) || !has(IMPLANTS_SCOPE) {
+        return Err(spai_ui::trf!("Sign {name} in again on the Characters page to let it read its clones", name = char_name));
+    }
+    let token = current_access_token(&store, client_id, character.id, character.expires_at).ok_or_else(|| spai_ui::trf!("No ESI login for {name}", name = char_name))?;
+    let client = crate::http::client(20).map_err(|e| e.to_string())?;
+    let get = |url: String, auth: bool| -> Result<reqwest::blocking::Response, String> {
+        let req = client.get(url);
+        let req = if auth { req.bearer_auth(&token) } else { req };
+        req.send().and_then(|r| r.error_for_status()).map_err(|e| e.to_string())
+    };
+    #[derive(Deserialize)]
+    struct Jump {
+        location_id: i64,
+        location_type: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        implants: Vec<i64>,
+    }
+    #[derive(Deserialize)]
+    struct Clones {
+        #[serde(default)]
+        jump_clones: Vec<Jump>,
+    }
+    #[derive(Deserialize)]
+    struct Named {
+        name: String,
+    }
+    let active: Vec<i64> = get(format!("{LOCATION_URL}/{}/implants/", character.id), true)?.json().map_err(|e| e.to_string())?;
+    let clones: Clones = get(format!("{LOCATION_URL}/{}/clones/", character.id), true)?.json().map_err(|e| e.to_string())?;
+    let mut names: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    let mut out = vec![CloneRow { label: String::new(), active: true, implants: active }];
+    for j in clones.jump_clones {
+        if !names.contains_key(&j.location_id) {
+            let found = match j.location_type.as_str() {
+                "station" => get(format!("https://esi.evetech.net/latest/universe/stations/{}/", j.location_id), false).ok(),
+                "structure" if has(STRUCTURES_SCOPE) => get(format!("https://esi.evetech.net/latest/universe/structures/{}/", j.location_id), true).ok(),
+                _ => None,
+            };
+            let name = found.and_then(|r| r.json::<Named>().ok()).map(|n| n.name).unwrap_or_else(|| spai_ui::trf!("A player structure ({id})", id = j.location_id));
+            names.insert(j.location_id, name);
+        }
+        let place = names[&j.location_id].clone();
+        let label = match j.name.filter(|n| !n.trim().is_empty()) {
+            Some(n) => format!("{n} · {place}"),
+            None => place,
+        };
+        out.push(CloneRow { label, active: false, implants: j.implants });
+    }
+    Ok(out)
+}
+
 pub fn save_fitting(
     client_id: String,
     char_name: String,

@@ -17,6 +17,8 @@ pub const SESSION_KEY: &str = "spai.session";
 pub const SESSION_ERROR_KEY: &str = "spai.session.error";
 pub const PENDING_KEY: &str = "spai.sso";
 pub const ACCOUNTS_KEY: &str = "spai.accounts";
+/// The EVE login a plain sign-in renews its session from: `Renewal`.
+pub const SESSION_RENEW_KEY: &str = "spai.session.renew";
 
 /// What a sign-in in progress keeps across the trip to EVE and back.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -82,10 +84,130 @@ pub struct Session {
 }
 
 impl Session {
-    /// Still good for a while: a session about to expire is renewed by signing in again.
+    /// Still good for a while.
     pub fn usable(&self, now: i64) -> bool {
         self.expires_at > now + 300
     }
+
+    /// Renewed from here on: within the hour of lapsing, or lapsed.
+    pub fn due(&self, now: i64) -> bool {
+        self.expires_at < now + RENEW_AHEAD
+    }
+}
+
+const RENEW_AHEAD: i64 = 3600;
+/// Seconds before a failed renewal is tried again.
+const RETRY: i64 = 60;
+
+/// The EVE refresh token of the login a session came from, by its character.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Renewal {
+    pub char_id: i64,
+    pub refresh: String,
+}
+
+/// Keeps the session renewed while the page is open, and brings back a lapsed one on load, from
+/// the EVE login it came from: a character added with scopes when it is one, else the plain
+/// sign-in's own. Ticked every frame; the trip to EVE and the server runs in the background.
+#[derive(Clone, Default)]
+pub struct Renewer {
+    state: std::rc::Rc<std::cell::RefCell<RenewState>>,
+}
+
+#[derive(Default)]
+struct RenewState {
+    busy: bool,
+    next_try: i64,
+    done: Option<Result<Session, String>>,
+}
+
+impl Renewer {
+    /// `current` is the session the app holds, none when it holds none; a lapsed one kept in the
+    /// browser is then brought back. Answers once per renewal: the new session, or why not.
+    #[cfg(target_arch = "wasm32")]
+    pub fn tick(&self, current: Option<&Session>, repaint: impl Fn() + 'static) -> Option<Result<Session, String>> {
+        let now = spai_core::clock::utc().timestamp();
+        let mut st = self.state.borrow_mut();
+        if let Some(done) = st.done.take() {
+            return Some(done);
+        }
+        if st.busy || now < st.next_try {
+            return None;
+        }
+        let stored = crate::page::load::<Session>(SESSION_KEY);
+        let target = match (current, stored) {
+            // Another tab or app renewed it already.
+            (Some(c), Some(s)) if s.character_id == c.character_id && s.expires_at > c.expires_at && !s.due(now) => return Some(Ok(s)),
+            (Some(c), _) if c.due(now) => c.clone(),
+            (None, Some(s)) if renewable(&s) => s,
+            _ => return None,
+        };
+        st.busy = true;
+        st.next_try = now + RETRY;
+        let state = self.state.clone();
+        let origin = crate::page::origin();
+        wasm_bindgen_futures::spawn_local(async move {
+            let r = renew(&origin, &target).await;
+            let mut st = state.borrow_mut();
+            st.busy = false;
+            st.done = Some(r);
+            drop(st);
+            repaint();
+        });
+        None
+    }
+}
+
+/// Whether the browser holds an EVE login to renew `s` from.
+#[cfg(target_arch = "wasm32")]
+pub fn renewable(s: &Session) -> bool {
+    let accounts: Vec<crate::accounts::Account> = crate::page::load(ACCOUNTS_KEY).unwrap_or_default();
+    accounts.iter().any(|a| a.char_id == s.character_id && !a.refresh.is_empty()) || crate::page::load::<Renewal>(SESSION_RENEW_KEY).is_some_and(|r| r.char_id == s.character_id)
+}
+
+/// A new session for `s`'s character, kept in the browser.
+#[cfg(target_arch = "wasm32")]
+pub async fn renew(origin: &str, s: &Session) -> Result<Session, String> {
+    let now = spai_core::clock::utc().timestamp();
+    let accounts: Vec<crate::accounts::Account> = crate::page::load(ACCOUNTS_KEY).unwrap_or_default();
+    let access = match accounts.into_iter().find(|a| a.char_id == s.character_id && !a.refresh.is_empty()) {
+        Some(a) => crate::accounts::fresh_token(&a, now).await?.0,
+        None => {
+            let r = crate::page::load::<Renewal>(SESSION_RENEW_KEY).filter(|r| r.char_id == s.character_id).ok_or("signed out: sign in again")?;
+            let t = refresh(&r.refresh).await?;
+            if let Some(rt) = &t.refresh_token {
+                crate::page::save(SESSION_RENEW_KEY, &Renewal { char_id: r.char_id, refresh: rt.clone() });
+            }
+            t.access_token
+        }
+    };
+    let fresh = session(origin, &access).await?;
+    if fresh.character_id != s.character_id {
+        return Err("the renewed sign-in is for another character: sign in again".into());
+    }
+    crate::page::save(SESSION_KEY, &fresh);
+    Ok(fresh)
+}
+
+/// Keeps the plain sign-in's EVE login, so its session can be renewed without going back to EVE.
+#[cfg(target_arch = "wasm32")]
+pub fn keep_renewal(token: &TokenReply) {
+    match (token_facts(&token.access_token), &token.refresh_token) {
+        (Some(f), Some(rt)) if !rt.is_empty() => crate::page::save(SESSION_RENEW_KEY, &Renewal { char_id: f.char_id, refresh: rt.clone() }),
+        _ => {}
+    }
+}
+
+/// A new EVE token from a refresh token.
+#[cfg(target_arch = "wasm32")]
+pub async fn refresh(refresh_token: &str) -> Result<TokenReply, String> {
+    let mut req = ehttp::Request::post(TOKEN, refresh_form(refresh_token).into_bytes());
+    req.headers = ehttp::Headers::new(&[("Content-Type", "application/x-www-form-urlencoded"), ("Accept", "application/json")]);
+    let r = ehttp::fetch_async(req).await?;
+    if !r.ok {
+        return Err(format!("EVE refused to renew the login ({})", r.status));
+    }
+    serde_json::from_slice(&r.bytes).map_err(|e| e.to_string())
 }
 
 #[derive(Deserialize)]
@@ -219,6 +341,16 @@ mod tests {
         assert_eq!(serde_json::from_str::<Pending>(&json).unwrap(), p);
         let old: Pending = serde_json::from_str(r#"{"state":"a","verifier":"b"}"#).unwrap();
         assert_eq!((old.return_to, old.session), (None, false), "a sign-in started before the field reads as scopes only");
+    }
+
+    #[test]
+    fn a_session_is_renewed_within_the_hour_of_lapsing_and_after() {
+        let s = Session { token: "t".into(), expires_at: 100_000, character_id: 1, character_name: "A".into() };
+        assert!(!s.due(100_000 - RENEW_AHEAD - 1) && s.usable(100_000 - RENEW_AHEAD - 1));
+        assert!(s.due(100_000 - RENEW_AHEAD + 1) && s.usable(100_000 - RENEW_AHEAD + 1), "renewed while it still works");
+        assert!(s.due(200_000) && !s.usable(200_000), "a lapsed one too");
+        let r = Renewal { char_id: 1, refresh: "r".into() };
+        assert_eq!(serde_json::from_str::<Renewal>(&serde_json::to_string(&r).unwrap()).unwrap(), r);
     }
 
     #[test]

@@ -575,6 +575,23 @@ fn vortons_land_on_more_than_the_primary_and_breacher_pods_kill_through_resists(
 }
 
 #[test]
+fn a_breacher_pod_ticks_only_once_it_has_flown_to_its_target() {
+    let mut pod = Fit::new(ids::SHIP, "pod");
+    pod.modules.push(Module::new(ids::BREACHER_LAUNCHER, Slot::High, 0).with_charge(ids::BREACHER_POD).with_state(State::Active));
+    let mut lib = library();
+    lib.push(pod);
+    lib.push(Fit::new(ids::SHIP, "hulk"));
+    let one = |fit: &str| Fleet { size: 1, formation: Formation::Ball { radius_m: 0.0 }, slots: vec![slot(fit, CountRule::Fixed(1))], ..Fleet::default() };
+    let distance = 3000.0;
+    let r = race_between(&one("pod"), &one("hulk"), &lib, distance);
+    let d = dataset();
+    let c = crate::stats::compute(&d, &lib.iter().find(|f| f.name == "pod").unwrap().clone(), &SkillSet::all_v(), &crate::calc::Env::default());
+    let flight = distance / c.weapons.iter().find(|w| w.dot.is_some()).unwrap().missile.as_ref().unwrap().velocity;
+    let first = r.timeline.iter().find(|x| x.3 > 0.0).map(|x| x.0).unwrap_or_else(|| panic!("the pods land: flight {flight}, {:?} {:?}", r.timeline.iter().take(5).collect::<Vec<_>>(), r.events.iter().take(5).collect::<Vec<_>>()));
+    assert!(first >= flight - 1e-6, "damage at {first} s, the pod lands at {flight} s");
+}
+
+#[test]
 fn a_slot_flies_its_own_charges_and_mode_and_its_fit_keeps_its_own() {
     let d = dataset();
     let lib = library();

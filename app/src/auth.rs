@@ -36,6 +36,8 @@ pub const DEFAULT_SCOPES: &[&str] = &[
     "esi-fleets.write_fleet.v1",
     "esi-clones.read_clones.v1",
     "esi-characters.read_fatigue.v1",
+    "esi-clones.read_implants.v1",
+    "esi-universe.read_structures.v1",
 ];
 
 #[derive(Clone, Debug, Default)]
