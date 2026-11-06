@@ -618,7 +618,8 @@ pub struct SimUi {
     /// target profile. Empty is the profile alone.
     pub graph_targets: Vec<String>,
     /// Whether the fit on screen is among the graph's shooters, whichever tab that is.
-    pub graph_current: bool,
+    /// The graphs have taken their first attacker since they opened.
+    pub graph_seeded: bool,
     /// Whether the target profile is among the graph's targets.
     pub graph_ideal: bool,
     /// How the shooter and the target move, for the damage graphs' transversal.
@@ -746,7 +747,7 @@ impl Default for SimUi {
             graph_drones: true,
             graph_attackers: Vec::new(),
             graph_targets: Vec::new(),
-            graph_current: true,
+            graph_seeded: false,
             graph_ideal: true,
             graph_motion: graphs_panel::Motion::default(),
             graph_volley_efficiency: 0.85,
@@ -1754,6 +1755,9 @@ impl SimUi {
             }
         }
         self.follow_links(now_ms);
+        if !self.graphs_shown() && self.pane != Pane::Graphs {
+            self.graph_seeded = false;
+        }
         self.autosave(now_ms);
         self.computed();
         let narrow = ui.available_width() < NARROW;

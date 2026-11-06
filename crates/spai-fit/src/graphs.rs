@@ -52,6 +52,12 @@ impl GraphKind {
         matches!(self.axes().0, GraphY::EffectiveDps | GraphY::EffectiveVolley)
     }
 
+    /// Whether a target's reactive hardener can be set even or adapted here: only past its
+    /// resistances, and not over time, where it shifts on its own.
+    pub fn takes_rah_mode(self) -> bool {
+        self.is_effective() && !self.is_over_time()
+    }
+
     pub fn is_over_time(self) -> bool {
         matches!(self, GraphKind::DamageOverTime | GraphKind::EffectiveDamageOverTime)
     }
@@ -861,6 +867,39 @@ mod tests {
         let across = GraphSpec { projection: Projection { target: None, across: Some((0.0, 1.0)) }, ..GraphSpec::new(GraphKind::DamageVsTargetSignature, target) };
         let projected = projected_on(&active, &across.projection, across.projection.across, 5000.0, across.target.clone());
         assert!((projected.velocity - 600.0).abs() < 1e-3 && (projected.transversal - 600.0).abs() < 1e-3, "{projected:?}");
+    }
+
+    #[test]
+    fn only_the_effective_graphs_take_a_hardener_mode() {
+        assert!(GraphKind::EffectiveVolleyVsDistance.takes_rah_mode() && GraphKind::EffectiveDamageVsTargetSpeed.takes_rah_mode());
+        assert!(!GraphKind::VolleyVsDistance.takes_rah_mode() && !GraphKind::DamageVsDistance.takes_rah_mode());
+        assert!(!GraphKind::EffectiveDamageOverTime.takes_rah_mode(), "over time it shifts on its own");
+    }
+
+    #[test]
+    fn critical_mass_counts_the_targets_resistances_on_raw_and_effective_graphs_alike() {
+        use crate::fit::{Module, Slot, State};
+        let d = dataset();
+        let mut f = fit();
+        f.drones.clear();
+        let c = compute(&d, &f, &SkillSet::all_v(), &Env::default());
+        let mut hard = Fit::new(ids::SHIP, "target");
+        hard.modules.push(Module::new(ids::DC, Slot::Low, 0).with_state(State::Active));
+        let target = std::sync::Arc::new(compute(&d, &hard, &SkillSet::all_v(), &Env::default()));
+        let tk = &target.tank;
+        let hp = tk.shield.hp + tk.armor.hp + tk.hull.hp;
+        let profile = TargetProfile { signature: 400.0, distance: 2000.0, ..Default::default() };
+        let spec = |kind| GraphSpec { projection: Projection { target: Some(target.clone()), across: None }, ..GraphSpec::new(kind, profile.clone()) };
+        let raw = spec(GraphKind::VolleyVsDistance);
+        let (distance, t) = point_at(&c, &raw, 2000.0);
+        let volley: f64 = c.weapons.iter().filter(|w| w.alpha()).map(|w| w.volley.total() * applied_factor(w, distance, &t, 0.0, c.drones.control_range)).sum();
+        // A small share of each volley landing, so a few percent of hit points show in the count.
+        let eff = 0.02;
+        let by_raw_hp = (hp / (volley * eff)).ceil() as u32;
+        let n = critical_mass(&c, &raw, 2000.0, eff).unwrap();
+        println!("hp {hp:.0} ehp {:.0} volley {volley:.1}: by raw hp {by_raw_hp}, critical mass {n}", tk.ehp);
+        assert!(n > by_raw_hp, "through its resistances it takes more than its raw hit points: {n} vs {by_raw_hp}");
+        assert_eq!(critical_mass(&c, &spec(GraphKind::EffectiveVolleyVsDistance), 2000.0, eff), Some(n), "the same kill on either graph");
     }
 
     #[test]

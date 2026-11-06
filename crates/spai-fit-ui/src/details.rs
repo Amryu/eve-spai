@@ -172,11 +172,24 @@ impl SimUi {
 /// The tooltip with the fitted values in place of the data's, where there are any; a value the
 /// fit improved is tinted green, one it worsened red.
 pub fn type_tip_with(ui: &mut egui::Ui, dogma: &Dogma, type_id: TypeId, note: &str, fitted: Option<&std::collections::HashMap<AttrId, f64>>) {
+    /// As wide as its rows ask, up to this; a row wider still takes a wrapped line of its own.
+    const MAX_W: f32 = 480.0;
+    const COLUMN_GAP: f32 = 16.0;
     ui.set_max_width(320.0);
     let Some(t) = dogma.type_(type_id) else {
         ui.label(format!("type {type_id}"));
         return;
     };
+    let width_of = |ui: &egui::Ui, text: &str, style: egui::TextStyle| ui.painter().layout_no_wrap(text.to_owned(), style.resolve(ui.style()), egui::Color32::WHITE).size().x;
+    let (long, shown): (Vec<_>, Vec<_>) = crate::tips::lines(dogma, t, fitted).into_iter().partition(|l| l.label.is_empty() || width_of(ui, &l.label, egui::TextStyle::Body) + COLUMN_GAP + width_of(ui, &l.value, egui::TextStyle::Monospace) > MAX_W);
+    // Measured up front, so every value ends on one right edge from the first frame.
+    let label_w = shown.iter().map(|l| width_of(ui, &l.label, egui::TextStyle::Body)).fold(0.0, f32::max);
+    let value_w = shown.iter().map(|l| width_of(ui, &l.value, egui::TextStyle::Monospace)).fold(0.0, f32::max);
+    let rows_w = label_w + COLUMN_GAP + value_w;
+    if rows_w > 320.0 {
+        ui.set_max_width(rows_w);
+    }
+    ui.set_min_width(rows_w);
     ui.label(egui::RichText::new(&t.name).strong());
     let group = dogma.group(t.group).map(|g| g.name.clone()).unwrap_or_default();
     let mut line = match t.meta_level {
@@ -190,25 +203,30 @@ pub fn type_tip_with(ui: &mut egui::Ui, dogma: &Dogma, type_id: TypeId, note: &s
     if !line.is_empty() {
         ui.label(egui::RichText::new(line).weak());
     }
-    let shown = crate::tips::lines(dogma, t, fitted);
     if !shown.is_empty() {
         ui.add_space(2.0);
-        egui::Grid::new(("sim_tip", type_id)).num_columns(2).spacing([16.0, 1.0]).show(ui, |ui| {
-            for l in shown {
-                let text = egui::RichText::new(&l.value).monospace();
-                let text = match l.tone {
-                    crate::tips::Tone::Better => text.color(GOOD),
-                    crate::tips::Tone::Worse => text.color(BAD),
-                    crate::tips::Tone::Plain if l.weak => text.weak(),
-                    crate::tips::Tone::Plain => text,
-                };
-                ui.label(egui::RichText::new(&l.label).weak());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add(egui::Label::new(text).wrap());
+        let row_h = ui.text_style_height(&egui::TextStyle::Body) + 1.0;
+        let w = ui.max_rect().width().max(rows_w).min(rows_w.max(320.0));
+        for l in shown {
+            let text = egui::RichText::new(&l.value).monospace();
+            let text = match l.tone {
+                crate::tips::Tone::Better => text.color(GOOD),
+                crate::tips::Tone::Worse => text.color(BAD),
+                crate::tips::Tone::Plain if l.weak => text.weak(),
+                crate::tips::Tone::Plain => text,
+            };
+            ui.allocate_ui_with_layout(egui::vec2(w, row_h), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.set_width(w);
+                ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(&l.label).weak()).wrap_mode(egui::TextWrapMode::Extend));
                 });
-                ui.end_row();
-            }
-        });
+            });
+        }
+    }
+    for l in long {
+        let line = if l.label.is_empty() { l.value } else { format!("{}: {}", l.label, l.value) };
+        ui.add(egui::Label::new(egui::RichText::new(line).weak()).wrap());
     }
     if !note.is_empty() {
         ui.add_space(2.0);
@@ -554,7 +572,9 @@ pub fn windows(sim: &mut SimUi, ctx: &egui::Context) {
 fn table(ui: &mut egui::Ui, data: &Details) {
     let w = ui.available_width();
     let num_w = 110.0;
-    let label_w = (w - if data.fitted { 2.0 * num_w } else { num_w } - 3.0 * crate::rows::GAP).max(120.0);
+    // Room at the right for the scroll bar, which floats over the last column otherwise.
+    const SCROLL_GUTTER: f32 = 14.0;
+    let label_w = (w - if data.fitted { 2.0 * num_w } else { num_w } - 3.0 * crate::rows::GAP - SCROLL_GUTTER).max(120.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = crate::rows::GAP;
         crate::rows::head_cell(ui, label_w, tr!("Attribute"), false);

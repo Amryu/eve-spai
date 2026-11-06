@@ -104,6 +104,11 @@ fn ticks(from: f64, to: f64, want: usize) -> Vec<f64> {
 /// Where the last plot was drawn, for tests that hold its size steady.
 pub const LAST_RECT: &str = "sim_plot_rect";
 
+/// The pins of the last plot drawn, for tests.
+const LAST_PINS: &str = "sim_plot_last_pins";
+const LAST_PIN_BOXES: &str = "sim_plot_last_pin_boxes";
+const LAST_TIP: &str = "sim_plot_last_tip";
+
 /// The share of its range the last plot showed, for tests of its zoom.
 pub const LAST_SPAN: &str = "sim_plot_span";
 
@@ -340,26 +345,113 @@ impl Plot {
             }
         });
 
-        if let Some(pos) = response.hover_pos().filter(|p| inner.contains(*p)) {
-            let x = x_min + ((pos.x - inner.min.x) / inner.width()) as f64 * (x_max - x_min);
-            painter.line_segment([Pos2::new(pos.x, inner.min.y), Pos2::new(pos.x, inner.max.y)], Stroke::new(1.0, weak));
-            let mut lines: Vec<String> = reach.into_iter().collect();
-            lines.push((self.fmt_x)(x));
+        // Pinned readouts: a click leaves one, a click on it or a right click takes it off. Kept as
+        // values of x, so they hold through a zoom and read the lines as they change.
+        let pin_id = zoom_id.with("pins");
+        let mut pins: Vec<f64> = ui.ctx().data(|d| d.get_temp(pin_id)).unwrap_or_default();
+        let x_at = |px: f32| x_min + f64::from((px - inner.min.x) / inner.width()) * (x_max - x_min);
+        let lay_pins = |pins: &[f64]| -> Vec<(usize, f32, Rect, Vec<std::sync::Arc<egui::Galley>>)> {
+            const PAD: f32 = 4.0;
+            let mut placed: Vec<(usize, f32, Rect, Vec<std::sync::Arc<egui::Galley>>)> = Vec::new();
+            for (i, x) in pins.iter().enumerate().filter(|(_, x)| **x >= x_min && **x <= x_max) {
+                let line = to_screen(*x, 0.0).x;
+                let galleys: Vec<_> = self.lines_at(*x).into_iter().map(|l| painter.layout_no_wrap(l, font.clone(), text)).collect();
+                let size = Vec2::new(galleys.iter().map(|g| g.size().x).fold(0.0, f32::max), galleys.iter().map(|g| g.size().y).sum::<f32>()) + Vec2::splat(2.0 * PAD);
+                let left = if line + 6.0 + size.x <= inner.max.x { line + 6.0 } else { (line - 6.0 - size.x).max(inner.min.x) };
+                // Along the bottom, clear of the reach labels over the top; side by side pins stack up.
+                let mut at = Rect::from_min_size(Pos2::new(left, inner.max.y - 4.0 - size.y), size);
+                while let Some(under) = placed.iter().map(|p| p.2).find(|r| r.expand(2.0).intersects(at)) {
+                    at = at.translate(Vec2::new(0.0, under.min.y - 4.0 - at.max.y));
+                }
+                placed.push((i, line, at, galleys));
+            }
+            placed
+        };
+        let mut laid_pins = lay_pins(&pins);
+        let on_pin = |placed: &[(usize, f32, Rect, Vec<std::sync::Arc<egui::Galley>>)], p: Pos2| placed.iter().find(|(_, line, at, _)| at.contains(p) || (inner.contains(p) && (p.x - line).abs() < 6.0)).map(|(i, ..)| *i);
+        let clicked_at = response.interact_pointer_pos().filter(|p| inner.contains(*p));
+        if let Some(p) = clicked_at {
+            let hit = on_pin(&laid_pins, p);
+            let before = pins.len();
+            if response.secondary_clicked() {
+                if let Some(i) = hit {
+                    pins.remove(i);
+                }
+            } else if response.clicked() {
+                match hit {
+                    Some(i) => {
+                        pins.remove(i);
+                    }
+                    None => pins.push(x_at(p.x)),
+                }
+            }
+            if pins.len() != before {
+                laid_pins = lay_pins(&pins);
+            }
+        }
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(pin_id, pins.clone());
+            d.insert_temp(egui::Id::new(LAST_PINS), pins.clone());
+        });
+        let hover = response.hover_pos().filter(|p| inner.contains(*p));
+        let over_pin = hover.is_some_and(|p| on_pin(&laid_pins, p).is_some());
+        for (i, line, at, galleys) in &laid_pins {
+            let x = pins[*i];
+            clip.line_segment([Pos2::new(*line, inner.min.y), Pos2::new(*line, inner.max.y)], Stroke::new(1.5, visuals.hyperlink_color));
             for s in &self.series {
                 if let Some(y) = value_at(&s.points, x) {
-                    lines.push(format!("{}: {}", s.label, (self.fmt_y)(y)));
+                    clip.circle_filled(to_screen(x, y), 3.5, s.color);
                 }
             }
-            if let Some(more) = &self.readout {
-                lines.extend(more(x));
+            painter.rect_filled(*at, 3.0, visuals.extreme_bg_color);
+            painter.rect_stroke(*at, 3.0, Stroke::new(1.0, visuals.hyperlink_color), egui::StrokeKind::Inside);
+            let mut y = at.min.y + 4.0;
+            for g in galleys {
+                painter.galley(Pos2::new(at.min.x + 4.0, y), g.clone(), text);
+                y += g.size().y;
             }
-            // Lines as wide as they are: wrapped at the tooltip's width, a list of ships broke mid-name.
-            response.on_hover_ui_at_pointer(|ui| {
-                for l in lines {
-                    ui.add(egui::Label::new(l).wrap_mode(egui::TextWrapMode::Extend));
-                }
-            });
         }
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(LAST_PIN_BOXES), laid_pins.iter().map(|p| p.2).collect::<Vec<Rect>>()));
+
+        // Opened outright: a widget's own tooltip waits for the pointer to rest, and a graph is
+        // read while moving along it.
+        let tip = || egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), response.id.with("readout"), egui::PopupAnchor::Pointer).gap(12.0);
+        let mut shown = false;
+        if let Some(pos) = hover {
+            if over_pin {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                tip().show(|ui| ui.label(spai_ui::tr!("Click or right-click to take this pin off")));
+            } else {
+                let x = x_at(pos.x);
+                painter.line_segment([Pos2::new(pos.x, inner.min.y), Pos2::new(pos.x, inner.max.y)], Stroke::new(1.0, weak));
+                let mut lines: Vec<String> = reach.into_iter().collect();
+                lines.extend(self.lines_at(x));
+                // Lines as wide as they are: wrapped at the tooltip's width, a list of ships broke mid-name.
+                shown = tip()
+                    .show(|ui| {
+                        for l in lines {
+                            ui.add(egui::Label::new(l).wrap_mode(egui::TextWrapMode::Extend));
+                        }
+                        ui.label(egui::RichText::new(spai_ui::tr!("Click to pin this here")).weak());
+                    })
+                    .is_some();
+            }
+        }
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(LAST_TIP), shown));
+    }
+
+    /// What the readout says at a value of x: where that is, every line there, and any more.
+    pub fn lines_at(&self, x: f64) -> Vec<String> {
+        let mut lines = vec![(self.fmt_x)(x)];
+        for s in &self.series {
+            if let Some(y) = value_at(&s.points, x) {
+                lines.push(format!("{}: {}", s.label, (self.fmt_y)(y)));
+            }
+        }
+        if let Some(more) = &self.readout {
+            lines.extend(more(x));
+        }
+        lines
     }
 }
 
@@ -549,5 +641,88 @@ mod tests {
         }
         let shown = ctx.data(|d| d.get_temp::<f64>(egui::Id::new(LAST_SPAN)));
         assert_eq!(shown, Some(1.0), "zoomed back out");
+    }
+
+    /// A click pins the readout there; a click on the pin or a right click takes it off, and a
+    /// right click elsewhere leaves it. A double click, which shows the whole range, leaves none.
+    #[test]
+    fn a_click_pins_the_readout_and_a_click_or_right_click_on_it_takes_it_off() {
+        let ctx = egui::Context::default();
+        frame(&ctx, vec![]);
+        let rect = last_rect(&ctx).expect("drawn");
+        let at = Pos2::new(rect.center().x, rect.center().y);
+        let away = at + Vec2::new(-150.0, 40.0);
+        let pins = |ctx: &egui::Context| ctx.data(|d| d.get_temp::<Vec<f64>>(egui::Id::new(LAST_PINS))).unwrap_or_default();
+        let click = |ctx: &egui::Context, pos: Pos2, button: egui::PointerButton| {
+            frame(ctx, vec![egui::Event::PointerMoved(pos)]);
+            frame(ctx, vec![egui::Event::PointerButton { pos, button, pressed: true, modifiers: Default::default() }]);
+            frame(ctx, vec![egui::Event::PointerButton { pos, button, pressed: false, modifiers: Default::default() }]);
+            frame(ctx, vec![]);
+            // Past the double-click window.
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        use egui::PointerButton::{Primary, Secondary};
+        click(&ctx, at, Primary);
+        let one = pins(&ctx);
+        assert_eq!(one.len(), 1, "pinned");
+        assert!((one[0] - 50.0).abs() < 15.0, "at the value under the pointer: {one:?}");
+        click(&ctx, away, Secondary);
+        assert_eq!(pins(&ctx).len(), 1, "a right click elsewhere leaves it");
+        click(&ctx, at, Primary);
+        assert!(pins(&ctx).is_empty(), "a click on it takes it off");
+        click(&ctx, at, Primary);
+        click(&ctx, at, Secondary);
+        assert!(pins(&ctx).is_empty(), "so does a right click");
+        click(&ctx, at, Primary);
+        click(&ctx, away, Primary);
+        assert_eq!(pins(&ctx).len(), 2, "several at once");
+    }
+
+    #[test]
+    fn the_readout_lines_read_every_series_and_what_is_added() {
+        let mut p = plot();
+        p.readout = Some(Box::new(|x| vec![format!("more at {x:.0}")]));
+        assert_eq!(p.lines_at(40.0), vec!["40".to_owned(), "a: 40".to_owned(), "more at 40".to_owned()]);
+    }
+
+    /// The readout opens on the frame the pointer arrives, however fast it moves; pinned boxes
+    /// stay while it is elsewhere, along the bottom of the plot, stacking when side by side.
+    #[test]
+    fn the_readout_opens_at_once_and_pinned_boxes_stay_along_the_bottom() {
+        let ctx = egui::Context::default();
+        frame(&ctx, vec![]);
+        let rect = last_rect(&ctx).expect("drawn");
+        let at = rect.center();
+        let away = at + Vec2::new(-150.0, 40.0);
+        let tip = |ctx: &egui::Context| ctx.data(|d| d.get_temp::<bool>(egui::Id::new(LAST_TIP))).unwrap_or(false);
+        let boxes = |ctx: &egui::Context| ctx.data(|d| d.get_temp::<Vec<Rect>>(egui::Id::new(LAST_PIN_BOXES))).unwrap_or_default();
+        frame(&ctx, vec![egui::Event::PointerMoved(away)]);
+        frame(&ctx, vec![]);
+        assert!(tip(&ctx), "open with no wait");
+        frame(&ctx, vec![egui::Event::PointerMoved(away + Vec2::new(30.0, 0.0))]);
+        assert!(tip(&ctx), "and stays open while the pointer moves");
+        let click = |ctx: &egui::Context, pos: Pos2| {
+            frame(ctx, vec![egui::Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                frame(ctx, vec![egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }]);
+            }
+            frame(ctx, vec![]);
+        };
+        click(&ctx, at);
+        assert_eq!(boxes(&ctx).len(), 1);
+        assert!(!tip(&ctx), "on the pin, no readout over its box");
+        let first = boxes(&ctx)[0];
+        assert!(first.min.y > rect.center().y, "in the lower part of the plot, away from the labels over the top: {first:?}");
+        frame(&ctx, vec![egui::Event::PointerMoved(away)]);
+        frame(&ctx, vec![]);
+        assert_eq!(boxes(&ctx).len(), 1, "it stays while the pointer is elsewhere");
+        assert!(tip(&ctx));
+        click(&ctx, at + Vec2::new(12.0, 0.0));
+        let two = boxes(&ctx);
+        assert_eq!(two.len(), 2, "a second pin just past the first");
+        assert!(!two[0].expand(1.0).intersects(two[1]), "their boxes stack: {two:?}");
+        frame(&ctx, vec![egui::Event::PointerGone]);
+        frame(&ctx, vec![]);
+        assert_eq!(boxes(&ctx).len(), 2, "off the graph too");
     }
 }

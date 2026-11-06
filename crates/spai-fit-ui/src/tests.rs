@@ -1485,7 +1485,6 @@ fn the_fit_on_screen_can_be_taken_off_the_graph() {
     });
     let other = s.sessions()[0].id.clone();
     s.graph_attackers = vec![other];
-    s.graph_current = false;
     s.graph_window = true;
     s.pane = crate::Pane::Graphs;
     let ctx = egui::Context::default();
@@ -1555,9 +1554,8 @@ fn a_pinned_attacker_stays_whichever_tab_is_on_screen() {
             m.charge = Some(ids::AMMO);
         });
     }
-    // The second tab pinned while on screen, beside the fit on screen.
-    let pinned = s.sessions()[1].id.clone();
-    s.graph_attackers = vec![pinned.clone()];
+    let both: Vec<String> = s.sessions().iter().map(|x| x.id.clone()).collect();
+    s.graph_attackers = both.clone();
     let ctx = egui::Context::default();
     let lines = |s: &mut SimUi| {
         s.graph_window = true;
@@ -1570,10 +1568,10 @@ fn a_pinned_attacker_stays_whichever_tab_is_on_screen() {
         }
         n
     };
-    assert_eq!(lines(&mut s), 2, "the pinned copy and the fit on screen, though they are one tab");
+    assert_eq!(lines(&mut s), 2, "each attacker its line");
     s.activate(0);
     assert_eq!(lines(&mut s), 2);
-    assert_eq!(s.graph_attackers, vec![pinned], "switching tabs neither drops nor adds attackers");
+    assert_eq!(s.graph_attackers, both, "switching tabs neither drops nor adds attackers");
 }
 
 #[test]
@@ -2719,7 +2717,7 @@ fn the_volley_readout_counts_the_ships_to_kill_each_target_fit() {
     let spec = GraphSpec { projection: Projection { target: Some(target), across: None }, ..GraphSpec::new(GraphKind::VolleyVsDistance, Default::default()) };
     let n = spai_fit::graphs::critical_mass(&c, &spec, 1000.0, 0.85).unwrap();
     let lines = crate::graphs_panel::critical_readout(vec![("A vs B".into(), c.clone(), spec.clone())], 0.85)(1000.0);
-    assert_eq!(lines, vec!["Critical mass, 85% of volleys landing:".to_owned(), format!("A vs B: {n} volleys")]);
+    assert_eq!(lines, vec!["Critical mass:".to_owned(), format!("A vs B: {n} volleys")]);
     assert_eq!(crate::graphs_panel::critical_readout(Vec::new(), 0.85)(1000.0), vec!["Critical mass: add a fit as the target".to_owned()]);
     // Drawn against the other tab, with the efficiency and the hardener controls beside it.
     s.graph = GraphKind::VolleyVsDistance;
@@ -2815,4 +2813,72 @@ fn the_skill_check_looks_at_the_main_character_unless_another_is_picked() {
     apply(&mut s, PickTarget::Drone, ids::DRONE, 5);
     assert_eq!(s.skills_missing(), 2, "the drones' skill too, worked out again on the edit");
     assert!(s.skill_needs().iter().any(|n| n.scope == spai_fit::skills::Scope::Drones));
+}
+
+#[test]
+fn the_reactive_hardener_row_stays_inside_the_graphs_side_column() {
+    let ctx = egui::Context::default();
+    let width = crate::graphs_panel::CONTROLS_W - 12.0;
+    let mut adapted = false;
+    let _ = ctx.run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))), ..Default::default() }, |ui| {
+        ui.allocate_ui_with_layout(egui::vec2(width, 200.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.set_width(width);
+            let right = ui.max_rect().right();
+            for b in crate::graphs_panel::rah_row(ui, &mut adapted, true) {
+                assert!(b.rect.right() <= right, "{:?} past {right}", b.rect);
+            }
+        });
+    });
+}
+
+#[test]
+fn the_graph_opens_on_the_fit_on_screen_and_then_keeps_the_list_it_is_given() {
+    let mut s = sim();
+    s.new_fit(ids::SHIP, 0);
+    let first = s.session().unwrap().id.clone();
+    s.new_fit(ids::SHIP, 1);
+    let second = s.session().unwrap().id.clone();
+    s.activate(0);
+    let ctx = egui::Context::default();
+    let frame = |s: &mut SimUi| {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))), ..Default::default() };
+        let _ = ctx.run_ui(input, |ui| {
+            s.show(ui);
+            crate::graphs_panel::window(s, ui.ctx(), 0);
+        });
+    };
+    s.toggle_graphs();
+    frame(&mut s);
+    assert_eq!(s.graph_attackers, vec![first.clone()], "opened on the tab on screen");
+    s.activate(1);
+    frame(&mut s);
+    assert_eq!(s.graph_attackers, vec![first.clone()], "another tab does not change it");
+    s.graph_attackers.clear();
+    frame(&mut s);
+    assert!(s.graph_attackers.is_empty(), "taken off, it stays off");
+    s.toggle_graphs();
+    frame(&mut s);
+    s.toggle_graphs();
+    frame(&mut s);
+    assert_eq!(s.graph_attackers, vec![second], "opened again with none, it starts on the tab on screen");
+}
+
+#[test]
+fn an_items_tooltip_is_as_tall_as_its_lines() {
+    let d = dataset();
+    for id in [ids::MWD, ids::GUN, ids::AMMO, ids::DRONE] {
+        let n = crate::tips::lines(&d, d.type_(id).unwrap(), None).len() as f32;
+        let ctx = egui::Context::default();
+        let mut height = 0.0;
+        for _ in 0..4 {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 800.0))), ..Default::default() };
+            let _ = ctx.run_ui(input, |ui| {
+                let line = ui.text_style_height(&egui::TextStyle::Body);
+                let r = egui::Area::new(egui::Id::new("tip")).show(ui.ctx(), |ui| crate::details::type_tip(ui, &d, id, "")).response;
+                height = r.rect.height() / line;
+            });
+        }
+        // The name, the group, each line, a separator and the hint; a little room between rows.
+        assert!(height <= 1.45 * (n + 4.0), "type {id}: {height} lines' worth for {n} lines");
+    }
 }
