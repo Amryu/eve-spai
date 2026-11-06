@@ -1997,6 +1997,12 @@ impl SpaiApp {
                             let _s = crate::frametime::span("br: review panels");
                             self.battle_review_panels(ui.ctx());
                         }
+                        // An edit made in one of those panels (a party moved to another side)
+                        // drops the detail it was made on. The rebuilt one is drawn next frame.
+                        if self.battle_detail_cache.is_none() {
+                            ui.ctx().request_repaint();
+                            return;
+                        }
                         if self.battle_edit_mode {
                             self.battle_edit_view(ui, now);
                             return;
@@ -2006,7 +2012,7 @@ impl SpaiApp {
                         let prev_hover = self.battle_hover;
                         let condensed = self.battle_condensed;
                         let (tab, ship_filter) = (self.battle_tab, self.battle_ship_filter);
-                        let cache = self.battle_detail_cache.as_ref().unwrap();
+                        let Some(cache) = self.battle_detail_cache.as_ref() else { return };
                         // Snapshot only the type names this battle needs, so the render loop
                         // (hundreds of rows) does not hold the shared type_names lock and stall
                         // the brview worker. 670 = the default capsule pod fallback.
