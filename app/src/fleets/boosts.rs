@@ -486,6 +486,36 @@ fn file_start(name: &str) -> Option<i64> {
     ))
 }
 
+/// The channel a chat log belongs to and when its session started, from the file name alone.
+fn log_channel(name: &str) -> Option<(String, i64)> {
+    let start = file_start(name)?;
+    let channel = name.trim_end_matches(".txt").rsplitn(4, '_').nth(3)?;
+    (!channel.is_empty()).then(|| (channel.to_owned(), start))
+}
+
+/// Channels in the log folder that look like boost channels, most recently logged first.
+pub fn log_channels(dir: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    boost_channels_in(entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()))
+}
+
+fn boost_channels_in(names: impl Iterator<Item = String>) -> Vec<String> {
+    let mut latest: BTreeMap<String, (String, i64)> = BTreeMap::new();
+    for name in names {
+        let Some((channel, at)) = log_channel(&name) else { continue };
+        if !channel.to_lowercase().contains("boost") {
+            continue;
+        }
+        let e = latest.entry(channel.to_lowercase()).or_insert((channel.clone(), at));
+        if at > e.1 {
+            *e = (channel, at);
+        }
+    }
+    let mut out: Vec<(String, i64)> = latest.into_values().collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    out.into_iter().map(|(c, _)| c).collect()
+}
+
 /// How badly a doctrine wants a boost.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub enum Priority {
@@ -628,6 +658,21 @@ pub fn wanted_for(setup_id: i64, rows: &[crate::settings::FleetBoostRequirement]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boost_channels_are_found_by_log_name_newest_first() {
+        let names = [
+            "Awesomeboosts_20261101_100000_123.txt",
+            "Local_20261105_100000_123.txt",
+            "my_boost_chan_20261104_090000_123.txt",
+            "awesomeboosts_20261103_100000_456.txt",
+            "Boosts_notes.txt",
+        ];
+        assert_eq!(
+            boost_channels_in(names.iter().map(|n| n.to_string())),
+            vec!["my_boost_chan".to_owned(), "awesomeboosts".to_owned()]
+        );
+    }
 
     fn say(text: &str) -> Option<Say> {
         read(text)

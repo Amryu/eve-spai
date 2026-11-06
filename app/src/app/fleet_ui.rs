@@ -4,6 +4,8 @@ use spai_ui::i18n::Tr;
 
 use super::*;
 
+pub(crate) mod boost_check;
+
 use crate::fleets::{
     backend::Action,
     model::{FleetRow, Perm, TagItem},
@@ -612,6 +614,7 @@ impl SpaiApp {
         let mut goto: Option<Page> = None;
         let mut cmd: Option<Cmd> = None;
         let mut refresh = false;
+        let mut open_boost_check = false;
         let act = FormAct::default();
 
         egui::Panel::top("fleet_subnav").show_inside(ui, |ui| {
@@ -696,7 +699,7 @@ impl SpaiApp {
                 });
             }
             match &page {
-                Page::Fleets => fleets_page(ui, &mut st, &mut goto, &mut cmd, &mut refresh),
+                Page::Fleets => fleets_page(ui, &mut st, &mut goto, &mut cmd, &mut refresh, &mut open_boost_check),
                 Page::Tracking(_) => {
                     tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &fleet_tanks, &fleet_strict, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms, &mut boost_detail, &mut open_motd, &comms_targets, &mut chat, &mut map_at, br_view.as_ref(), &mut br_click, &mut glitch)
                 }
@@ -757,6 +760,9 @@ impl SpaiApp {
         }
         if open_boost_editor {
             self.fleet_boost_editor = true;
+        }
+        if open_boost_check {
+            self.fleet_boost_check_open();
         }
         if open_motd {
             let current = {
@@ -2110,11 +2116,19 @@ fn fleets_page(
     goto: &mut Option<Page>,
     cmd: &mut Option<Cmd>,
     refresh: &mut bool,
+    boost_check: &mut bool,
 ) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         if ui.button(trf!("{icon}  Refresh", icon = egui_phosphor::regular::ARROWS_CLOCKWISE)).clicked() {
             *refresh = true;
+        }
+        if ui
+            .button(trf!("{icon}  Boost check", icon = egui_phosphor::regular::LIGHTNING))
+            .on_hover_text(tr!("Check any boost channel against a doctrine, read from your chat logs. No fleet needed."))
+            .clicked()
+        {
+            *boost_check = true;
         }
     });
     ui.separator();
@@ -3686,6 +3700,38 @@ fn readiness_pane(
     }
     ui.add_space(6.0);
 
+    boost_coverage(
+        ui,
+        wanted,
+        coverage,
+        boosts_loading,
+        marks,
+        Some(checks::booster_line(comp, open.doctrine.as_ref())),
+        &mut |what| *detail = Some(what),
+        None,
+    );
+    ui.add_space(6.0);
+
+    for check in [checks::interdiction(comp), checks::tackle(comp)] {
+        status_line(ui, &check);
+    }
+    ui.add_space(4.0);
+}
+
+/// The boost half of the readiness pane: what the doctrine wants that nobody is on, the FC's own
+/// marks, and who holds what. `picked` outlines the row whose posts are on show.
+#[allow(clippy::too_many_arguments)]
+fn boost_coverage(
+    ui: &mut egui::Ui,
+    wanted: &[crate::fleets::boosts::Wanted],
+    coverage: &[crate::fleets::boosts::Coverage],
+    boosts_loading: bool,
+    marks: &mut crate::fleets::boosts::Forced,
+    extra: Option<String>,
+    detail: &mut dyn FnMut(String),
+    picked: Option<&str>,
+) {
+    use crate::fleets::checks;
     // The pane's own headline, short: the gaps are listed as chips under it rather than run
     // together into a sentence that wraps three lines in a sidebar.
     let long = checks::boosts(wanted, coverage);
@@ -3742,7 +3788,9 @@ fn readiness_pane(
     if let Some(what) = undo {
         marks.remove(&what);
     }
-    detail_line(ui, checks::booster_line(comp, open.doctrine.as_ref()), None);
+    if let Some(line) = extra {
+        detail_line(ui, line, None);
+    }
     if coverage.is_empty() {
         detail_line(ui, "Nobody has posted in the boost channel.".to_owned(), None);
     }
@@ -3787,16 +3835,13 @@ fn readiness_pane(
             .inner;
         // Opens the breakdown rather than toggling: the interesting question about a covered
         // boost is who is holding it and what they posted, and dropping it is one click inside.
+        if picked == Some(c.what.as_str()) {
+            ui.painter().rect_stroke(resp.rect.expand(1.0), 2.0, egui::Stroke::new(1.0, colour), egui::StrokeKind::Outside);
+        }
         if resp.on_hover_text(tr!("Who is holding this, and what they posted")).clicked() {
-            *detail = Some(c.what.clone());
+            detail(c.what.clone());
         }
     }
-    ui.add_space(6.0);
-
-    for check in [checks::interdiction(comp), checks::tackle(comp)] {
-        status_line(ui, &check);
-    }
-    ui.add_space(4.0);
 }
 
 /// One boost nobody is on. The important ones carry a filled background, since a colour alone on

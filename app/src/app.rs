@@ -943,6 +943,8 @@ pub struct SpaiApp {
     >,
     /// Which boost's breakdown is open, by charge name.
     pub(crate) fleet_boost_detail: Option<String>,
+    /// The boost check dialog, which reads any boost channel without a fleet.
+    pub(crate) fleet_boost_check: fleet_ui::boost_check::BoostCheck,
     /// `preset/op` the rescue last asked the dashboard to render, so it asks once per change.
     /// `(index, label, folder)` of the preset being renamed.
     pub(crate) fleet_preset_rename: Option<(usize, String, String)>,
@@ -1875,6 +1877,7 @@ impl SpaiApp {
             fleet_search_pending: None,
             comms_resolved: Default::default(),
             fleet_boost_detail: None,
+            fleet_boost_check: Default::default(),
             fleet_preset_rename: None,
             fleet_chat_open: true,
             fleet_chat_tab: 0,
@@ -3931,6 +3934,7 @@ impl SpaiApp {
         self.fleet_boss_detail_window(ctx);
         self.fleet_motd_window(ctx);
         self.fleet_boost_detail_window(ctx);
+        self.fleet_boost_check_window(ctx);
         self.fleet_preset_rename_window(ctx);
         self.intel_channels_window(ctx);
         self.metro_window(ctx);

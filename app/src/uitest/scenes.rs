@@ -2589,6 +2589,15 @@ fn fleet_dialog_scene(name: &'static str, size: [f32; 2], which: u8) -> Scene {
             fixtures::open_first_fleet(&a);
             a.fleet_booted = true;
             match which {
+                3 => {
+                    a.settings.fleet_boost_requirements = crate::fleets::boosts::default_rules(46, false);
+                    a.fleet_boost_check_open();
+                    let c = &mut a.fleet_boost_check;
+                    c.channel = "Awesomeboosts".to_owned();
+                    c.setup = Some(46);
+                    c.rows = fixtures::fleet_boost_coverage();
+                    c.lines = fixtures::fleet_boost_traffic();
+                }
                 2 => a.fleet_motd_edit = Some("<font size=\"13\">Welcome</font>\nComms: Comms 1\nBoost Channel: Boosts 1".to_owned()),
                 _ => {
                     {
@@ -2605,6 +2614,7 @@ fn fleet_dialog_scene(name: &'static str, size: [f32; 2], which: u8) -> Scene {
         // which lands on top of the dialog this scene is about.
         match which {
             2 => app.fleet_motd_window(ctx),
+            3 => app.fleet_boost_check_window(ctx),
             _ => app.fleet_boost_detail_window(ctx),
         }
     })
@@ -3953,6 +3963,7 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(fleet_advert_scene("fleet_advert_off", [1280.0, 1420.0], false));
     v.push(fleet_dialog_scene("fleet_motd", [600.0, 360.0], 2));
     v.push(fleet_dialog_scene("fleet_boost_detail", [760.0, 560.0], 1));
+    v.push(fleet_dialog_scene("fleet_boost_check", [760.0, 640.0], 3));
     v.push(fleet_map_scene("fleet_map", [1280.0, 800.0], false));
     v.push(fleet_map_scene("fleet_map_capsave", [1280.0, 800.0], true));
     v.push(fleet_map_scene_at("fleet_map_history", [1280.0, 800.0], false, Some(500), false, false));
@@ -10514,4 +10525,52 @@ fn uitest_sim_drone_count_is_typed_in() {
     let shown: Vec<String> = h.get_all_by_role(egui::accesskit::Role::TextInput).filter_map(|n| n.value()).collect();
     assert!(shown.iter().any(|v| v == "125"), "the field shows the whole count: {shown:?}");
     assert!(!shown.iter().any(|v| v == "7"), "{shown:?}");
+}
+
+/// Pins left by real clicks, their boxes along the bottom and the pointer's readout beside them.
+#[test]
+#[ignore = "renders PNGs: run with --ignored"]
+fn uitest_screenshots_graph_pins() {
+    let mut scene = all().into_iter().find(|s| s.name == "imperium_graph_volley_critical_mass").expect("the scene");
+    let mut h = harness::build(&mut scene, true);
+    for x in [440.0, 470.0, 760.0] {
+        harness::click_at(&h, egui::pos2(x, 300.0));
+        h.run_steps(3);
+    }
+    h.event(egui::Event::PointerMoved(egui::pos2(620.0, 240.0)));
+    h.run_steps(3);
+    harness::shot(&mut h, "imperium_graph_pins");
+}
+
+/// An item's tooltip over its row in the fit, values and all.
+#[test]
+#[ignore = "renders PNGs: run with --ignored"]
+fn uitest_screenshots_item_tips() {
+    use egui_kittest::kittest::Queryable as _;
+    for (shot, name) in [("imperium_tip_gun", "200mm AutoCannon II"), ("imperium_tip_mwd", "1MN Microwarpdrive II")] {
+        let mut scene = imperium_scene("sim_item_tip", [1100.0, 800.0], false, spai_fit_ui::Pane::Fit);
+        let mut h = harness::build(&mut scene, true);
+        h.ctx.global_style_mut(|s| s.interaction.tooltip_delay = 0.0);
+        h.run_steps(3);
+        let at = h.query_all_by_label_contains(name).map(|n| n.rect().center()).next().expect("the row");
+        h.event(egui::Event::PointerMoved(at));
+        h.run_steps(4);
+        harness::shot(&mut h, shot);
+    }
+}
+
+/// An item tooltip's values end on one right edge, the widest as well as the rest.
+#[test]
+fn uitest_sim_item_tip_values_share_a_right_edge() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut scene = imperium_scene("sim_item_tip_edges", [1100.0, 800.0], false, spai_fit_ui::Pane::Fit);
+    let mut h = harness::build(&mut scene, false);
+    h.ctx.global_style_mut(|s| s.interaction.tooltip_delay = 0.0);
+    h.run_steps(3);
+    let at = h.query_all_by_label_contains("1MN Microwarpdrive II").map(|n| n.rect().center()).next().expect("the row");
+    h.event(egui::Event::PointerMoved(at));
+    h.run_steps(5);
+    let edge = |h: &egui_kittest::Harness<'_>, text: &str| h.query_all_by_label_contains(text).map(|n| n.rect().max.x).last().unwrap_or_else(|| panic!("{text}"));
+    let (wide, widest, short) = (edge(&h, " tf · "), edge(&h, "GJ/s"), edge(&h, "500000"));
+    assert!((wide - short).abs() < 1.0 && (widest - short).abs() < 1.0, "right edges {wide}, {widest}, {short}");
 }

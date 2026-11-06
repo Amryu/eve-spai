@@ -1244,8 +1244,13 @@ pub(crate) fn fleet_boost_rules() -> Vec<crate::settings::FleetBoostRequirement>
 /// Invented boost-channel traffic, in the shapes the real channel carries: pasted charges, a
 /// mindlink, shorthand, and a pilot who dropped what they had.
 pub(crate) fn fleet_boost_coverage() -> Vec<crate::fleets::boosts::Coverage> {
-    use crate::fleets::boosts::{coverage, parse};
-    let lines: Vec<_> = [
+    crate::fleets::boosts::coverage(&fleet_boost_traffic(), 0)
+}
+
+/// The posts behind `fleet_boost_coverage`, the last few minutes before the frozen clock.
+pub(crate) fn fleet_boost_traffic() -> Vec<crate::fleets::boosts::Line> {
+    let base = crate::clock::utc().timestamp() - 400;
+    [
         ("Wren Ashbourne", "Shield Extension Charge  Shield Harmonizing Charge +ML", 100),
         ("Dagen Corrow", "Shield Harmonizing Charge  Active Shielding Charge", 140),
         ("Lys Vantor", "Evasive Maneuvers Charge  Rapid Deployment Charge ml", 180),
@@ -1255,9 +1260,8 @@ pub(crate) fn fleet_boost_coverage() -> Vec<crate::fleets::boosts::Coverage> {
         ("Ilva Renn", "-armor. got tackled", 340),
     ]
     .iter()
-    .filter_map(|(p, t, at)| parse(p, t, *at))
-    .collect();
-    coverage(&lines, 0)
+    .filter_map(|(p, t, at)| crate::fleets::boosts::parse(p, t, base + at))
+    .collect()
 }
 
 /// Boost coverage as the channel reader would produce it, with pilots behind each charge.
