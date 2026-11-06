@@ -2078,13 +2078,13 @@ impl SpaiApp {
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|| tr!("auto-detect").to_owned());
                     ui.label(tr!("EVE settings directory"))
-                        .on_hover_text(tr!("Used by Characters > Copy settings"));
+                        .on_hover_text(tr!("Where the Characters view reads and writes the game's settings"));
                     if dir_picker_row(ui, &settings_hint, &mut self.settings.eve_settings_dir) {
                         changed = true;
                         if let Ok(mut slot) = self.eve_settings_path.lock() {
                             slot.clone_from(&self.settings.eve_settings_dir);
                         }
-                        self.copy_settings.invalidate();
+                        self.chars.invalidate();
                     }
 
                     ui.separator();
