@@ -204,6 +204,7 @@ mod notes_ui;
 mod dscan_update;
 pub(crate) mod wormholes_ui;
 mod views;
+pub(crate) mod chars;
 pub(crate) mod dashboard;
 mod lookup_ui;
 mod web_glue;
@@ -358,7 +359,7 @@ use crate::store::{CharacterRow, Store};
 use crate::theme::{Rgb, Theme};
 
 pub struct SpaiApp {
-    store: Option<Store>,
+    pub(crate) store: Option<Store>,
     pub(crate) settings: Settings,
     pub(crate) view: View,
     pub(crate) intel_channels_open: bool,
@@ -384,8 +385,8 @@ pub struct SpaiApp {
     /// Which characters hold a login, by id, with the character list and time it was read for.
     /// Asking the keychain costs a round trip per character, and the battle toolbar asks each frame.
     br_authed: std::cell::RefCell<Option<(Vec<i64>, Vec<i64>, std::time::Instant)>>,
-    copy_settings: crate::copysettings::CopyState,
-    eve_clients: std::sync::Arc<std::sync::Mutex<crate::eveproc::Clients>>,
+    pub(crate) chars: chars::CharsUi,
+    pub(crate) eve_clients: std::sync::Arc<std::sync::Mutex<crate::eveproc::Clients>>,
     eve_settings_path: std::sync::Arc<std::sync::Mutex<String>>,
     pub(crate) intel_state: std::sync::Arc<std::sync::Mutex<crate::intel::IntelState>>,
     watcher_started: bool,
@@ -1491,7 +1492,7 @@ impl SpaiApp {
             sde_status,
             auth_status: std::sync::Arc::new(std::sync::Mutex::new(AuthStatus::Idle)),
             characters,
-            copy_settings: Default::default(),
+            chars: Default::default(),
             eve_clients,
             eve_settings_path,
             intel_state,

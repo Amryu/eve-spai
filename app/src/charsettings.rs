@@ -133,8 +133,8 @@ pub fn profile_dir(root: &Path, profile: &str) -> PathBuf {
     root.join(format!("settings_{profile}"))
 }
 
-/// `core_char_123.dat` -> 123. Anything with a suffix past the id (our `_spai_backup_1`, RIFT's
-/// `_rift_backup_1`) fails to parse, which is what keeps backups out of every scan.
+/// `core_char_123.dat` -> 123. Anything with a suffix past the id (`_spai_backup_1`, another
+/// tool's `_<tool>_backup_1`) fails to parse, which is what keeps backups out of every scan.
 fn parse_id(name: &str, prefix: &str) -> Option<i64> {
     let rest = name.strip_prefix(prefix)?.strip_suffix(".dat")?;
     if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
@@ -244,127 +244,6 @@ pub fn names_from_logs(logs_configured: &str, wanted: &[i64]) -> BTreeMap<i64, S
     newest.into_iter().filter_map(|(id, (_, path))| listener_of(&path).map(|n| (id, n))).collect()
 }
 
-#[derive(Clone, Debug)]
-pub struct CopyPlan {
-    pub source_char: i64,
-    pub source_profile: String,
-    pub dest_chars: Vec<i64>,
-    pub dest_profile: String,
-    pub source_account: Option<i64>,
-    /// Destination accounts to overwrite with the source account file. Empty when the source
-    /// account is unknown or no destination's account could be resolved.
-    pub dest_accounts: Vec<i64>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct CopyReport {
-    pub char_files: usize,
-    pub account_files: usize,
-    pub backups: Vec<PathBuf>,
-    pub skipped_same_file: usize,
-}
-
-/// First free `<stem>_spai_backup_N.dat`. Unbounded and never pruned, matching RIFT's scheme so a
-/// user who has both tools sees the same shape of history.
-fn next_backup(target: &Path) -> Option<PathBuf> {
-    let dir = target.parent()?;
-    let stem = target.file_stem()?.to_str()?;
-    for n in 1..10_000 {
-        let candidate = dir.join(format!("{stem}_spai_backup_{n}.dat"));
-        if !candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn replicate(
-    from: &Path,
-    targets: &[PathBuf],
-    report: &mut CopyReport,
-) -> Result<usize, String> {
-    let mut copied = 0;
-    for target in targets {
-        if target == from {
-            report.skipped_same_file += 1;
-            continue;
-        }
-        if target.exists() {
-            let backup = next_backup(target)
-                .ok_or_else(|| format!("could not pick a backup name for {}", target.display()))?;
-            std::fs::copy(target, &backup).map_err(|e| {
-                format!("backing up {} failed: {e}", target.display())
-            })?;
-            report.backups.push(backup);
-        }
-        std::fs::copy(from, target)
-            .map_err(|e| format!("writing {} failed: {e}", target.display()))?;
-        copied += 1;
-    }
-    Ok(copied)
-}
-
-/// Copies the source character's settings onto every destination. Everything is validated before
-/// the first write, so a bad plan fails without touching the destination files. Once writing
-/// starts there is no rollback, which is what the backups are for.
-pub fn copy(root: &Path, plan: &CopyPlan) -> Result<CopyReport, String> {
-    let src_dir = profile_dir(root, &plan.source_profile);
-    let dst_dir = profile_dir(root, &plan.dest_profile);
-
-    // `replicate` backs each target up and then overwrites it with a non-atomic `fs::copy`, so a
-    // half-written copy leaves the user's live EVE settings truncated with no rollback. Refuse to
-    // start rather than take that risk on a disk that is already under pressure.
-    if crate::disk::level() != crate::disk::Level::Normal {
-        return Err(
-            "not enough free disk space to copy settings safely; free some space and try again"
-                .to_owned(),
-        );
-    }
-
-    let src_char = src_dir.join(format!("core_char_{}.dat", plan.source_char));
-    if !src_char.is_file() {
-        return Err(format!(
-            "no settings file for the source character in profile \"{}\"",
-            plan.source_profile
-        ));
-    }
-    let src_account = match plan.source_account {
-        Some(id) => {
-            let p = src_dir.join(format!("core_user_{id}.dat"));
-            if !p.is_file() && !plan.dest_accounts.is_empty() {
-                return Err(format!(
-                    "no account settings file for account {id} in profile \"{}\"",
-                    plan.source_profile
-                ));
-            }
-            Some(p)
-        }
-        None => None,
-    };
-
-    std::fs::create_dir_all(&dst_dir)
-        .map_err(|e| format!("could not create {}: {e}", dst_dir.display()))?;
-
-    let mut char_targets: Vec<PathBuf> =
-        plan.dest_chars.iter().map(|id| dst_dir.join(format!("core_char_{id}.dat"))).collect();
-    char_targets.sort();
-    char_targets.dedup();
-
-    let mut account_targets: Vec<PathBuf> =
-        plan.dest_accounts.iter().map(|id| dst_dir.join(format!("core_user_{id}.dat"))).collect();
-    account_targets.sort();
-    account_targets.dedup();
-
-    let mut report = CopyReport::default();
-    report.char_files = replicate(&src_char, &char_targets, &mut report)?;
-    if let Some(src_account) = src_account {
-        if !account_targets.is_empty() {
-            report.account_files = replicate(&src_account, &account_targets, &mut report)?;
-        }
-    }
-    Ok(report)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,7 +269,7 @@ mod tests {
         std::fs::write(d.join("core_char_300.dat"), b"other-char").unwrap();
         std::fs::write(d.join("core_user_10.dat"), b"source-account").unwrap();
         std::fs::write(d.join("core_user_20.dat"), b"dest-account-old").unwrap();
-        std::fs::write(d.join("core_char_100_rift_backup_3.dat"), b"rift decoy").unwrap();
+        std::fs::write(d.join("core_char_100_other_backup_3.dat"), b"decoy").unwrap();
         std::fs::write(d.join("core_char_100_spai_backup_1.dat"), b"our decoy").unwrap();
         std::fs::write(d.join("core_public__.yaml"), b"not a settings file").unwrap();
         Tmp(dir)
@@ -434,7 +313,7 @@ mod tests {
     #[test]
     fn parse_id_rejects_backups() {
         assert_eq!(parse_id("core_char_123.dat", "core_char_"), Some(123));
-        assert_eq!(parse_id("core_char_123_rift_backup_1.dat", "core_char_"), None);
+        assert_eq!(parse_id("core_char_123_other_backup_1.dat", "core_char_"), None);
         assert_eq!(parse_id("core_char_123_spai_backup_9.dat", "core_char_"), None);
         assert_eq!(parse_id("core_user__.dat", "core_user_"), None);
         assert_eq!(parse_id("core_char_.dat", "core_char_"), None);
@@ -452,98 +331,6 @@ mod tests {
     fn profiles_skip_backup_dirs() {
         let t = tree("profiles");
         assert_eq!(profiles(&t.0), vec!["Alt".to_owned(), "Default".to_owned()]);
-    }
-
-    #[test]
-    fn copy_writes_backup_and_replaces() {
-        let t = tree("copy");
-        let plan = CopyPlan {
-            source_char: 100,
-            source_profile: "Default".to_owned(),
-            dest_chars: vec![200],
-            dest_profile: "Default".to_owned(),
-            source_account: Some(10),
-            dest_accounts: vec![20],
-        };
-        let report = copy(&t.0, &plan).unwrap();
-        assert_eq!(report.char_files, 1);
-        assert_eq!(report.account_files, 1);
-        let d = t.0.join("settings_Default");
-        assert_eq!(std::fs::read(d.join("core_char_200.dat")).unwrap(), b"source-char");
-        assert_eq!(std::fs::read(d.join("core_user_20.dat")).unwrap(), b"source-account");
-        // _spai_backup_1 for char 200 is free, char 100's decoy does not shift it.
-        assert_eq!(
-            std::fs::read(d.join("core_char_200_spai_backup_1.dat")).unwrap(),
-            b"dest-char-old"
-        );
-        assert_eq!(
-            std::fs::read(d.join("core_user_20_spai_backup_1.dat")).unwrap(),
-            b"dest-account-old"
-        );
-        assert_eq!(std::fs::read(d.join("core_char_300.dat")).unwrap(), b"other-char");
-    }
-
-    #[test]
-    fn backup_index_skips_taken_slots() {
-        let t = tree("backupidx");
-        let plan = CopyPlan {
-            source_char: 200,
-            source_profile: "Default".to_owned(),
-            dest_chars: vec![100],
-            dest_profile: "Default".to_owned(),
-            source_account: None,
-            dest_accounts: vec![],
-        };
-        copy(&t.0, &plan).unwrap();
-        let d = t.0.join("settings_Default");
-        // _spai_backup_1 was already on disk, so the new backup lands at 2.
-        assert_eq!(std::fs::read(d.join("core_char_100_spai_backup_1.dat")).unwrap(), b"our decoy");
-        assert_eq!(
-            std::fs::read(d.join("core_char_100_spai_backup_2.dat")).unwrap(),
-            b"source-char"
-        );
-    }
-
-    #[test]
-    fn copy_skips_self_and_creates_target_profile() {
-        let t = tree("selfskip");
-        let plan = CopyPlan {
-            source_char: 100,
-            source_profile: "Default".to_owned(),
-            dest_chars: vec![100, 200],
-            dest_profile: "Fresh".to_owned(),
-            source_account: None,
-            dest_accounts: vec![],
-        };
-        let report = copy(&t.0, &plan).unwrap();
-        // Different profile, so copying onto the source id is a real, distinct target.
-        assert_eq!(report.char_files, 2);
-        assert_eq!(report.skipped_same_file, 0);
-        let fresh = t.0.join("settings_Fresh");
-        assert_eq!(std::fs::read(fresh.join("core_char_100.dat")).unwrap(), b"source-char");
-        assert_eq!(std::fs::read(fresh.join("core_char_200.dat")).unwrap(), b"source-char");
-
-        let same = CopyPlan { dest_profile: "Default".to_owned(), ..plan };
-        let report = copy(&t.0, &same).unwrap();
-        assert_eq!(report.skipped_same_file, 1);
-        assert_eq!(report.char_files, 1);
-    }
-
-    #[test]
-    fn missing_source_aborts_before_writing() {
-        let t = tree("nosource");
-        let plan = CopyPlan {
-            source_char: 999,
-            source_profile: "Default".to_owned(),
-            dest_chars: vec![200],
-            dest_profile: "Default".to_owned(),
-            source_account: None,
-            dest_accounts: vec![],
-        };
-        assert!(copy(&t.0, &plan).is_err());
-        let d = t.0.join("settings_Default");
-        assert_eq!(std::fs::read(d.join("core_char_200.dat")).unwrap(), b"dest-char-old");
-        assert!(!d.join("core_char_200_spai_backup_1.dat").exists());
     }
 
     #[test]

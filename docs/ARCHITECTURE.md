@@ -74,7 +74,7 @@ Everything lives under the profile directory (`store::data_dir`), which is owner
 
 `app.rs` holds `SpaiApp`, its construction and the frame loop. The rest of the UI is split into
 `impl SpaiApp` blocks and free functions under `app/`, one area each: the intel card (`intel_card.rs`),
-views (`views.rs`), the map (`map_ui.rs`, `map_panels.rs`, `map_route.rs`, `travel_ui.rs`), jabber
+views (`views.rs`), characters and EVE settings (`chars/`), the map (`map_ui.rs`, `map_panels.rs`, `map_route.rs`, `travel_ui.rs`), jabber
 (`jabber_ui.rs`), battles (`battles_ui.rs`), settings and configuration windows (`settings_ui.rs`),
 information windows (`info_windows.rs`), notes and tags (`notes_ui.rs`, `note_widgets.rs`), the
 alert and ping windows (`alert_window.rs`), and so on. Dialogs are separate native viewports.
@@ -108,6 +108,30 @@ up in `docs/FITTING_MECHANICS.md`, each rule with the test that pins it. Fits an
 desktop store and the browser's local storage, synced by revision to the server for a signed-in
 character; doctrine presets come from the server, the Imperium's own and the enemy's only for
 coalition members, published by the characters named in `SIM_ADMIN_CHAR_IDS`.
+
+## EVE's own settings
+
+The Characters view shows and edits the files the game keeps its settings in, one per character
+and one per account (`core_char_*.dat`, `core_user_*.dat`). `evesettings/` holds all of it and has
+no egui in it:
+
+- `marshal.rs` reads and writes the object stream the files are stored in. A file that is not
+  edited encodes back to the same bytes, and an edit replaces whole nodes, so the rest of the
+  file stays as the game wrote it.
+- `layout.rs`, `neocom.rs`, `chat.rs`, `watchlist.rs` (character file) and `probes.rs`,
+  `overview.rs` (account file) each read one part into plain structs and write it back.
+- `copy.rs` is the only place that writes a settings file: a save, a copy onto other characters
+  (whole files or chosen parts) and a restore all go through `commit`, which backs up what is
+  about to be replaced and then swaps each file in atomically.
+- `backup.rs` keeps the backups under the profile directory (`settings-backups/`), named ones for
+  good and the newest forty automatic ones.
+
+`app/chars/` is the view: the character list, one file per tab, the dialogs. It refuses to write
+while a game client runs, because the client writes its own copy of the files again on exit.
+
+`evesettings::marshal::tests::real_files_round_trip_byte_for_byte` and
+`evesettings::real_files::real_files_survive_model_edits` are run by hand against a real settings
+directory (`EVE_SETTINGS_SAMPLE_DIR`); neither writes to it.
 
 ## Battle reports
 

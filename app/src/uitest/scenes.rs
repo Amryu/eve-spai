@@ -4022,7 +4022,7 @@ pub(crate) fn all() -> Vec<Scene> {
     // With Rescue Mode on, delve911's remove button is disabled while every other room
     // keeps its own. Only meaningful in a build that has the feature.
     v.push(jabber_sidebar_scene_cfg("jabber_sidebar_rescue_pinned", [900.0, 560.0], true, true));
-    v.push(characters_rows_scene("view_characters_rows", [1280.0, 800.0]));
+    v.extend(chars_scenes());
     v.push(alert_rules_scene("view_alert_rules", [1280.0, 800.0], None));
     // The rule panel's 180px drag minimum, the least room a rule name ever gets.
     v.push(alert_rules_scene("view_alert_rules_narrow", [1280.0, 800.0], Some(180.0)));
@@ -4169,7 +4169,9 @@ fn uitest_census() {
 #[test]
 fn uitest_layout() {
     let mut failures = Vec::new();
-    for mut scene in all() {
+    // `SPAI_SHOT_ONLY=<part of a name>` narrows this as it narrows the screenshots.
+    let only = std::env::var("SPAI_SHOT_ONLY").unwrap_or_default();
+    for mut scene in all().into_iter().filter(|s| s.name.contains(only.as_str())) {
         let size = scene.size;
         let name = scene.name;
         // The checks compare widget rects in points with the size in points; a sharper render
@@ -7399,35 +7401,175 @@ fn uitest_alert_window_pin_survives_the_countdown() {
     );
 }
 
-/// The characters list with two rows, which is where `Remove` and `Re-auth` sit. Headless runs no
-/// SSO, so the rows are seeded rather than logged in; the second is missing scopes and has an
-/// expired token, which is the branch that draws `Re-auth`.
-fn characters_rows_scene(name: &'static str, size: [f32; 2]) -> Scene {
+type SharedApp = std::rc::Rc<std::cell::RefCell<Option<crate::app::SpaiApp>>>;
+
+/// An app on the Characters view over a made-up EVE install: seven characters on three accounts,
+/// one signed in without a settings file, one with a settings file and no login, two backups.
+fn chars_app(ctx: &egui::Context, tag: &str) -> crate::app::SpaiApp {
+    use crate::evesettings::{backup, fixture};
+    let mut a = crate::app::SpaiApp::build(ctx, true);
+    let base = crate::store::data_dir().expect("data dir").join(format!("eve-fixture-{tag}"));
+    let root = fixture::write_tree(&base.join("eve"));
+    a.settings.eve_settings_dir = root.join("c_fixture_tq_tranquility").display().to_string();
+    a.view = View::Characters;
+    let all = crate::auth::DEFAULT_SCOPES.join(" ");
+    a.characters = fixture::CHARS
+        .iter()
+        .filter(|c| c.0 != 90_000_007)
+        .map(|(id, name, _)| crate::store::CharacterRow {
+            id: *id,
+            name: (*name).to_owned(),
+            // The second one's login has lapsed and the fourth is two scopes short.
+            expires_at: fixtures::now() + if *id == 90_000_002 { -60 } else { 1_200 },
+            scopes: match id {
+                90_000_002 => crate::auth::DEFAULT_SCOPES[0].to_owned(),
+                90_000_004 => crate::auth::DEFAULT_SCOPES[2..].join(" "),
+                _ => all.clone(),
+            },
+        })
+        .collect();
+    if let Some(store) = &a.store {
+        for (id, name, account) in fixture::CHARS {
+            match account {
+                Some(acct) => store.set_char_account(*id, *acct, crate::store::AssocSource::Manual),
+                None => store.clear_char_account(*id),
+            }
+            store.set_char_name(*id, name);
+        }
+        for (id, name) in fixture::WATCHED {
+            store.set_char_name(*id, name);
+        }
+    }
+    *a.eve_clients.lock().unwrap() = Some(Vec::new());
+
+    let backups = base.join("backups");
+    let _ = std::fs::remove_dir_all(&backups);
+    let dir = root.join("c_fixture_tq_tranquility").join("settings_Default");
+    let file = |kind: backup::Kind, id: i64| (kind, id, dir.join(kind.file_name(id)));
+    let named = backup::Meta { name: "PvP layout".into(), character_id: Some(90_000_001), character_name: "Vexa Tamarind".into(), ..Default::default() };
+    backup::create(&backups, named, &[file(backup::Kind::Char, 90_000_001), file(backup::Kind::Account, 1001)]).expect("backup");
+    let auto = backup::Meta { automatic: true, reason: "Before a copy from Scout Alt".into(), ..Default::default() };
+    backup::create(&backups, auto, &[file(backup::Kind::Char, 90_000_001), file(backup::Kind::Char, 90_000_003)]).expect("backup");
+    a.chars.backups_at = Some(backups);
+    a.chars.selected = crate::app::chars::Pick::Char(90_000_001);
+    a
+}
+
+/// The Characters view. `each` runs after every frame, so it can also touch the settings the view
+/// loaded on the first one; it has to be safe to repeat.
+fn chars_scene_shared(name: &'static str, size: [f32; 2], each: impl Fn(&mut crate::app::SpaiApp) + 'static) -> (Scene, SharedApp) {
     harness::scratch_profile();
-    let mut app: Option<crate::app::SpaiApp> = None;
-    Scene::ui(name, size, move |ui| {
-        let app = app.get_or_insert_with(|| {
-            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
-            a.view = View::Characters;
-            a.characters = vec![
-                crate::store::CharacterRow {
-                    id: 90_000_001,
-                    name: "Amryu".to_owned(),
-                    expires_at: fixtures::now() + 1_200,
-                    scopes: crate::auth::DEFAULT_SCOPES.join(" "),
-                },
-                crate::store::CharacterRow {
-                    id: 90_000_002,
-                    name: "Scout Alt".to_owned(),
-                    expires_at: fixtures::now() - 60,
-                    scopes: crate::auth::DEFAULT_SCOPES[0].to_owned(),
-                },
-            ];
+    let app: SharedApp = Default::default();
+    let held = app.clone();
+    let scene = Scene::ui(name, size, move |ui| {
+        let mut slot = held.borrow_mut();
+        let app = slot.get_or_insert_with(|| {
+            let mut a = chars_app(ui.ctx(), name);
+            each(&mut a);
             a
         });
+        app.apply_language();
         app.root_chrome(ui);
         app.root_central(ui, None);
+        each(app);
+    });
+    (scene, app)
+}
+
+fn chars_scene(name: &'static str, size: [f32; 2], each: impl Fn(&mut crate::app::SpaiApp) + 'static) -> Scene {
+    chars_scene_shared(name, size, each).0
+}
+
+/// One dialog of the Characters view, with nothing behind it.
+fn chars_dialog_scene(name: &'static str, size: [f32; 2], open: &'static str) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ctx(name, size, move |ctx| {
+        let app = app.get_or_insert_with(|| {
+            harness::render_dialogs_on_the_root(ctx);
+            chars_app(ctx, name)
+        });
+        app.chars_dialogs_only(ctx, open);
     })
+}
+
+fn chars_scenes() -> Vec<Scene> {
+    use crate::app::chars::{Pick, Tab};
+    use crate::evesettings::layout::Mode;
+    let tab = |t: Tab| move |a: &mut crate::app::SpaiApp| a.chars.tab = t;
+    let wide = [1280.0, 800.0];
+    let narrow = [720.0, 800.0];
+    vec![
+        chars_scene("chars_windows", wide, tab(Tab::Windows)),
+        chars_scene("chars_windows_narrow", narrow, tab(Tab::Windows)),
+        chars_scene("chars_windows_station", wide, |a| {
+            a.chars.tab = Tab::Windows;
+            a.chars.layout_ui.filter.mode = Mode::Station;
+            a.chars.layout_ui.selected = Some("lobbyWnd".into());
+        }),
+        // Unsaved edits with a client running: the save bar and the status line both speak.
+        chars_scene("chars_windows_unsaved", wide, |a| {
+            a.chars.tab = Tab::Windows;
+            a.chars.layout_ui.filter.minimized = true;
+            *a.eve_clients.lock().unwrap() =
+                Some(vec![crate::eveproc::EveClient { pid: 4242, character_id: None, account_id: None, profile: None }]);
+            if let Some(s) = &mut a.chars.session {
+                s.layout.now.hud_offset = Some(-260);
+                s.targets.now = Some([0.5, 0.05]);
+            }
+        }),
+        chars_scene("chars_sidebar", wide, tab(Tab::Sidebar)),
+        chars_scene("chars_sidebar_narrow", narrow, tab(Tab::Sidebar)),
+        chars_scene("chars_channels", wide, tab(Tab::Channels)),
+        chars_scene("chars_channels_narrow", narrow, tab(Tab::Channels)),
+        chars_scene("chars_watch", wide, tab(Tab::Watch)),
+        chars_scene("chars_watch_narrow", narrow, tab(Tab::Watch)),
+        chars_scene("chars_probes", [1440.0, 900.0], tab(Tab::Probes)),
+        chars_scene("chars_probes_perch", [1440.0, 900.0], |a| {
+            a.chars.tab = Tab::Probes;
+            a.chars.probes_ui.selected = Some(1);
+            a.chars.probes_ui.probe = Some(7);
+        }),
+        chars_scene("chars_probes_narrow", narrow, |a| {
+            a.chars.tab = Tab::Probes;
+            a.chars.probes_ui.selected = Some(1);
+        }),
+        chars_scene("chars_overview", wide, tab(Tab::Overview)),
+        chars_scene("chars_overview_narrow", narrow, tab(Tab::Overview)),
+        chars_scene("chars_backups", wide, tab(Tab::Backups)),
+        chars_scene("chars_backups_narrow", narrow, tab(Tab::Backups)),
+        chars_scene("chars_scopes", wide, |a| {
+            a.chars.tab = Tab::Scopes;
+            a.chars.selected = Pick::Char(90_000_004);
+        }),
+        chars_scene("chars_scopes_all", wide, |a| {
+            a.chars.tab = Tab::Scopes;
+            a.chars.scopes_all = true;
+        }),
+        chars_scene("chars_scopes_all_narrow", narrow, |a| {
+            a.chars.tab = Tab::Scopes;
+            a.chars.scopes_all = true;
+        }),
+        // Signed in, never logged in to the game here: no settings file to show.
+        chars_scene("chars_no_file", wide, |a| a.chars.selected = Pick::Char(90_000_006)),
+        // A settings file and no login.
+        chars_scene("chars_not_signed_in", wide, |a| {
+            a.chars.selected = Pick::Char(90_000_007);
+            a.chars.tab = Tab::Scopes;
+        }),
+        chars_scene("chars_long_name_narrow", narrow, |a| a.chars.selected = Pick::Char(90_000_003)),
+        chars_scene("chars_backup_shown", wide, |a| {
+            if let Some(b) = a.chars.backups.iter().find(|b| !b.automatic) {
+                a.chars.selected = Pick::Backup(b.id.clone());
+            }
+        }),
+        chars_dialog_scene("chars_dialog_copy", [620.0, 540.0], "copy"),
+        chars_dialog_scene("chars_dialog_copy_min", [380.0, 420.0], "copy"),
+        chars_dialog_scene("chars_dialog_restore", [560.0, 420.0], "restore"),
+        chars_dialog_scene("chars_dialog_account", [560.0, 480.0], "account"),
+        chars_dialog_scene("chars_dialog_backup", [560.0, 320.0], "backup"),
+        chars_dialog_scene("chars_dialog_remove", [560.0, 320.0], "remove"),
+    ]
 }
 
 /// The alert rules editor with three rules, which is the only place the reorder arrows and the
@@ -7541,27 +7683,270 @@ fn buttons_labelled(
     button_rects(harness).into_iter().filter(|(l, _)| l == label).collect()
 }
 
-/// `Remove` and `Re-auth` carry text labels and sit beside a full-height checkbox, so a
-/// `small_button` would make them the shortest targets in the view at 17px against its 27px norm.
-#[test]
-fn uitest_character_row_buttons_match_the_view() {
-    let mut scene = characters_rows_scene("character_button_probe", [1280.0, 800.0]);
-    let harness = harness::build(&mut scene, false);
-    let add = buttons_labelled(&harness, "Add character (EVE SSO)")
-        .first()
-        .expect("no Add character button")
-        .1;
-    let mut rows = buttons_labelled(&harness, "Remove");
-    rows.extend(buttons_labelled(&harness, "Re-auth"));
-    assert_eq!(rows.len(), 3, "expected two Remove and one Re-auth: {rows:?}");
-    for (label, r) in rows {
-        assert!(
-            (r.height() - add.height()).abs() < 1.0,
-            "{label} is {:.1}px tall against {:.1}px for Add character",
-            r.height(),
-            add.height()
-        );
+fn node_rect(harness: &egui_kittest::Harness<'_>, label: &str) -> egui::Rect {
+    use egui_kittest::kittest::NodeT as _;
+    let node = harness.root().children_recursive().find(|n| n.accesskit_node().label().as_deref() == Some(label));
+    let b = node.unwrap_or_else(|| panic!("no node labelled {label}")).accesskit_node().bounding_box().expect("bounds");
+    egui::Rect { min: egui::pos2(b.x0 as f32, b.y0 as f32), max: egui::pos2(b.x1 as f32, b.y1 as f32) }
+}
+
+fn drag(harness: &mut egui_kittest::Harness<'_>, from: egui::Pos2, to: egui::Pos2) {
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::default() };
+    harness.event(egui::Event::PointerMoved(from));
+    harness.step();
+    harness.event(button(from, true));
+    harness.step();
+    for i in 1..=4 {
+        harness.event(egui::Event::PointerMoved(from + (to - from) * (i as f32 / 4.0)));
+        harness.step();
     }
+    harness.event(button(to, false));
+    harness.step();
+}
+
+/// The whole way round: drag a window on the Windows tab, save, and the game's file on disk has
+/// the new place, with what it held before in a backup.
+#[test]
+fn uitest_a_dragged_window_is_saved_to_the_settings_file() {
+    use egui_kittest::kittest::Queryable as _;
+    use crate::app::chars::Tab;
+    use crate::evesettings::{backup, layout, SettingsFile};
+    let (mut scene, app) = chars_scene_shared("chars_drag_probe", [1280.0, 800.0], |a| a.chars.tab = Tab::Windows);
+    let mut harness = harness::build(&mut scene, false);
+    let canvas = node_rect(&harness, "Window layout");
+    let k = canvas.width() / 1920.0;
+    // The drones window sits at 1240, 300 and is 260 by 180; nothing is near where it is dropped.
+    let grab = canvas.min + egui::vec2(1370.0, 390.0) * k;
+    drag(&mut harness, grab, grab + egui::vec2(-200.0, 100.0) * k);
+
+    let (path, backups, before) = {
+        let slot = app.borrow();
+        let a = slot.as_ref().unwrap();
+        let s = a.chars.session.as_ref().expect("session");
+        let [x, y, w, h] = s.layout.now.wins["droneview"].rect.unwrap();
+        assert!((x - 1040).abs() <= 3 && (y - 400).abs() <= 3, "dropped at {x}, {y}");
+        assert_eq!((w, h), (260, 180));
+        assert!(s.dirty());
+        let dir = a.chars.profile_dir().unwrap();
+        let backups = a.chars.backups_at.clone().unwrap();
+        (dir.join("core_char_90000001.dat"), backups.clone(), backup::list(&backups).len())
+    };
+    let on_disk = |path: &std::path::Path| layout::Layout::read(&SettingsFile::read(path).unwrap()).wins["droneview"].rect.unwrap();
+    assert_eq!(on_disk(&path), [1240, 300, 260, 180], "nothing is written before Save");
+
+    harness.get_by_label_contains("Save").click();
+    harness.run_steps(3);
+    let [x, y, w, h] = on_disk(&path);
+    assert!((x - 1040).abs() <= 3 && (y - 400).abs() <= 3 && (w, h) == (260, 180), "saved as {x}, {y}, {w}, {h}");
+    let saved = backup::list(&backups);
+    assert_eq!(saved.len(), before + 1);
+    let kept = backup::file_path(&backups, &saved[0], backup::Kind::Char, 90_000_001);
+    assert_eq!(on_disk(&kept), [1240, 300, 260, 180], "the backup holds the layout from before");
+    let slot = app.borrow();
+    let a = slot.as_ref().unwrap();
+    assert!(a.chars.session.as_ref().is_some_and(|s| !s.dirty()), "the saved file is loaded again, clean");
+    assert!(a.chars.notice.as_ref().is_some_and(|(_, failed)| !failed));
+}
+
+/// An edge drag resizes and snaps to the neighbour, and Save stays off while a client runs.
+#[test]
+fn uitest_resizing_snaps_and_a_running_client_blocks_saving() {
+    use egui_kittest::kittest::Queryable as _;
+    use crate::app::chars::Tab;
+    use egui_kittest::kittest::NodeT as _;
+    let (mut scene, app) = chars_scene_shared("chars_resize_probe", [1280.0, 800.0], |a| a.chars.tab = Tab::Windows);
+    let mut harness = harness::build(&mut scene, false);
+    let canvas = node_rect(&harness, "Window layout");
+    let k = canvas.width() / 1920.0;
+    // The fleet window's top edge (48, 560, 300 by 220), pulled up to within reach of nothing:
+    // 150 px up lands at 410.
+    let edge = canvas.min + egui::vec2(200.0, 561.0) * k;
+    drag(&mut harness, edge, edge + egui::vec2(0.0, -150.0) * k);
+    {
+        let slot = app.borrow();
+        let s = slot.as_ref().unwrap().chars.session.as_ref().unwrap();
+        let [x, y, w, h] = s.layout.now.wins["fleetwindow"].rect.unwrap();
+        assert_eq!((x, w), (48, 300), "only the top edge moved");
+        assert!((y - 410).abs() <= 4 && y + h == 780, "top at {y}, bottom at {}", y + h);
+    }
+    // The watch list's right edge (348..528) dragged to 10 px short of the drones window's left
+    // edge at 1240 snaps onto it.
+    let edge = canvas.min + egui::vec2(527.0, 670.0) * k;
+    drag(&mut harness, edge, edge + egui::vec2(1230.0 - 528.0, 0.0) * k);
+    {
+        let slot = app.borrow();
+        let s = slot.as_ref().unwrap().chars.session.as_ref().unwrap();
+        let [x, _, w, _] = s.layout.now.wins["watchlistpanel"].rect.unwrap();
+        assert_eq!(x + w, 1240, "snapped to the neighbour's edge");
+    }
+    *app.borrow().as_ref().unwrap().eve_clients.lock().unwrap() =
+        Some(vec![crate::eveproc::EveClient { pid: 1, character_id: None, account_id: None, profile: None }]);
+    harness.run_steps(2);
+    let save = harness.get_by_label_contains("Save");
+    assert!(save.accesskit_node().is_disabled(), "Save must be off while EVE runs");
+}
+
+/// Clicking a character in the list shows it, and the tab row switches what is under it.
+#[test]
+fn uitest_the_character_list_and_tabs_switch_the_main_area() {
+    use egui_kittest::kittest::Queryable as _;
+    use crate::app::chars::{Pick, Tab};
+    let (mut scene, app) = chars_scene_shared("chars_select_probe", [1280.0, 800.0], |_| {});
+    let mut harness = harness::build(&mut scene, false);
+    harness.get_by_label("Cyno Nine").click();
+    harness.run_steps(3);
+    assert_eq!(app.borrow().as_ref().unwrap().chars.selected, Pick::Char(90_000_004));
+    harness.get_by_label_contains("Scopes").click();
+    harness.run_steps(3);
+    assert_eq!(app.borrow().as_ref().unwrap().chars.tab, Tab::Scopes);
+    // Two scopes short in the fixture.
+    let n = crate::auth::DEFAULT_SCOPES.len();
+    assert!(harness.query_by_label(&format!("{} of {n} granted", n - 2)).is_some());
+    harness.get_by_label("PvP layout").click();
+    harness.run_steps(3);
+    let slot = app.borrow();
+    let a = slot.as_ref().unwrap();
+    assert!(matches!(a.chars.selected, Pick::Backup(_)));
+    assert!(a.chars.session.as_ref().is_some_and(|s| s.read_only), "a backup is shown read-only");
+    assert_eq!(a.chars.tab, Tab::Windows, "a backup has no Scopes tab to stay on");
+}
+
+/// Leaving unsaved edits asks first, and keeping them keeps the selection.
+#[test]
+fn uitest_unsaved_edits_are_asked_about_before_switching_character() {
+    use egui_kittest::kittest::Queryable as _;
+    use crate::app::chars::{Pick, Tab};
+    let (mut scene, app) = chars_scene_shared("chars_discard_probe", [1280.0, 800.0], |a| a.chars.tab = Tab::Windows);
+    let mut harness = harness::build(&mut scene, false);
+    app.borrow_mut().as_mut().unwrap().chars.session.as_mut().unwrap().layout.now.hud_offset = Some(-300);
+    harness.run_steps(2);
+    harness.get_by_label("Scout Alt").click();
+    harness.run_steps(3);
+    assert_eq!(app.borrow().as_ref().unwrap().chars.selected, Pick::Char(90_000_001), "still on the edited character");
+    harness.get_by_label("Keep editing").click();
+    harness.run_steps(3);
+    assert!(app.borrow().as_ref().unwrap().chars.session.as_ref().unwrap().dirty());
+    harness.get_by_label("Scout Alt").click();
+    harness.run_steps(3);
+    harness.get_by_label("Drop them").click();
+    harness.run_steps(3);
+    let slot = app.borrow();
+    let a = slot.as_ref().unwrap();
+    assert_eq!(a.chars.selected, Pick::Char(90_000_002));
+    assert!(!a.chars.session.as_ref().unwrap().dirty());
+}
+
+/// Clicks the lowest button whose label ends with `label`: a dialog's own button, when the view
+/// behind it has one of the same name further up.
+fn click_lowest(harness: &egui_kittest::Harness<'_>, label: &str) {
+    let hit = button_rects(harness).into_iter().filter(|(l, _)| l.ends_with(label)).max_by(|a, b| a.1.top().total_cmp(&b.1.top()));
+    let (_, rect) = hit.unwrap_or_else(|| panic!("no button ending in {label}"));
+    harness::click_at(harness, rect.center());
+}
+
+/// Back up, change the settings, restore: the file is as it was when backed up, and every change
+/// along the way left its own automatic backup. Cancel closes a dialog without doing anything.
+#[test]
+fn uitest_a_named_backup_restores_what_it_held() {
+    use crate::evesettings::{backup, layout, SettingsFile};
+    use egui_kittest::kittest::Queryable as _;
+    let (mut scene, app) = chars_scene_shared("chars_backup_probe", [1280.0, 800.0], |_| {});
+    let mut harness = harness::build(&mut scene, false);
+    let ctx = harness.ctx.clone();
+    let (path, backups) = {
+        let slot = app.borrow();
+        let a = slot.as_ref().unwrap();
+        (a.chars.profile_dir().unwrap().join("core_char_90000001.dat"), a.chars.backups_at.clone().unwrap())
+    };
+    let offset = |p: &std::path::Path| layout::Layout::read(&SettingsFile::read(p).unwrap()).hud_offset;
+    let count = || backup::list(&backups).len();
+    let before = count();
+
+    app.borrow_mut().as_mut().unwrap().chars_open(&ctx, "backup");
+    harness.run_steps(2);
+    harness.get_by_label("Cancel").click();
+    harness.run_steps(2);
+    assert!(!app.borrow().as_ref().unwrap().chars_dialog_is_open(), "Cancel closes the dialog");
+    assert_eq!(count(), before, "and makes no backup");
+
+    app.borrow_mut().as_mut().unwrap().chars_open(&ctx, "backup");
+    harness.run_steps(2);
+    click_lowest(&harness, "Back up");
+    harness.run_steps(3);
+    let all = backup::list(&backups);
+    assert_eq!(all.len(), before + 1);
+    let named = all.iter().find(|b| b.name.starts_with("Vexa Tamarind")).expect("a backup named after the character");
+    assert!(!named.automatic && named.has(backup::Kind::Char, 90_000_001) && named.has(backup::Kind::Account, 1001));
+    let named = named.id.clone();
+
+    app.borrow_mut().as_mut().unwrap().chars.session.as_mut().unwrap().layout.now.hud_offset = Some(-300);
+    harness.run_steps(2);
+    harness.get_by_label_contains("Save").click();
+    harness.run_steps(3);
+    assert_eq!(offset(&path), Some(-300));
+    assert_eq!(count(), before + 2, "saving kept an automatic backup");
+
+    {
+        let mut slot = app.borrow_mut();
+        let a = slot.as_mut().unwrap();
+        a.chars_open(&ctx, "restore");
+        assert!(a.chars_dialog_is_open());
+    }
+    harness.run_steps(2);
+    click_lowest(&harness, "Restore");
+    harness.run_steps(3);
+    assert_eq!(offset(&path), Some(0), "the backed-up layout is back");
+    let after = backup::list(&backups);
+    assert_eq!(after.len(), before + 3, "restoring kept what it replaced");
+    assert!(after.iter().any(|b| b.id == named), "the named backup is still there");
+    let replaced = backup::file_path(&backups, &after[0], backup::Kind::Char, 90_000_001);
+    assert_eq!(offset(&replaced), Some(-300));
+}
+
+/// The copy dialog, start to finish: one part onto one character changes that part of that file
+/// and nothing else.
+#[test]
+fn uitest_copying_one_part_changes_only_that_part() {
+    use crate::evesettings::{backup, chat, layout, SettingsFile};
+    use egui_kittest::kittest::Queryable as _;
+    let (mut scene, app) = chars_scene_shared("chars_copy_probe", [1280.0, 800.0], |_| {});
+    let mut harness = harness::build(&mut scene, false);
+    harness::render_dialogs_on_the_root(&harness.ctx);
+    let ctx = harness.ctx.clone();
+    let (dir, backups) = {
+        let slot = app.borrow();
+        let a = slot.as_ref().unwrap();
+        (a.chars.profile_dir().unwrap(), a.chars.backups_at.clone().unwrap())
+    };
+    let read = |id: i64| SettingsFile::read(&dir.join(format!("core_char_{id}.dat"))).unwrap();
+    // Give the source a layout the others do not have.
+    app.borrow_mut().as_mut().unwrap().chars.session.as_mut().unwrap().layout.now.set_rect("overview", [100, 100, 500, 500], [1920, 1080]);
+    harness.run_steps(2);
+    harness.get_by_label_contains("Save").click();
+    harness.run_steps(3);
+    let source = layout::Layout::read(&read(90_000_001));
+    assert_ne!(layout::Layout::read(&read(90_000_002)).wins["overview"], source.wins["overview"]);
+    let channels = chat::read(&read(90_000_002));
+    let untouched = std::fs::read(dir.join("core_char_90000004.dat")).unwrap();
+    let account = std::fs::read(dir.join("core_user_1001.dat")).unwrap();
+    let before = backup::list(&backups).len();
+
+    app.borrow_mut().as_mut().unwrap().chars_open(&ctx, "copy_empty");
+    harness.run_steps(3);
+    harness.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Scout Alt").click();
+    harness.run_steps(2);
+    harness.get_by_label(&format!("{}  Copy", egui_phosphor::regular::COPY)).click();
+    harness.run_steps(3);
+
+    assert!(!app.borrow().as_ref().unwrap().chars_dialog_is_open());
+    let dest = read(90_000_002);
+    assert_eq!(layout::Layout::read(&dest).wins, source.wins, "the window layout came across");
+    assert_eq!(chat::read(&dest), channels, "the channels were not part of it");
+    assert_eq!(std::fs::read(dir.join("core_char_90000004.dat")).unwrap(), untouched, "an unticked character is not written");
+    assert_eq!(std::fs::read(dir.join("core_user_1001.dat")).unwrap(), account, "no account part was picked");
+    let saved = backup::list(&backups);
+    assert_eq!(saved.len(), before + 1);
+    assert!(saved[0].automatic && saved[0].has(backup::Kind::Char, 90_000_002) && saved[0].files.len() == 1);
 }
 
 /// The rule form's condition buttons line up: one left edge and one width, so the form reads as
