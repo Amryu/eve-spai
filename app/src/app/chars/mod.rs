@@ -17,7 +17,7 @@ mod chat_tab;
 mod copy_dialog;
 mod dialogs;
 pub(crate) mod layout_tab;
-mod overview_tab;
+pub(crate) mod overview_tab;
 pub(crate) mod probes_tab;
 mod scopes_tab;
 mod sidebar_tab;
@@ -54,7 +54,7 @@ impl Tab {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Tab::Windows => "Windows",
-            Tab::Sidebar => "Sidebar",
+            Tab::Sidebar => "Neocom",
             Tab::Channels => "Channels",
             Tab::Watch => "Watch lists",
             Tab::Probes => "Probes",
@@ -324,6 +324,9 @@ pub(crate) struct CharsUi {
     names_arrived: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Names of characters met in settings files and watch lists, from the store.
     pub(crate) names: std::collections::HashMap<i64, String>,
+    /// Inventory groups as `(id, category id, name)`, for naming what a preset shows.
+    pub(crate) groups: Vec<(i64, i64, String)>,
+    groups_requested: bool,
     pub(crate) dialog: Dialog,
     /// The last result, and whether it was a failure. Shown in the status line.
     pub(crate) notice: Option<(String, bool)>,
@@ -396,6 +399,7 @@ impl CharsUi {
 
         let linked: BTreeMap<i64, &str> = linked.iter().map(|c| (c.id, c.name.as_str())).collect();
         self.names = store.char_names();
+        self.groups = store.item_groups();
         let cached = &self.names;
         let accounts = store.char_accounts();
         let mut ids: BTreeSet<i64> = on_disk.chars.keys().copied().collect();
@@ -512,6 +516,23 @@ impl CharsUi {
         });
     }
 
+    /// The group names, for a profile whose static data was imported before they were kept: one
+    /// small download, once, the first time the Overview tab is opened.
+    fn fetch_groups(&mut self, ctx: &egui::Context, headless: bool) {
+        if !self.groups.is_empty() || self.groups_requested || headless {
+            return;
+        }
+        self.groups_requested = true;
+        let (ctx, arrived) = (ctx.clone(), self.names_arrived.clone());
+        std::thread::spawn(move || {
+            if let (Ok(groups), Ok(store)) = (crate::sde::fetch_groups(), Store::open()) {
+                store.set_item_groups(&groups);
+                arrived.store(true, std::sync::atomic::Ordering::Relaxed);
+                ctx.request_repaint();
+            }
+        });
+    }
+
     /// Every channel any character in this profile has joined, read once per reload.
     pub(crate) fn known_channels(&mut self) -> &[chat::Channel] {
         if self.known_channels.is_none() {
@@ -593,6 +614,70 @@ pub(crate) fn person_row(
         );
     }
     resp
+}
+
+pub(crate) fn color32(c: [f32; 3]) -> egui::Color32 {
+    egui::Color32::from_rgb((c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8)
+}
+
+/// A swatch no taller than the text of its row that opens the game's colours, with `none` as the
+/// way back to no colour and, with `any`, a picker for a colour of one's own. Returns the choice
+/// made this frame: `Some(None)` is "no colour".
+pub(crate) fn color_menu(ui: &mut egui::Ui, current: Option<[f32; 3]>, none: &str, any: bool, hover: &str) -> Option<Option<[f32; 3]>> {
+    use crate::evesettings::palette;
+    let mut picked = None;
+    let dot = match current {
+        Some(c) => egui::RichText::new("\u{25CF}").color(color32(c)),
+        None => egui::RichText::new(icon::CIRCLE).color(ui.visuals().weak_text_color()),
+    };
+    let named = current.map(|c| palette::name_of(c).map_or_else(|| tr!("Own colour").to_owned(), |n| spai_ui::i18n::t(n).to_owned()));
+    let tip = match named {
+        Some(n) => format!("{hover}: {n}"),
+        None => format!("{hover}: {none}"),
+    };
+    // The size of the icon buttons beside it: a menu button takes the theme's padding, sized for
+    // words, and stood taller than its row.
+    let button = spai_ui::widgets::icon_button(ui, dot).on_hover_text(tip);
+    egui::Popup::menu(&button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        for row in palette::GAME.chunks(6) {
+            ui.horizontal(|ui| {
+                for (name, c) in row {
+                    let on = current.is_some_and(|cur| palette::same(cur, *c));
+                    let b = egui::Button::new(egui::RichText::new("\u{25CF}").color(color32(*c)).size(18.0)).selected(on);
+                    if ui.add(b).on_hover_text(spai_ui::i18n::t(name)).clicked() {
+                        picked = Some(Some(*c));
+                        ui.close();
+                    }
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            if ui.add(egui::Button::new(none).selected(current.is_none())).clicked() {
+                picked = Some(None);
+                ui.close();
+            }
+            if any {
+                let mut rgb = current.unwrap_or([1.0, 1.0, 1.0]);
+                if ui.color_edit_button_rgb(&mut rgb).on_hover_text(tr!("Any other colour")).changed() {
+                    picked = Some(Some(rgb));
+                }
+            }
+        });
+    });
+    picked
+}
+
+/// A dropdown exactly `width` wide whatever it shows. egui takes a dropdown's width as the least
+/// it may be and lets a long choice widen it, which leaves the dropdowns of a column ragged; held
+/// in a cell of that width, the choice is cut to fit instead.
+pub(crate) fn combo(ui: &mut egui::Ui, id: impl std::hash::Hash, width: f32, selected: impl Into<egui::WidgetText>, menu: impl FnOnce(&mut egui::Ui)) -> egui::Response {
+    let height = ui.spacing().interact_size.y;
+    ui.allocate_ui_with_layout(egui::vec2(width, height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.set_min_width(width);
+        ui.set_max_width(width);
+        egui::ComboBox::from_id_salt(id).width(width).height(320.0).selected_text(selected).truncate().show_ui(ui, menu).response
+    })
+    .inner
 }
 
 /// A label that never wraps or widens its row: cut with an ellipsis, the whole text on hover.
@@ -731,6 +816,25 @@ impl SpaiApp {
         self.chars = st;
     }
 
+    /// The preset editor alone, open on `preset`, for a scene without the view behind it.
+    #[cfg(test)]
+    pub(crate) fn chars_preset_dialog_only(&mut self, ctx: &egui::Context, preset: &str, states: bool) {
+        let mut st = std::mem::take(&mut self.chars);
+        self.chars_prepare(&mut st, ctx);
+        // As the view does every frame: a dialog's sizing pass would log its rows twice.
+        spai_fit_ui::rows::clear_log(ctx);
+        if let Some(s) = &mut st.session {
+            if st.overview_ui.preset.is_none() {
+                st.overview_ui.edit_preset(&s.overview.now, preset);
+                if states {
+                    st.overview_ui.show_preset_states();
+                }
+            }
+            overview_tab::dialogs(ctx, &mut st.overview_ui, &mut s.overview.now, &st.groups);
+        }
+        self.chars = st;
+    }
+
     #[cfg(test)]
     pub(crate) fn chars_dialog_is_open(&self) -> bool {
         !matches!(self.chars.dialog, Dialog::None)
@@ -833,10 +937,16 @@ impl SpaiApp {
                 ui.label(egui::RichText::new(tr!("Add a character to see its logins, scopes and EVE settings.")).weak());
                 return;
             }
-            Pick::Char(id) => self.chars_header(ui, st, id),
-            Pick::Backup(id) => self.chars_backup_header(ui, st, &id),
+            Pick::Char(id) => {
+                let status = self.chars_status(ui, st);
+                self.chars_header(ui, st, id, &status);
+            }
+            Pick::Backup(id) => {
+                let status = self.chars_status(ui, st);
+                self.chars_backup_header(ui, st, &id, &status);
+            }
         }
-        self.chars_status_line(ui, st);
+        ui.add_space(6.0);
 
         let tabs: &[Tab] = if matches!(st.selected, Pick::Backup(_)) { &Tab::BACKUP } else { &Tab::CHARACTER };
         if !tabs.contains(&st.tab) {
@@ -865,7 +975,7 @@ impl SpaiApp {
             }
             // A backup is looked at, not edited. The tabs with something to navigate stay live
             // and have their edits undone below; the plain lists are simply switched off.
-            let off = s.read_only && matches!(st.tab, Tab::Sidebar | Tab::Channels | Tab::Overview);
+            let off = s.read_only && matches!(st.tab, Tab::Sidebar | Tab::Channels);
             ui.add_enabled_ui(!off, |ui| match st.tab {
                 Tab::Windows => layout_tab::ui(ui, &mut st.layout_ui, s),
                 Tab::Sidebar => sidebar_tab::ui(ui, s),
@@ -874,10 +984,15 @@ impl SpaiApp {
                     chat_tab::ui(ui, s, &known);
                 }
                 Tab::Watch => {
-                    watch_tab::ui(ui, &mut st.watch_ui, s, &st.names, &st.rows);
+                    if let Some(note) = watch_tab::ui(ui, &mut st.watch_ui, s, &st.names, &st.rows) {
+                        st.notice = Some((note, true));
+                    }
                 }
                 Tab::Probes => probes_tab::ui(ui, &mut st.probes_ui, s),
-                Tab::Overview => overview_tab::ui(ui, &mut st.overview_ui, s),
+                Tab::Overview => {
+                    st.fetch_groups(ui.ctx(), self.headless);
+                    overview_tab::ui(ui, &mut st.overview_ui, s, &st.groups);
+                }
                 Tab::Backups => self.chars_backups_tab(ui, st, s),
                 Tab::Scopes => self.chars_scopes_tab(ui, st),
             });
@@ -926,7 +1041,7 @@ impl SpaiApp {
         }
     }
 
-    fn chars_header(&mut self, ui: &mut egui::Ui, st: &mut CharsUi, id: i64) {
+    fn chars_header(&mut self, ui: &mut egui::Ui, st: &mut CharsUi, id: i64, status: &Option<(String, egui::Color32)>) {
         let Some(row) = st.row(id).cloned() else {
             return;
         };
@@ -953,6 +1068,7 @@ impl SpaiApp {
                             "Overview, shortcuts and probe formations are stored per account. The account is found while the character is logged in to the game, or set it with Change account."
                         )),
                     };
+                    Self::status_tail(ui, status);
                 });
                 ui.horizontal_wrapped(|ui| {
                     self.chars_profile_picker(ui, st);
@@ -1018,7 +1134,7 @@ impl SpaiApp {
         }
     }
 
-    fn chars_backup_header(&mut self, ui: &mut egui::Ui, st: &mut CharsUi, id: &str) {
+    fn chars_backup_header(&mut self, ui: &mut egui::Ui, st: &mut CharsUi, id: &str, status: &Option<(String, egui::Color32)>) {
         let Some(meta) = st.backups.iter().find(|b| b.id == id).cloned() else {
             return;
         };
@@ -1040,7 +1156,10 @@ impl SpaiApp {
                 }
                 facts.push(size_text(meta.size()));
                 let line = facts.join(" · ");
-                clipped(ui, egui::RichText::new(&line).weak(), &line);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&line).weak());
+                    Self::status_tail(ui, status);
+                });
                 ui.horizontal_wrapped(|ui| {
                     if ui.button(trf!("{icon}  Restore…", icon = icon::ARROW_COUNTER_CLOCKWISE)).on_hover_text(tr!("Put these settings back onto a character")).clicked() {
                         st.dialog = Dialog::Restore(dialogs::Restore::from_backup(&meta, st));
@@ -1056,8 +1175,9 @@ impl SpaiApp {
         });
     }
 
-    /// One line that is always there, so a result or a warning never pushes the tabs down.
-    fn chars_status_line(&mut self, ui: &mut egui::Ui, st: &mut CharsUi) {
+    /// The result or warning to show, if any. It goes at the end of a line the header has
+    /// anyway, so it never takes a row of its own or moves what is under it.
+    fn chars_status(&mut self, ui: &egui::Ui, st: &mut CharsUi) -> Option<(String, egui::Color32)> {
         let mut line: Option<(String, egui::Color32)> = None;
         // One lock, released at once: an `if let` chain would hold the first guard through the rest.
         let auth = self.auth_status.lock().unwrap().clone();
@@ -1091,11 +1211,14 @@ impl SpaiApp {
             st.session = None;
             st.invalidate();
         }
-        let (text, color) = line.unwrap_or_default();
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::hover());
-        if !text.is_empty() {
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-            clipped(&mut child, egui::RichText::new(&text).color(color), &text);
+        line
+    }
+
+    /// The status at the end of a header line, cut to what the line has left.
+    fn status_tail(ui: &mut egui::Ui, status: &Option<(String, egui::Color32)>) {
+        if let Some((text, color)) = status {
+            ui.label(egui::RichText::new("·").weak());
+            clipped(ui, egui::RichText::new(text).color(*color), text);
         }
     }
 

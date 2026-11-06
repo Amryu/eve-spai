@@ -103,10 +103,15 @@ impl Restore {
 
 /// A modal with a heading, a body and a row of buttons. Returns true when it should close without
 /// an action (clicked outside, Escape).
-fn modal(ctx: &egui::Context, id: &str, heading: &str, body: impl FnOnce(&mut egui::Ui)) -> bool {
+pub(super) fn modal(ctx: &egui::Context, id: &str, heading: &str, body: impl FnOnce(&mut egui::Ui)) -> bool {
+    modal_sized(ctx, id, heading, 400.0, body)
+}
+
+/// The same at another width, for a dialog with more than a form in it.
+pub(super) fn modal_sized(ctx: &egui::Context, id: &str, heading: &str, width: f32, body: impl FnOnce(&mut egui::Ui)) -> bool {
     egui::Modal::new(egui::Id::new(id))
         .show(ctx, |ui| {
-            ui.set_width(400.0f32.min(ctx.content_rect().width() - 60.0));
+            ui.set_width(width.min(ctx.content_rect().width() - 60.0));
             ui.heading(heading);
             ui.add_space(6.0);
             body(ui);
@@ -308,29 +313,38 @@ impl SpaiApp {
                     ui.horizontal(|ui| {
                         ui.label(tr!("Onto"));
                         ui.add_enabled_ui(!fixed, |ui| {
-                            egui::ComboBox::from_id_salt("restore_to").width(220.0).truncate().selected_text(st.name_of(r.to)).show_ui(ui, |ui| {
+                            combo(ui, "restore_to", 220.0, st.name_of(r.to), |ui| {
                                 for row in &st.rows {
                                     ui.menu_value(&mut r.to, row.id, row.display());
                                 }
                             });
                         });
                     });
-                    ui.add_enabled_ui(r.has_char, |ui| ui.checkbox(&mut r.char_file, tr!("Character settings (windows, sidebar, channels, watch lists)")));
+                    ui.add_enabled_ui(r.has_char, |ui| ui.checkbox(&mut r.char_file, tr!("Character settings (windows, Neocom, channels, watch lists)")));
                     let account = match &r.source {
                         Source::Sidecar(f) if f.kind == Kind::Account => Some(f.id),
                         _ => st.account_of(r.to),
                     };
                     ui.add_enabled_ui(r.has_account, |ui| ui.checkbox(&mut r.account_file, tr!("Account settings (overview, shortcuts, probe formations)")));
+                    // A slot of one height for whatever there is to warn about, so ticking a box
+                    // does not move the buttons under the pointer.
+                    let mut notes: Vec<(String, egui::Color32)> = Vec::new();
                     if r.account_file {
                         let others: Vec<String> = account.map(|a| st.mates(a).iter().filter(|m| m.id != r.to).map(|m| m.display()).collect()).unwrap_or_default();
                         if !others.is_empty() {
-                            ui.add(egui::Label::new(egui::RichText::new(trf!("Account settings are shared: they also change for {names}.", names = others.join(", "))).color(standing::WARNING)).wrap());
+                            notes.push((trf!("Account settings are shared: they also change for {names}.", names = others.join(", ")), standing::WARNING));
                         }
                     }
-                    ui.add(egui::Label::new(egui::RichText::new(tr!("What is there now is backed up first.")).weak()).wrap());
                     if let Some(why) = &blocked {
-                        ui.add(egui::Label::new(egui::RichText::new(why).color(standing::WARNING)).wrap());
+                        notes.push((why.clone(), standing::WARNING));
                     }
+                    notes.push((tr!("What is there now is backed up first.").to_owned(), ui.visuals().weak_text_color()));
+                    let out = egui::ScrollArea::vertical().id_salt("restore_notes").max_height(66.0).min_scrolled_height(66.0).auto_shrink([false, false]).show(ui, |ui| {
+                        for (text, color) in notes {
+                            ui.add(egui::Label::new(egui::RichText::new(text).color(color)).wrap());
+                        }
+                    });
+                    spai_fit_ui::rows::note_scrolled(ui.ctx(), &out);
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         let can = blocked.is_none() && (r.char_file || r.account_file);

@@ -34,6 +34,8 @@ CREATE INDEX IF NOT EXISTS idx_sde_celestials_sys ON sde_celestials(system_id);
 -- Camp-relevant type ids by kind ('dic'|'hic'|'smartbomb'|'bubble'), for camp signals.
 CREATE TABLE IF NOT EXISTS sde_camp_types (id INTEGER PRIMARY KEY, kind TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sde_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- Every inventory group with its category, for naming what an overview preset shows.
+CREATE TABLE IF NOT EXISTS sde_groups (id INTEGER PRIMARY KEY, category_id INTEGER NOT NULL, name TEXT NOT NULL);
 -- The fitting simulator's library: one row per fit, `doc` the versioned JSON the engine reads
 -- (spai_fit::doc). `server_rev` is the revision the share server last confirmed, 0 for never.
 CREATE TABLE IF NOT EXISTS fits (

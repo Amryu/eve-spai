@@ -213,6 +213,40 @@ pub fn cancellable(msg: &str) -> bool {
     msg.starts_with(tr!("Connecting…")) || msg.starts_with(&head(tr!("Downloading {what}…")))
 }
 
+/// `invGroups.csv` as `(group id, category id, name)`.
+pub fn parse_groups(csv_text: &str) -> Vec<(i64, i64, String)> {
+    let mut rdr = csv::ReaderBuilder::new().has_headers(true).from_reader(csv_text.as_bytes());
+    rdr.records()
+        .flatten()
+        .filter_map(|rec| {
+            let id = rec.get(0)?.trim().parse().ok()?;
+            let category = rec.get(1)?.trim().parse().ok()?;
+            let name = rec.get(2)?.trim();
+            (!name.is_empty()).then(|| (id, category, name.to_owned()))
+        })
+        .collect()
+}
+
+/// The group names alone, for a profile whose static data was imported before they were kept.
+/// One small file, from the mirror or the original.
+pub fn fetch_groups() -> Result<Vec<(i64, i64, String)>> {
+    let client = crate::http::client(30)?;
+    let mut last = anyhow::anyhow!("no source for the group names");
+    for url in sources("invGroups.csv", &format!("{BASE}/invGroups.csv")) {
+        match client.get(&url).send().and_then(|r| r.error_for_status()).and_then(|r| r.text()) {
+            Ok(text) => {
+                let groups = parse_groups(&text);
+                if !groups.is_empty() {
+                    return Ok(groups);
+                }
+                last = anyhow::anyhow!("{url} held no groups");
+            }
+            Err(e) => last = e.into(),
+        }
+    }
+    Err(last)
+}
+
 /// Where a file can come from, nearest first.
 fn sources(name: &str, original: &str) -> Vec<String> {
     vec![format!("{MIRROR}/{name}"), original.to_owned()]
@@ -350,6 +384,15 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus), zip: Option<&std::path::Path>, 
     set(SdeStatus::Downloading(tr!("Building ship data…").to_owned()));
     tx.execute("DELETE FROM sde_ships", [])?;
     tx.execute("DELETE FROM sde_ship_attrs", [])?;
+
+    tx.execute("CREATE TABLE IF NOT EXISTS sde_groups (id INTEGER PRIMARY KEY, category_id INTEGER NOT NULL, name TEXT NOT NULL)", [])?;
+    tx.execute("DELETE FROM sde_groups", [])?;
+    {
+        let mut stmt = tx.prepare("INSERT OR REPLACE INTO sde_groups(id, category_id, name) VALUES(?1, ?2, ?3)")?;
+        for (id, category, name) in parse_groups(&groups_csv) {
+            stmt.execute(params![id, category, name])?;
+        }
+    }
 
     // Groups (0=groupID, 1=categoryID, 2=groupName). `ship_groups` keeps the ship category;
     // `all_groups` keeps every group so we can classify camp-relevant non-ship types too.
@@ -763,7 +806,17 @@ fn roman(n: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::roman;
+    use super::{parse_groups, roman};
+
+    #[test]
+    fn group_names_are_read_from_the_dump() {
+        let csv = "groupID,categoryID,groupName,iconID,useBasePrice,anchored,anchorable,fittableNonSingleton,published\n\
+                   25,6,Frigate,None,0,0,0,0,1\n\
+                   10,2,Stargate,None,0,0,0,0,1\n\
+                   x,2,Broken,None,0,0,0,0,1\n\
+                   12,2,,None,0,0,0,0,1\n";
+        assert_eq!(parse_groups(csv), vec![(25, 6, "Frigate".to_owned()), (10, 2, "Stargate".to_owned())]);
+    }
 
     #[test]
     fn roman_numerals() {

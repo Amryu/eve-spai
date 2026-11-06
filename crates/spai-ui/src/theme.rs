@@ -257,6 +257,19 @@ pub fn install_fonts(ctx: &egui::Context) {
 pub fn install_fonts_opts(ctx: &egui::Context, include_cjk: bool) {
     let mut fonts = egui::FontDefinitions::default();
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    // Arrows, dingbats and other symbols the default fonts lack. Players put them in the names of
+    // overview presets and chat channels, and without a glyph each one draws as an empty square.
+    // A subset of Noto Sans Symbols 2 (SIL OFL, see `assets/symbols.LICENSE.txt`); the browser
+    // apps show none of those names and do without the download.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        const NAME: &str = "symbols-fallback";
+        let data = egui::FontData::from_static(include_bytes!("../assets/symbols.ttf"));
+        fonts.font_data.insert(NAME.to_owned(), std::sync::Arc::new(data));
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            fonts.families.entry(family).or_default().push(NAME.to_owned());
+        }
+    }
     if let Some(data) = include_cjk.then(load_cjk_font).flatten() {
         const NAME: &str = "cjk-fallback";
         fonts.font_data.insert(NAME.to_owned(), std::sync::Arc::new(data));

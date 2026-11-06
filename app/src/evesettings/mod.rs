@@ -11,6 +11,7 @@ pub mod layout;
 pub mod marshal;
 pub mod neocom;
 pub mod overview;
+pub mod palette;
 pub mod probes;
 pub mod watchlist;
 

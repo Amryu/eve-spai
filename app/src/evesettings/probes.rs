@@ -39,6 +39,19 @@ impl Formation {
     pub fn extent(&self) -> f64 {
         self.probes.iter().map(|p| length(p.pos)).fold(0.0, f64::max)
     }
+
+    /// The scan range every probe is set to, or `None` when they differ (the game stores one per
+    /// probe) or there is no probe.
+    pub fn range(&self) -> Option<f64> {
+        let first = self.probes.first()?.range;
+        self.probes.iter().all(|p| (p.range - first).abs() < 1.0).then_some(first)
+    }
+
+    pub fn set_range(&mut self, range: f64) {
+        for p in &mut self.probes {
+            p.range = range;
+        }
+    }
 }
 
 pub fn length(v: [f64; 3]) -> f64 {
@@ -170,6 +183,35 @@ pub fn generate(shape: Shape, count: usize, radius: f64, range: f64) -> Vec<Prob
     out
 }
 
+/// The formation used on Drifter wormholes: six probes stacked one above the other well off to
+/// one side, one at the centre, and one far out the other way that balances the rest, so the
+/// formation's own centre stays where it is put.
+pub fn drifter() -> Vec<Probe> {
+    const OUT: f64 = 340_000.0 * KM;
+    const LOWEST: f64 = 54_000.0 * KM;
+    const STEP: f64 = 58_000.0 * KM;
+    const CENTRE: usize = 2;
+    const WEIGHT: usize = 4;
+    // Probe numbers from the lowest of the stack to the highest.
+    const STACK: [usize; 6] = [5, 1, 3, 6, 7, 0];
+    let mut probes = vec![Probe { pos: [0.0; 3], range: 32.0 * AU }; MAX_PROBES];
+    for (level, i) in STACK.into_iter().enumerate() {
+        probes[i].pos = [OUT, LOWEST + STEP * level as f64, 0.0];
+    }
+    probes[CENTRE].pos = [0.0; 3];
+    let mut sum = [0.0; 3];
+    for (i, p) in probes.iter().enumerate() {
+        if i != WEIGHT {
+            for axis in 0..3 {
+                sum[axis] += p.pos[axis];
+            }
+        }
+    }
+    // Subtracted from zero, not negated: an axis that needs no weight stays 0, not -0.
+    probes[WEIGHT].pos = [0.0 - sum[0], 0.0 - sum[1], 0.0 - sum[2]];
+    probes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,6 +235,18 @@ mod tests {
     }
 
     #[test]
+    fn a_formation_has_one_range_once_it_is_set() {
+        let mut f = Formation { id: 0, name: String::new(), probes: generate(Shape::Pinpoint, 7, AU, 4.0 * AU) };
+        assert_eq!(f.range(), Some(4.0 * AU));
+        f.probes[2].range = 8.0 * AU;
+        assert_eq!(f.range(), None);
+        f.set_range(0.5 * AU);
+        assert_eq!(f.range(), Some(0.5 * AU));
+        assert!(f.probes.iter().all(|p| p.range == 0.5 * AU));
+        assert_eq!(Formation { id: 0, name: String::new(), probes: vec![] }.range(), None);
+    }
+
+    #[test]
     fn shapes_keep_probes_within_the_radius() {
         for shape in Shape::ALL {
             for count in 1..=MAX_PROBES {
@@ -206,5 +260,33 @@ mod tests {
         }
         let cube = generate(Shape::Cube, 8, 1000.0, AU);
         assert!((Formation { id: 0, name: String::new(), probes: cube }.extent() - 1000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_drifter_formation_is_a_level_stack_balanced_around_the_centre() {
+        let p = drifter();
+        assert_eq!(p.len(), 8);
+        // Probes 1, 2, 4, 6, 7 and 8 share one X and Z, 340,000 km out towards positive X.
+        for n in [1, 2, 4, 6, 7, 8] {
+            assert_eq!((p[n - 1].pos[0], p[n - 1].pos[2]), (340_000.0 * KM, 0.0), "probe {n}");
+        }
+        // Lowest at 54,000 km, the rest in equal steps above it.
+        let mut heights: Vec<f64> = [1, 2, 4, 6, 7, 8].iter().map(|n| p[n - 1].pos[1] / KM).collect();
+        heights.sort_by(f64::total_cmp);
+        assert_eq!(heights, vec![54_000.0, 112_000.0, 170_000.0, 228_000.0, 286_000.0, 344_000.0]);
+        // The order by height is the one the formation it is modelled on has.
+        let by_height: Vec<usize> = {
+            let mut n = vec![1, 2, 4, 6, 7, 8];
+            n.sort_by(|a, b| p[a - 1].pos[1].total_cmp(&p[b - 1].pos[1]));
+            n
+        };
+        assert_eq!(by_height, vec![6, 2, 4, 7, 8, 1]);
+        assert_eq!(p[2].pos, [0.0; 3], "probe 3 is the centre");
+        assert_eq!(p[4].pos, [-2_040_000.0 * KM, -1_194_000.0 * KM, 0.0], "probe 5 is the counterweight");
+        for axis in 0..3 {
+            let mean: f64 = p.iter().map(|q| q.pos[axis]).sum::<f64>() / 8.0;
+            assert!(mean.abs() < 1e-6, "axis {axis} averages {mean}");
+        }
+        assert!(p.iter().all(|q| q.range == 32.0 * AU));
     }
 }

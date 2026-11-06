@@ -72,7 +72,7 @@ pub(crate) fn char_file(rich: bool) -> SettingsFile {
         chan("corp", "corp_98000001", "Corp"),
         chan("alliance", "alliance_99000001", "Alliance"),
         chan("fleet", "fleet_1065300000001", "Fleet"),
-        chan("player_intel", "player_intel", "intel.fixture"),
+        chan("player_intel", "player_intel", "insmother.imperium"),
     ];
     if rich {
         channels.push(chan("player_long", "player_long", "a.very.long.channel.name.that.keeps.going.and.going.fixture"));
@@ -94,7 +94,7 @@ pub(crate) fn char_file(rich: bool) -> SettingsFile {
                 watchlist::Watchlist { fleet_id: 1_065_300_000_001, saved: 1_780_300_000, left: ids[..3].to_vec(), right: ids[3..].to_vec() },
                 watchlist::Watchlist { fleet_id: 1_065_200_000_002, saved: 1_779_000_000, left: ids[..2].to_vec(), right: Vec::new() },
             ],
-            colors: [(ids[0], watchlist::PALETTE[3]), (ids[1], watchlist::PALETTE[0])].into_iter().collect(),
+            colors: [(ids[0], crate::evesettings::palette::GAME[3].1), (ids[1], crate::evesettings::palette::GAME[0].1)].into_iter().collect(),
             two_columns: Some(true),
         };
         watchlist::write(&mut f, &watchlist::Watchlists::default(), &lists);
@@ -115,12 +115,65 @@ pub(crate) fn account_file() -> SettingsFile {
                 probes::Formation { id: 0, name: "Pinpoint 4 AU".into(), probes: pin },
                 probes::Formation { id: 1, name: "Gate perches".into(), probes: perch },
                 probes::Formation { id: 2, name: "A formation with a name far longer than its row".into(), probes: probes::generate(probes::Shape::Cube, 8, 16.0 * probes::AU, 32.0 * probes::AU) },
+                probes::Formation { id: 3, name: "Drifter".into(), probes: probes::drifter() },
             ],
             selected: Some(0),
         },
     );
-    layout::write_target_origin(&mut f, [0.68, 0.014]);
+    layout::write_target_origin(&mut f, [0.6794258373205742, 0.013888888888888888]);
+    // A pack's worth of presets, named the way overview packs name them.
+    let before = overview::read(&f);
+    let mut o = before.clone();
+    for (i, name) in [
+        "<color=0xFFCCCCCC>/ Brackets: Combat (+drones)</color>",
+        "<color=0xFFCCCCCC>? DSCAN: Ships</color>",
+        "<color=0xFFFFFFFF>\u{272A} System: System (-citadels)</color>",
+        "<color=0xFF14B0D2>\u{2731} Main: PVX (+friendly +extra)</color>",
+        "<color=0xFFFF4545>\u{2715} Hostile: Everything that is not blue and a few more words</color>",
+        "<color=0xFFCCCCCC>\u{2752} Loot: Loot and salvage</color>",
+        "<color=0xFFEE22EE>\u{2794} Travel: Gates and stations</color>",
+        "<color=0xFFFFEE00>\u{271C} Logistics: Fleet only</color>",
+        "<color=0xFFCCCCCC>\u{2318} All: All</color>",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if let Some(copy) = o.duplicate_preset(if i % 2 == 0 { "Loot" } else { "Brackets: Combat" }) {
+            o.rename_preset(&copy, name);
+        }
+    }
+    overview::write(&mut f, &before, &o);
     f
+}
+
+/// A slice of the game's inventory groups as `(id, category id, name)`, enough to fill the
+/// preset editor's categories.
+pub(crate) fn groups() -> Vec<(i64, i64, String)> {
+    let ships = ["Frigate", "Destroyer", "Cruiser", "Battlecruiser", "Battleship", "Carrier", "Dreadnought", "Titan", "Interceptor", "Interdictor", "Heavy Interdiction Cruiser", "Force Recon Ship", "Logistics", "Command Ship", "Strategic Cruiser", "Capsule", "Shuttle", "Industrial", "Freighter", "Mining Barge"];
+    let mut out: Vec<(i64, i64, String)> = ships.iter().enumerate().map(|(i, n)| (25 + i as i64, 6, (*n).to_owned())).collect();
+    out.extend([
+        (100, 18, "Combat Drone"),
+        (101, 18, "Logistic Drone"),
+        (1537, 87, "Light Fighter"),
+        (180, 11, "Asteroid Angel Cartel Frigate"),
+        (182, 11, "An NPC group with a name that goes on for longer than its column"),
+        (1657, 65, "Citadel"),
+        (1404, 65, "Engineering Complex"),
+        (15, 3, "Station"),
+        (365, 23, "Control Tower"),
+        (1003, 40, "Territorial Claim Unit"),
+        (1025, 46, "Orbital Infrastructure"),
+        (361, 22, "Mobile Warp Disruptor"),
+        (6, 2, "Sun"),
+        (7, 2, "Planet"),
+        (10, 2, "Stargate"),
+        (186, 2, "Wreck"),
+        (387, 2, "Cargo Container"),
+        (450, 25, "Arkonor"),
+        (90, 8, "Bomb"),
+    ]
+    .map(|(id, c, n)| (id, c, n.to_owned())));
+    out
 }
 
 /// Writes an install with two launcher profiles under `root` and returns `root`.
@@ -160,7 +213,8 @@ mod tests {
         assert_eq!(stack.rect, [48, 780, 300, 300]);
         assert_eq!(watchlist::read(&f).lists.len(), 2);
         let a = SettingsFile::parse(&account_file().bytes().unwrap()).unwrap();
-        assert_eq!(probes::read(&a).list.len(), 3);
+        assert_eq!(probes::read(&a).list.len(), 4);
         assert_eq!(overview::read(&a).tabs.len(), 3);
+        assert_eq!(overview::read(&a).presets.len(), 12);
     }
 }

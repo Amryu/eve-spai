@@ -909,6 +909,17 @@ pub fn key_int(shared: &[Option<Node>], n: &Node) -> Option<i64> {
     }
 }
 
+/// A `(text, number)` tuple key, which is how the overview names a state's colour tag or
+/// background.
+pub fn key_pair(shared: &[Option<Node>], n: &Node) -> Option<(String, i64)> {
+    match &resolve(shared, n).v {
+        Value::Tuple(items) if items.len() == 2 => {
+            Some((key_text(shared, &items[0])?.into_owned(), key_int(shared, &items[1])?))
+        }
+        _ => None,
+    }
+}
+
 /// A key the client would have written from the string table, written the same way.
 pub fn key_node(text: &str) -> Node {
     match table_index(text) {

@@ -120,6 +120,27 @@ impl Store {
         out
     }
 
+    /// Inventory groups as `(id, category id, name)`. Empty until the static data import or the
+    /// overview editor has fetched them.
+    pub fn item_groups(&self) -> Vec<(i64, i64, String)> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT id, category_id, name FROM sde_groups ORDER BY name") {
+            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    pub fn set_item_groups(&self, groups: &[(i64, i64, String)]) {
+        let _ = self.conn.execute("DELETE FROM sde_groups", []);
+        if let Ok(mut stmt) = self.conn.prepare("INSERT OR REPLACE INTO sde_groups(id, category_id, name) VALUES(?1, ?2, ?3)") {
+            for (id, category, name) in groups {
+                let _ = stmt.execute(params![id, category, name]);
+            }
+        }
+    }
+
     pub fn remove_character(&self, id: i64) -> Result<()> {
         let _ = crate::tokens::delete(id);
         self.kv_delete(&format!("access:{id}"));

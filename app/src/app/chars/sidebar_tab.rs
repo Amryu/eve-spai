@@ -1,7 +1,34 @@
-//! The Sidebar tab: the buttons on the client's left-hand bar, in order.
+//! The Neocom tab: the buttons on the client's left-hand bar, in order.
 
 use super::*;
 use crate::evesettings::neocom::{self, Button};
+
+/// An icon for a Neocom button, close to what the game shows for it.
+pub(crate) fn glyph(id: &str) -> &'static str {
+    match id {
+        "agency" => icon::COMPASS,
+        "job_board" => icon::CLIPBOARD_TEXT,
+        "mail" => icon::ENVELOPE_SIMPLE,
+        "inventory" => icon::PACKAGE,
+        "assets" => icon::CUBE,
+        "wallet" => icon::WALLET,
+        "market" => icon::CHART_LINE_UP,
+        "marketOrders" => icon::RECEIPT,
+        "fitting" => icon::WRENCH,
+        "shipTree" => icon::TREE_STRUCTURE,
+        "map_beta" => icon::MAP_TRIFOLD,
+        "locations" => icon::MAP_PIN,
+        "chat" => icon::CHATS_CIRCLE,
+        "contracts" => icon::HANDSHAKE,
+        "industry" => icon::FACTORY,
+        "planets" => icon::PLANET,
+        "fleet" => icon::USERS_THREE,
+        "ProjectDiscovery" => icon::DNA,
+        "help" => icon::QUESTION,
+        "airCareerProgram" => icon::GRADUATION_CAP,
+        _ => icon::PUZZLE_PIECE,
+    }
+}
 
 enum Op {
     Move(Vec<usize>, i32),
@@ -71,9 +98,9 @@ fn rows(ui: &mut egui::Ui, list: &[Button], path: &mut Vec<usize>, ops: &mut Vec
     for (i, b) in list.iter().enumerate() {
         path.push(i);
         let depth = path.len() - 1;
-        let label = if b.is_folder() { format!("{}  {}", icon::FOLDER, b.label()) } else { b.label() };
+        let label = format!("{}  {}", if b.is_folder() { icon::FOLDER } else { glyph(&b.id) }, b.label());
         row(ui, "neocom_on", &path, depth as f32 * 18.0, &label, false, |ui| {
-            if spai_ui::widgets::icon_button(ui, icon::X).on_hover_text(tr!("Take off the sidebar")).clicked() {
+            if spai_ui::widgets::icon_button(ui, icon::X).on_hover_text(tr!("Take off the Neocom")).clicked() {
                 ops.push(Op::Remove(path.clone()));
             }
             if depth > 0 && spai_ui::widgets::icon_button(ui, icon::ARROW_SQUARE_OUT).on_hover_text(tr!("Move out of the folder")).clicked() {
@@ -99,9 +126,9 @@ pub(crate) fn ui(ui: &mut egui::Ui, s: &mut Session) {
     ui.add_space(4.0);
     let defaults = s.neocom_defaults.clone();
     let Some(bar) = &mut s.neocom.now else {
-        ui.add(egui::Label::new(egui::RichText::new(tr!("This character still has the sidebar the game started it with. The game stores its own copy once a button is moved in game.")).weak()).wrap());
+        ui.add(egui::Label::new(egui::RichText::new(tr!("This character still has the Neocom the game started it with. The game stores its own copy once a button is moved in game.")).weak()).wrap());
         ui.add_space(6.0);
-        if ui.button(tr!("Start from the default sidebar")).clicked() {
+        if ui.button(tr!("Start from the default Neocom")).clicked() {
             let start = if defaults.is_empty() {
                 neocom::known_ids().iter().filter_map(|id| Button::known(id)).collect()
             } else {
@@ -124,22 +151,22 @@ pub(crate) fn ui(ui: &mut egui::Ui, s: &mut Session) {
     let mut ops = Vec::new();
     ui.columns(2, |cols| {
         let ui = &mut cols[0];
-        ui.label(egui::RichText::new(tr!("On the sidebar, top to bottom")).strong());
+        ui.label(egui::RichText::new(tr!("On the Neocom, top to bottom")).strong());
         scroll(ui, "neocom_on", |ui| {
             if bar.is_empty() {
-                ui.label(egui::RichText::new(tr!("Nothing on the sidebar.")).weak());
+                ui.label(egui::RichText::new(tr!("Nothing on the Neocom.")).weak());
             }
             rows(ui, bar, &mut Vec::new(), &mut ops);
         });
         let ui = &mut cols[1];
-        ui.label(egui::RichText::new(tr!("Not on the sidebar")).strong());
+        ui.label(egui::RichText::new(tr!("Not on the Neocom")).strong());
         scroll(ui, "neocom_off", |ui| {
             if spare.is_empty() {
-                ui.label(egui::RichText::new(tr!("Every known button is on the sidebar.")).weak());
+                ui.label(egui::RichText::new(tr!("Every known button is on the Neocom.")).weak());
             }
             for b in &spare {
-                row(ui, "neocom_off", &b.id, 0.0, &b.label(), false, |ui| {
-                    if spai_ui::widgets::icon_button(ui, icon::PLUS).on_hover_text(tr!("Add to the sidebar")).clicked() {
+                row(ui, "neocom_off", &b.id, 0.0, &format!("{}  {}", glyph(&b.id), b.label()), false, |ui| {
+                    if spai_ui::widgets::icon_button(ui, icon::PLUS).on_hover_text(tr!("Add to the Neocom")).clicked() {
                         ops.push(Op::Add(b.clone()));
                     }
                 });

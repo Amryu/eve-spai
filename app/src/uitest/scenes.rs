@@ -7439,6 +7439,7 @@ fn chars_app(ctx: &egui::Context, tag: &str) -> crate::app::SpaiApp {
         for (id, name) in fixture::WATCHED {
             store.set_char_name(*id, name);
         }
+        store.set_item_groups(&fixture::groups());
     }
     *a.eve_clients.lock().unwrap() = Some(Vec::new());
 
@@ -7493,6 +7494,50 @@ fn chars_dialog_scene(name: &'static str, size: [f32; 2], open: &'static str) ->
     })
 }
 
+/// The overview preset editor alone.
+fn chars_preset_dialog_scene(name: &'static str, size: [f32; 2], preset: &'static str, states: bool) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ctx(name, size, move |ctx| {
+        let app = app.get_or_insert_with(|| chars_app(ctx, name));
+        app.chars_preset_dialog_only(ctx, preset, states);
+    })
+}
+
+/// The Characters view for the website: the same made-up install, with names a pilot would have
+/// and without the entries that only exist to stretch the layout.
+fn chars_showcase(name: &'static str, each: impl Fn(&mut crate::app::SpaiApp) + 'static) -> Scene {
+    use crate::evesettings::{probes, SettingsFile};
+    const NAMES: [&str; 6] = [super::showcase::PILOT, "Mira Solenne", "Dax Orrin", "Tavi Kell", "Nyx Arden", "Jorun Hale"];
+    let scene = chars_scene(name, [1280.0, 800.0], move |a| {
+        if a.characters.first().is_some_and(|c| c.name != NAMES[0]) {
+            for (c, n) in a.characters.iter_mut().zip(NAMES) {
+                c.name = n.to_owned();
+            }
+            if let Some(store) = &a.store {
+                store.set_char_name(90_000_007, "Rhea Calder");
+            }
+            // Before the view first reads them: the formation named to overflow its row goes.
+            let dir = std::path::PathBuf::from(&a.settings.eve_settings_dir).join("settings_Default");
+            for account in [1001, 1002, 1003] {
+                let path = dir.join(format!("core_user_{account}.dat"));
+                let Ok(mut f) = SettingsFile::read(&path) else { continue };
+                let mut all = probes::read(&f);
+                all.list.retain(|f| f.name.len() < 30);
+                if let Some(pinpoint) = all.list.first_mut() {
+                    pinpoint.set_range(4.0 * probes::AU);
+                }
+                probes::write(&mut f, &all);
+                std::fs::write(&path, f.bytes().expect("encode")).expect("write fixture");
+            }
+            a.active_character = NAMES[0].to_owned();
+            a.chars.invalidate();
+        }
+        each(a);
+    });
+    super::showcase::with_images(scene.sharp(1.5))
+}
+
 fn chars_scenes() -> Vec<Scene> {
     use crate::app::chars::{Pick, Tab};
     use crate::evesettings::layout::Mode;
@@ -7530,12 +7575,48 @@ fn chars_scenes() -> Vec<Scene> {
             a.chars.probes_ui.selected = Some(1);
             a.chars.probes_ui.probe = Some(7);
         }),
+        // Seven-digit offsets in every axis box, and a view two million km across.
+        chars_scene("chars_probes_drifter", [1440.0, 900.0], |a| {
+            a.chars.tab = Tab::Probes;
+            a.chars.probes_ui.selected = Some(3);
+            a.chars.probes_ui.probe = Some(4);
+        }),
+        chars_scene("chars_probes_drifter_narrow", narrow, |a| {
+            a.chars.tab = Tab::Probes;
+            a.chars.probes_ui.selected = Some(3);
+        }),
         chars_scene("chars_probes_narrow", narrow, |a| {
             a.chars.tab = Tab::Probes;
             a.chars.probes_ui.selected = Some(1);
         }),
         chars_scene("chars_overview", wide, tab(Tab::Overview)),
         chars_scene("chars_overview_narrow", narrow, tab(Tab::Overview)),
+        chars_scene("chars_overview_presets", wide, |a| {
+            a.chars.tab = Tab::Overview;
+            a.chars.overview_ui.page = crate::app::chars::overview_tab::Page::Presets;
+        }),
+        // The same on a wide screen, where rows must not stretch their buttons away from the names.
+        chars_scene("chars_overview_wide", [1920.0, 1000.0], tab(Tab::Overview)),
+        chars_scene("chars_overview_presets_wide", [1920.0, 1000.0], |a| {
+            a.chars.tab = Tab::Overview;
+            a.chars.overview_ui.page = crate::app::chars::overview_tab::Page::Presets;
+        }),
+        chars_scene("chars_overview_colours", wide, |a| {
+            a.chars.tab = Tab::Overview;
+            a.chars.overview_ui.page = crate::app::chars::overview_tab::Page::Colours;
+        }),
+        chars_scene("chars_overview_colours_narrow", narrow, |a| {
+            a.chars.tab = Tab::Overview;
+            a.chars.overview_ui.page = crate::app::chars::overview_tab::Page::Colours;
+        }),
+        chars_scene("chars_overview_columns", wide, |a| {
+            a.chars.tab = Tab::Overview;
+            a.chars.overview_ui.page = crate::app::chars::overview_tab::Page::Columns;
+        }),
+        chars_scene("chars_overview_columns_narrow", narrow, |a| {
+            a.chars.tab = Tab::Overview;
+            a.chars.overview_ui.page = crate::app::chars::overview_tab::Page::Columns;
+        }),
         chars_scene("chars_backups", wide, tab(Tab::Backups)),
         chars_scene("chars_backups_narrow", narrow, tab(Tab::Backups)),
         chars_scene("chars_scopes", wide, |a| {
@@ -7562,6 +7643,19 @@ fn chars_scenes() -> Vec<Scene> {
             if let Some(b) = a.chars.backups.iter().find(|b| !b.automatic) {
                 a.chars.selected = Pick::Backup(b.id.clone());
             }
+        }),
+        chars_preset_dialog_scene("chars_dialog_preset", [820.0, 640.0], "<color=0xFFFF9900>\u{2756} Ships: Enemy</color>", false),
+        chars_preset_dialog_scene("chars_dialog_preset_states", [820.0, 640.0], "Loot", true),
+        chars_preset_dialog_scene("chars_dialog_preset_small", [460.0, 420.0], "Loot", false),
+        chars_showcase("showcase_chars_windows", |a| a.chars.tab = Tab::Windows),
+        chars_showcase("showcase_chars_probes", |a| {
+            a.chars.tab = Tab::Probes;
+            a.chars.probes_ui.selected = Some(0);
+            a.chars.probes_ui.probe = Some(1);
+        }),
+        chars_showcase("showcase_chars_overview", |a| {
+            a.chars.tab = Tab::Overview;
+            a.chars.overview_ui.page = crate::app::chars::overview_tab::Page::Presets;
         }),
         chars_dialog_scene("chars_dialog_copy", [620.0, 540.0], "copy"),
         chars_dialog_scene("chars_dialog_copy_min", [380.0, 420.0], "copy"),
@@ -7947,6 +8041,280 @@ fn uitest_copying_one_part_changes_only_that_part() {
     let saved = backup::list(&backups);
     assert_eq!(saved.len(), before + 1);
     assert!(saved[0].automatic && saved[0].has(backup::Kind::Char, 90_000_002) && saved[0].files.len() == 1);
+}
+
+/// The probe table's inputs sit whole inside their row, at one height and on one line: a row no
+/// taller than a list row cut the framed inputs off and set them at different heights.
+#[test]
+fn uitest_probe_table_inputs_fit_their_rows_and_line_up() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT as _;
+    for name in ["chars_probes_drifter", "chars_probes"] {
+        let mut scene = all().into_iter().find(|s| s.name == name).expect("scene");
+        let harness = harness::build(&mut scene, false);
+        let rows: Vec<egui::Rect> = spai_fit_ui::rows::log(&harness.ctx)
+            .into_iter()
+            .filter(|(id, _)| *id == egui::Id::new("probe_rows"))
+            .map(|(_, r)| r)
+            .collect();
+        assert!(rows.len() >= 7, "{name}: {} probe rows", rows.len());
+        let mut inputs: Vec<(Role, egui::Rect)> = Vec::new();
+        for node in harness.root().children_recursive() {
+            let n = node.accesskit_node();
+            if !matches!(n.role(), Role::SpinButton | Role::ComboBox) || n.is_hidden() {
+                continue;
+            }
+            let Some(b) = n.bounding_box() else { continue };
+            inputs.push((n.role(), egui::Rect { min: egui::pos2(b.x0 as f32, b.y0 as f32), max: egui::pos2(b.x1 as f32, b.y1 as f32) }));
+        }
+        let mut checked = 0;
+        for row in &rows {
+            let inside: Vec<&(Role, egui::Rect)> = inputs.iter().filter(|(_, r)| row.contains(r.center())).collect();
+            if inside.is_empty() {
+                continue;
+            }
+            assert_eq!(inside.len(), 3, "{name}: three offsets per row, got {inside:?}");
+            for (role, r) in &inside {
+                assert!(r.top() >= row.top() - 0.5 && r.bottom() <= row.bottom() + 0.5, "{name}: {role:?} {r:?} is cut by its row {row:?}");
+                assert!((r.center().y - row.center().y).abs() <= 1.0, "{name}: {role:?} {r:?} is off the row's middle {row:?}");
+            }
+            let spins: Vec<&egui::Rect> = inside.iter().filter(|(role, _)| *role == Role::SpinButton).map(|(_, r)| r).collect();
+            for r in &spins {
+                assert!((r.height() - spins[0].height()).abs() <= 0.5 && (r.top() - spins[0].top()).abs() <= 0.5, "{name}: offsets at different heights: {spins:?}");
+            }
+            checked += 1;
+        }
+        assert!(checked >= 3, "{name}: only {checked} rows had inputs to check");
+    }
+}
+
+/// Moving a party to another side from the Rearrange sides window, with the report open behind
+/// it. The move drops the report's cached detail in the middle of the frame that draws it, which
+/// used to be unwrapped a few lines further down and took the app with it.
+#[test]
+fn uitest_moving_a_party_between_sides_does_not_crash_the_report() {
+    use egui_kittest::kittest::Queryable as _;
+    harness::scratch_profile();
+    let (b, names) = fixtures::real_battle();
+    let kills: Vec<i64> = b.engagements.iter().map(|e| e.kill_id).collect();
+    let app: SharedApp = Default::default();
+    let held = app.clone();
+    let mut scene = Scene::ui("battle_sides_move_probe", [1400.0, 900.0], move |ui| {
+        let mut slot = held.borrow_mut();
+        let a = slot.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Battles;
+            a.seed_battle(b.clone(), names.clone());
+            a.open_battle_sides();
+            a
+        });
+        a.root_chrome(ui);
+        a.root_central(ui, None);
+    });
+    let mut harness = harness::build(&mut scene, false);
+    assert!(app.borrow().as_ref().unwrap().battle_detail_cache.is_some());
+    // The top bar has a dropdown of its own; a side picker shows the side its party is on.
+    let picker = harness
+        .query_all_by_role(egui::accesskit::Role::ComboBox)
+        .find(|n| {
+            use egui_kittest::kittest::NodeT as _;
+            let n = n.accesskit_node();
+            n.label().or_else(|| n.value()).is_some_and(|l| l.starts_with("Side 1"))
+        })
+        .expect("no side picker in the Rearrange sides window");
+    picker.click();
+    harness.run_steps(3);
+    harness.get_all_by_label_contains("Side 2:").next().expect("a side to move to").click();
+    // The frame that applies the move, and a few after it.
+    harness.run_steps(4);
+    let ctx = harness.ctx.clone();
+    let mut slot = app.borrow_mut();
+    let a = slot.as_mut().unwrap();
+    assert!(a.battle_detail_cache.is_none(), "the move drops the detail it was made on");
+    // The scratch database is shared between tests: leave the fight as it was found.
+    a.apply_battle_edit(&ctx, |s| s.clear_side_moves(&kills));
+}
+
+/// The symbols overview packs put in preset and tab names. A font without one draws an empty
+/// square in its place, on the Overview tab and in every preset dropdown.
+#[test]
+fn uitest_overview_pack_symbols_have_glyphs() {
+    let mut scene = Scene::ui("glyph_probe", [200.0, 100.0], |ui| {
+        ui.label("x");
+    });
+    let harness = harness::build(&mut scene, false);
+    let font = egui::FontId::proportional(14.0);
+    let missing: Vec<String> = "❒❖✱✪✜➔✕⌘❤✇✿"
+        .chars()
+        .filter(|c| !harness.ctx.fonts_mut(|f| f.has_glyph(&font, *c)))
+        .map(|c| format!("U+{:04X} {c}", c as u32))
+        .collect();
+    assert!(missing.is_empty(), "no glyph for {missing:?}");
+}
+
+/// What a preset shows, edited in its dialog and saved: the group ticked there is in the game's
+/// file afterwards, the pilot state set there too, and the other presets are as they were.
+#[test]
+fn uitest_a_preset_edited_in_its_dialog_is_saved() {
+    use crate::app::chars::Tab;
+    use crate::evesettings::{overview, SettingsFile};
+    use egui_kittest::kittest::Queryable as _;
+    let (mut scene, app) = chars_scene_shared("chars_preset_probe", [1280.0, 800.0], |a| {
+        a.chars.tab = Tab::Overview;
+        a.chars.overview_ui.page = crate::app::chars::overview_tab::Page::Presets;
+    });
+    let mut harness = harness::build(&mut scene, false);
+    let path = app.borrow().as_ref().unwrap().chars.profile_dir().unwrap().join("core_user_1001.dat");
+    let read = |p: &std::path::Path| overview::read(&SettingsFile::read(p).unwrap());
+    let before = read(&path);
+    let loot = |o: &overview::Overview| o.presets.iter().find(|p| p.name == "Loot").cloned().expect("the Loot preset");
+    assert!(!loot(&before).shows(29), "the fixture's Loot preset has no battleships");
+
+    {
+        let mut slot = app.borrow_mut();
+        let a = slot.as_mut().unwrap();
+        let o = a.chars.session.as_ref().unwrap().overview.now.clone();
+        a.chars.overview_ui.edit_preset(&o, "Loot");
+    }
+    harness.run_steps(3);
+    harness.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Battleship").click();
+    harness.run_steps(2);
+    harness.get_by_label_contains("Pilot states").click();
+    harness.run_steps(2);
+    {
+        // The dialog's working copy only: nothing reaches the settings before Apply.
+        let slot = app.borrow();
+        let s = slot.as_ref().unwrap().chars.session.as_ref().unwrap();
+        assert!(!loot(&s.overview.now).shows(29));
+        assert!(!s.dirty());
+    }
+    harness.get_by_label("Apply").click();
+    harness.run_steps(3);
+    {
+        let slot = app.borrow();
+        let s = slot.as_ref().unwrap().chars.session.as_ref().unwrap();
+        assert!(loot(&s.overview.now).shows(29));
+        assert!(s.dirty());
+    }
+    harness.get_by_label_contains("Save").click();
+    harness.run_steps(3);
+    let after = read(&path);
+    assert!(loot(&after).shows(29), "the ticked group is in the file");
+    let mut expect = loot(&before);
+    expect.set_group(29, true);
+    assert_eq!(loot(&after), expect, "and nothing else about the preset changed");
+    for p in &before.presets {
+        if p.name != "Loot" {
+            assert_eq!(after.presets.iter().find(|q| q.name == p.name), Some(p), "{} was not touched", p.name);
+        }
+    }
+    assert_eq!(after.tabs, before.tabs);
+}
+
+/// A tab's two filters are set from its row: picking another one for the brackets changes that
+/// and leaves what the tab lists alone, and the same filter may serve both.
+#[test]
+fn uitest_a_tab_takes_a_filter_for_its_list_and_one_for_its_brackets() {
+    use crate::app::chars::Tab;
+    use crate::evesettings::{overview, SettingsFile};
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let (mut scene, app) = chars_scene_shared("chars_tab_filter_probe", [1280.0, 800.0], |a| a.chars.tab = Tab::Overview);
+    let mut harness = harness::build(&mut scene, false);
+    let path = app.borrow().as_ref().unwrap().chars.profile_dir().unwrap().join("core_user_1001.dat");
+    let before = overview::read(&SettingsFile::read(&path).unwrap());
+    let first = before.windows[0][0];
+    assert_eq!(overview::plain(&before.tab(first).unwrap().bracket), "Brackets: Combat");
+    let lists = before.tab(first).unwrap().preset.clone();
+
+    let combo = |harness: &egui_kittest::Harness<'_>, shown: &str| {
+        harness
+            .query_all_by_role(egui::accesskit::Role::ComboBox)
+            .find(|n| {
+                let n = n.accesskit_node();
+                n.label().or_else(|| n.value()).as_deref() == Some(shown)
+            })
+            .map(|n| n.rect().center())
+            .unwrap_or_else(|| panic!("no dropdown showing {shown}"))
+    };
+    // The first row's brackets dropdown, then a filter the list dropdown could take just as well.
+    harness::click_at(&harness, combo(&harness, "Brackets: Combat"));
+    harness.run_steps(3);
+    harness.get_by_label("? DSCAN: Ships").click();
+    harness.run_steps(3);
+    {
+        let slot = app.borrow();
+        let o = &slot.as_ref().unwrap().chars.session.as_ref().unwrap().overview.now;
+        let tab = o.tab(first).unwrap();
+        assert_eq!(overview::plain(&tab.bracket), "? DSCAN: Ships");
+        assert_eq!(tab.preset, lists, "what the tab lists is a filter of its own");
+    }
+    // And the same filter for what it lists.
+    harness::click_at(&harness, combo(&harness, &overview::plain(&lists)));
+    harness.run_steps(3);
+    harness.get_all_by_label("? DSCAN: Ships").last().expect("the filter in the open dropdown").click();
+    harness.run_steps(3);
+    harness.get_by_label_contains("Save").click();
+    harness.run_steps(3);
+    let after = overview::read(&SettingsFile::read(&path).unwrap());
+    let tab = after.tab(first).unwrap();
+    assert_eq!((overview::plain(&tab.preset), overview::plain(&tab.bracket)), ("? DSCAN: Ships".to_owned(), "? DSCAN: Ships".to_owned()));
+    for other in before.tabs.iter().filter(|t| t.index != first) {
+        assert_eq!(after.tab(other.index), Some(other), "tab {} was not touched", other.index);
+    }
+    assert_eq!(after.presets, before.presets);
+}
+
+/// Dropdowns in one column are one width whatever they show. egui widens a dropdown to fit a
+/// long choice, so a tab with a long filter name stood out from the rows around it.
+#[test]
+fn uitest_dropdowns_in_a_column_share_one_width() {
+    use crate::app::chars::Tab;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    const LONG: &str = "<color=0xFFFF4545>\u{2715} Hostile: Everything that is not blue and a few more words</color>";
+    let widths = |harness: &egui_kittest::Harness<'_>, left_of: f32| -> Vec<(String, f32)> {
+        harness
+            .query_all_by_role(egui::accesskit::Role::ComboBox)
+            .filter(|n| n.rect().left() > left_of)
+            .map(|n| {
+                let a = n.accesskit_node();
+                (a.label().or_else(|| a.value()).unwrap_or_default(), n.rect().width())
+            })
+            .collect()
+    };
+    // The Tabs page, one tab listing a filter with a name longer than the dropdown.
+    let (mut scene, app) = chars_scene_shared("chars_combo_width_probe", [1280.0, 800.0], |a| {
+        a.chars.tab = Tab::Overview;
+        if let Some(s) = &mut a.chars.session {
+            let first = s.overview.now.windows[0][0];
+            if let Some(tab) = s.overview.now.tab_mut(first) {
+                tab.preset = LONG.to_owned();
+            }
+        }
+    });
+    let mut harness = harness::build(&mut scene, false);
+    harness.run_steps(3);
+    // Right of the character list and its header dropdown: the six dropdowns of the three tabs.
+    let rows: Vec<(String, f32)> = widths(&harness, 440.0);
+    assert_eq!(rows.len(), 6, "{rows:?}");
+    assert!(rows.iter().any(|(label, _)| label.contains("Everything that is not blue")), "{rows:?}");
+    for (label, w) in &rows {
+        assert!((w - rows[0].1).abs() <= 0.5, "{label} is {w} wide where the first is {}: {rows:?}", rows[0].1);
+    }
+
+    // The filter editor's states page: a dropdown per state, each showing a different choice.
+    {
+        let mut slot = app.borrow_mut();
+        let a = slot.as_mut().unwrap();
+        let o = a.chars.session.as_ref().unwrap().overview.now.clone();
+        a.chars.overview_ui.edit_preset(&o, "Loot");
+        a.chars.overview_ui.show_preset_states();
+    }
+    harness.run_steps(3);
+    let states: Vec<(String, f32)> = widths(&harness, 0.0).into_iter().filter(|(l, _)| ["Listed as usual", "Left out", "Always listed"].contains(&l.as_str())).collect();
+    assert!(states.len() >= 5, "{states:?}");
+    for (label, w) in &states {
+        assert!((w - states[0].1).abs() <= 0.5, "{label} is {w} wide where the first is {}", states[0].1);
+    }
 }
 
 /// The rule form's condition buttons line up: one left edge and one width, so the form reads as

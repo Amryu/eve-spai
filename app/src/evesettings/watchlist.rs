@@ -43,15 +43,6 @@ pub struct Watchlists {
     pub two_columns: Option<bool>,
 }
 
-/// The colours the client offers for a watched pilot.
-pub const PALETTE: &[[f32; 3]] = &[
-    [0.75, 0.0, 0.0],
-    [1.0, 0.35, 0.0],
-    [1.0, 0.7, 0.0],
-    [0.1, 0.6, 0.1],
-    [0.0, 0.15, 0.6],
-];
-
 pub fn read(file: &SettingsFile) -> Watchlists {
     let mut out = Watchlists::default();
     if let Some(dict) = file.get("ui", LISTS) {

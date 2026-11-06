@@ -161,10 +161,28 @@ fn hud_rect(offset: i32, screen: [i32; 2]) -> [i32; 4] {
     [screen[0] / 2 + offset - HUD[0] / 2, screen[1] - HUD[1], HUD[0], HUD[1]]
 }
 
-/// The targets hang leftwards from their anchor, newest furthest out.
-fn targets_rect(at: [f64; 2], screen: [i32; 2]) -> [i32; 4] {
-    let (x, y) = ((at[0] * f64::from(screen[0])) as i32, (at[1] * f64::from(screen[1])) as i32);
-    [x - TARGET[0] * (TARGETS_SHOWN - 1), y, TARGET[0] * TARGETS_SHOWN, TARGET[1]]
+/// Where the row of locked targets starts, in screen pixels. The game stores it as a fraction of
+/// the area beside the Neocom, not of the whole screen: a stored 0.6794 is 1278 px of the 1881
+/// that a 1920 screen has left next to a 39 px Neocom.
+fn targets_origin(at: [f64; 2], screen: [i32; 2], neocom: i32) -> [i32; 2] {
+    let free = f64::from(screen[0] - neocom);
+    [neocom + (at[0] * free).round() as i32, (at[1] * f64::from(screen[1])).round() as i32]
+}
+
+fn targets_fraction(px: [i32; 2], screen: [i32; 2], neocom: i32) -> [f64; 2] {
+    let free = f64::from((screen[0] - neocom).max(1));
+    [(f64::from(px[0] - neocom) / free).clamp(0.0, 1.0), (f64::from(px[1]) / f64::from(screen[1].max(1))).clamp(0.0, 1.0)]
+}
+
+/// The row's footprint and whether it runs leftwards. The targets fill in away from the nearer
+/// side of the screen, and down or up away from the nearer of top and bottom, the first one with
+/// its corner on the anchor.
+fn targets_rect(at: [f64; 2], screen: [i32; 2], neocom: i32) -> ([i32; 4], bool) {
+    let [x, y] = targets_origin(at, screen, neocom);
+    let leftwards = x > neocom + (screen[0] - neocom) / 2;
+    let upwards = y > screen[1] / 2;
+    let width = TARGET[0] * TARGETS_SHOWN;
+    ([if leftwards { x - width } else { x }, if upwards { y - TARGET[1] } else { y }, width, TARGET[1]], leftwards)
 }
 
 fn glyph_for(id: &str) -> &'static str {
@@ -275,7 +293,11 @@ pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session) {
     let to_screen = |p: egui::Pos2| [((p.x - canvas.left()) / scale), ((p.y - canvas.top()) / scale)];
 
     let hud = hud_rect(s.layout.now.hud_offset.unwrap_or(0), screen);
-    let targets = s.targets.now.map(|at| targets_rect(at, screen));
+    let neocom = s.layout.now.neocom_width.clamp(24, 80);
+    let (targets, targets_leftwards) = match s.targets.now.map(|at| targets_rect(at, screen, neocom)) {
+        Some((rect, leftwards)) => (Some(rect), leftwards),
+        None => (None, true),
+    };
     let editable = ui.is_enabled() && !s.read_only;
 
     // What the pointer is over, for the cursor and for starting a drag. A drag only registers
@@ -333,9 +355,9 @@ pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session) {
                 s.layout.now.hud_offset = Some(to);
             }
             Grabbed::Targets { at } => {
-                let x = (at[0] + f64::from(d[0]) / f64::from(screen[0])).clamp(0.05, 1.0);
-                let y = (at[1] + f64::from(d[1]) / f64::from(screen[1])).clamp(0.0, 0.9);
-                s.targets.now = Some([x, y]);
+                let from = targets_origin(*at, screen, neocom);
+                let to = [(from[0] + d[0]).clamp(neocom, screen[0]), (from[1] + d[1]).clamp(0, screen[1])];
+                s.targets.now = Some(targets_fraction(to, screen, neocom));
             }
         }
     }
@@ -360,16 +382,25 @@ pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session) {
     let line = v.widgets.noninteractive.bg_stroke.color;
     let weak = v.weak_text_color();
 
-    let bar = to_ui([0, 0, s.layout.now.neocom_width.clamp(24, 80), screen[1]]);
+    let bar = to_ui([0, 0, neocom, screen[1]]);
     p.rect_filled(bar, 0.0, v.faint_bg_color);
-    let buttons = s.neocom.now.as_ref().map_or(12, |b| b.len()) as i32;
-    let side = bar.width() * 0.7;
-    for i in 0..buttons {
+    // The character's own buttons where the bar is wide enough on screen to tell them apart;
+    // plain marks where it is not, or where the game still has its default bar.
+    let ids: Vec<&str> = s.neocom.now.iter().flatten().map(|b| b.id.as_str()).collect();
+    let side = bar.width() * 0.8;
+    for i in 0..ids.len().max(if ids.is_empty() { 12 } else { 0 }) {
         let c = egui::pos2(bar.center().x, bar.top() + bar.width() * (0.6 + i as f32));
         if c.y + side > bar.bottom() {
             break;
         }
-        p.rect_filled(egui::Rect::from_center_size(c, egui::Vec2::splat(side)), 1.0, line);
+        match ids.get(i) {
+            Some(id) if side >= 8.0 => {
+                p.text(c, egui::Align2::CENTER_CENTER, super::sidebar_tab::glyph(id), egui::FontId::proportional(side), weak);
+            }
+            _ => {
+                p.rect_filled(egui::Rect::from_center_size(c, egui::Vec2::splat(side * 0.6)), 1.0, line);
+            }
+        }
     }
 
     let hud_ui = to_ui(hud);
@@ -386,7 +417,9 @@ pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session) {
         let t = to_ui(t);
         let step = t.width() / TARGETS_SHOWN as f32;
         for i in 0..TARGETS_SHOWN {
-            let c = egui::pos2(t.right() - step * (i as f32 + 0.5), t.top() + step * 0.5);
+            // Numbered from the anchor outwards.
+            let along = step * (i as f32 + 0.5);
+            let c = egui::pos2(if targets_leftwards { t.right() - along } else { t.left() + along }, t.top() + step * 0.5);
             p.circle_stroke(c, step * 0.36, egui::Stroke::new(1.5, weak));
             // Numbered only where a body-size digit fits the ring; never shrunk to fit.
             if step * 0.72 >= body.size + 6.0 {
@@ -630,11 +663,32 @@ mod tests {
     }
 
     #[test]
-    fn hud_and_targets_sit_where_the_game_draws_them() {
+    fn the_hud_sits_bottom_centre_and_follows_its_offset() {
         assert_eq!(hud_rect(0, [1920, 1080]), [750, 930, 420, 150]);
         assert_eq!(hud_rect(-200, [1920, 1080])[0], 550);
-        let t = targets_rect([0.68, 0.014], [1920, 1080]);
-        assert_eq!(t[0] + t[2], 1305 + TARGET[0]);
-        assert_eq!(t[1], 15);
+    }
+
+    #[test]
+    fn locked_targets_are_measured_beside_the_neocom_and_grow_away_from_the_edge() {
+        // The value the client stores for an anchor dragged to 1317, 15 on a 1920 by 1080 screen
+        // with a 39 px Neocom.
+        let stored = [0.6794258373205742, 0.013888888888888888];
+        assert_eq!(targets_origin(stored, [1920, 1080], 39), [1317, 15]);
+        let (rect, leftwards) = targets_rect(stored, [1920, 1080], 39);
+        assert!(leftwards, "an anchor in the right half fills in towards the left");
+        assert_eq!(rect[0] + rect[2], 1317, "nothing reaches past the anchor");
+        assert_eq!(rect[1], 15);
+        // On a wider screen it stays clear of a window docked 27 px to its right.
+        let (wide, _) = targets_rect(stored, [2560, 1440], 39);
+        assert_eq!(wide[0] + wide[2], 1752);
+        assert!(wide[0] + wide[2] <= 1779);
+
+        let (left, leftwards) = targets_rect([0.1, 0.9], [1920, 1080], 39);
+        assert!(!leftwards);
+        assert_eq!((left[0], left[1] + left[3]), (39 + 188, 972), "from the left it runs right, from the bottom up");
+
+        for px in [[1317, 15], [39, 0], [1920, 1080], [800, 600]] {
+            assert_eq!(targets_origin(targets_fraction(px, [1920, 1080], 39), [1920, 1080], 39), px);
+        }
     }
 }

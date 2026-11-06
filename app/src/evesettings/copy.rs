@@ -24,7 +24,7 @@ impl Part {
     pub fn label(self) -> &'static str {
         match self {
             Part::Layout => "Window layout",
-            Part::Neocom => "Sidebar buttons",
+            Part::Neocom => "Neocom buttons",
             Part::Watchlist => "Fleet watch lists",
             Part::Chat => "Chat channels",
             Part::Overview => "Overview",

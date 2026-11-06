@@ -23,16 +23,12 @@ impl Mode {
         }
     }
 
-    fn snap(self) -> f64 {
-        match self {
-            Mode::Scan => 0.25 * AU,
-            Mode::Perch => 100.0 * KM,
-        }
-    }
 
-    /// A formation whose probes all sit within a fraction of an AU is a perch formation.
+    /// A formation with any probe less than 1 AU out is a perch formation. A probe on the centre
+    /// itself says nothing either way: scanning formations have one too.
     fn guess(f: &Formation) -> Mode {
-        if !f.probes.is_empty() && f.extent() <= 5.0 * GRID_KM * KM {
+        let near = f.probes.iter().map(|p| probes::length(p.pos)).any(|d| d > 0.0 && d < AU);
+        if near {
             Mode::Perch
         } else {
             Mode::Scan
@@ -49,6 +45,9 @@ pub(crate) struct State {
     zoom: f32,
     dragging: Option<usize>,
     snap: bool,
+    /// The step dragged probes move in, per mode, in that mode's unit.
+    snap_au: f64,
+    snap_km: f64,
     shape: Shape,
     count: usize,
     /// Radius for the shape generator, in the mode's unit.
@@ -66,6 +65,8 @@ impl Default for State {
             zoom: 1.0,
             dragging: None,
             snap: true,
+            snap_au: 0.25,
+            snap_km: 100.0,
             shape: Shape::Pinpoint,
             count: 7,
             radius: 0.0,
@@ -181,12 +182,20 @@ fn view_radius(f: &Formation, mode: Mode) -> f64 {
     }
 }
 
-fn new_formation(all: &probes::Formations, mode: Mode) -> Formation {
-    let (shape, count, radius, range, name) = match mode {
-        Mode::Scan => (Shape::Pinpoint, 7, 2.0 * AU, 4.0 * AU, tr!("New formation")),
-        Mode::Perch => (Shape::Ring, 8, 5_000.0 * KM, 0.25 * AU, tr!("New perches")),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Preset {
+    Pinpoint,
+    Perches,
+    Drifter,
+}
+
+fn new_formation(all: &probes::Formations, preset: Preset) -> Formation {
+    let (name, probes) = match preset {
+        Preset::Pinpoint => (tr!("New formation"), probes::generate(Shape::Pinpoint, 7, 2.0 * AU, 4.0 * AU)),
+        Preset::Perches => (tr!("New perches"), probes::generate(Shape::Ring, 8, 5_000.0 * KM, 0.25 * AU)),
+        Preset::Drifter => ("Drifter", probes::drifter()),
     };
-    Formation { id: all.next_id(), name: name.to_owned(), probes: probes::generate(shape, count, radius, range) }
+    Formation { id: all.next_id(), name: name.to_owned(), probes }
 }
 
 pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session) {
@@ -215,7 +224,7 @@ pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session) {
         ui.separator();
         if !wide {
             let current = at.map_or_else(|| tr!("No formations").to_owned(), |i| all.list[i].name.clone());
-            egui::ComboBox::from_id_salt("probe_formation").selected_text(current).width(160.0).truncate().show_ui(ui, |ui| {
+            combo(ui, "probe_formation", 170.0, current, |ui| {
                 for f in &all.list {
                     if ui.menu_label(st.selected == Some(f.id), f.name.as_str()).clicked() {
                         st.selected = Some(f.id);
@@ -225,13 +234,23 @@ pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session) {
                 }
             });
         }
-        if ui.button(trf!("{icon}  New", icon = icon::PLUS)).on_hover_text(tr!("A new formation for the mode shown")).clicked() {
-            let f = new_formation(all, mode);
-            st.selected = Some(f.id);
-            st.mode = Some(mode);
-            st.probe = None;
-            all.list.push(f);
-        }
+        ui.menu_button(trf!("{icon}  New", icon = icon::PLUS), |ui| {
+            for (preset, label, hover) in [
+                (Preset::Pinpoint, tr!("Pinpoint, 4 AU"), tr!("Seven probes: one in the middle and six around it")),
+                (Preset::Perches, tr!("Ring of perches, 5,000 km"), tr!("Eight probes on grid, in a ring around the centre")),
+                (Preset::Drifter, tr!("Drifter stack"), tr!("Six probes stacked 340,000 km out, one at the centre and one counterweight")),
+            ] {
+                if ui.button(label).on_hover_text(hover).clicked() {
+                    let f = new_formation(all, preset);
+                    st.selected = Some(f.id);
+                    st.mode = None;
+                    st.probe = None;
+                    st.zoom = 1.0;
+                    all.list.push(f);
+                    ui.close();
+                }
+            }
+        });
         // Plain widgets, not a nested ui: this row wraps.
         if ui.add_enabled(at.is_some(), egui::Button::new(trf!("{icon}  Duplicate", icon = icon::COPY))).clicked() {
             if let Some(i) = at {
@@ -249,7 +268,12 @@ pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session) {
             }
         }
         ui.separator();
-        ui.checkbox(&mut st.snap, tr!("Snap")).on_hover_text(trf!("Dragged probes move in steps of {step}. Hold Alt to move freely.", step = distance_text(mode.snap(), mode)));
+        ui.checkbox(&mut st.snap, tr!("Snap")).on_hover_text(tr!("Dragged probes move in steps of this size. Hold Alt to move freely."));
+        let step = match mode {
+            Mode::Scan => egui::DragValue::new(&mut st.snap_au).speed(0.05).range(0.01..=16.0).fixed_decimals(2).suffix(" AU"),
+            Mode::Perch => egui::DragValue::new(&mut st.snap_km).speed(10.0).range(1.0..=100_000.0).fixed_decimals(0).suffix(" km"),
+        };
+        ui.add_enabled(st.snap, step).on_hover_text(tr!("The step a dragged probe snaps to"));
         if ui.button(icon::ARROWS_OUT_CARDINAL).on_hover_text(tr!("Reset the view")).clicked() {
             let fresh = State::default();
             (st.yaw, st.pitch, st.zoom) = (fresh.yaw, fresh.pitch, fresh.zoom);
@@ -259,7 +283,9 @@ pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session) {
             clipped(ui, egui::RichText::new(hint).weak(), hint);
         }
     });
-    ui.add_space(4.0);
+    ui.add_space(2.0);
+    ui.separator();
+    ui.add_space(6.0);
 
     if wide {
         egui::Panel::left("probe_formations").resizable(false).exact_size(190.0).frame(egui::Frame::NONE.inner_margin(egui::Margin { right: 8, ..Default::default() })).show_inside(ui, |ui| {
@@ -293,28 +319,58 @@ pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session) {
         egui::Panel::right("probe_table").resizable(false).exact_size(TABLE_W + 8.0).frame(egui::Frame::NONE.inner_margin(egui::Margin { left: 8, ..Default::default() })).show_inside(ui, |ui| table(ui, st, f, mode, true));
         scene(ui, st, f, mode, ui.available_rect_before_wrap());
     } else {
-        // The view takes what the table can spare, and the table scrolls as a whole when even
-        // that is too little.
-        let avail = ui.available_rect_before_wrap();
-        let height = (avail.height() - 250.0).clamp(160.0, 420.0).min(avail.height());
-        scene(ui, st, f, mode, egui::Rect::from_min_size(avail.min, egui::vec2(avail.width(), height)));
-        ui.add_space(6.0);
-        super::sidebar_tab::scroll(ui, "probe_table_scroll", |ui| table(ui, st, f, mode, false));
+        // One scroll area for the view and the table under it: neither then needs a least
+        // height of its own, and a short window scrolls instead of pushing the table's last rows
+        // under the Save bar.
+        super::sidebar_tab::scroll(ui, "probe_narrow_scroll", |ui| {
+            let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 260.0));
+            scene(ui, st, f, mode, rect);
+            ui.add_space(6.0);
+            table(ui, st, f, mode, false);
+        });
     }
 }
 
 const NUM_W: f32 = 26.0;
-const AXIS_W: f32 = 64.0;
-const RANGE_W: f32 = 84.0;
-/// What the table needs across: its cells, the gaps between them and the row's side padding.
-const TABLE_W: f32 = NUM_W + 3.0 * AXIS_W + RANGE_W + 6.0 * spai_fit_ui::rows::GAP;
+/// Wide enough for a seven-digit distance in km with its sign.
+const AXIS_W: f32 = 82.0;
+/// Taller than a list row: the inputs in it are framed, and a row of list height cut them off.
+const PROBE_ROW_H: f32 = 32.0;
+/// The table's cells, the gaps between them and the row's side padding; and at least what the
+/// controls under it need.
+const TABLE_W: f32 = {
+    let cells = NUM_W + 3.0 * AXIS_W + 5.0 * spai_fit_ui::rows::GAP;
+    if cells > 330.0 {
+        cells
+    } else {
+        330.0
+    }
+};
 
 /// `own_scroll`: the probe rows scroll by themselves, for a table with a fixed height to fill.
 fn table(ui: &mut egui::Ui, st: &mut State, f: &mut Formation, mode: Mode, own_scroll: bool) {
     let unit = mode.unit();
+    let label_w = 86.0;
     ui.horizontal(|ui| {
-        ui.label(tr!("Name"));
+        ui.allocate_ui_with_layout(egui::vec2(label_w, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| ui.label(tr!("Name")));
         ui.add_sized([ui.available_width(), 22.0], egui::TextEdit::singleline(&mut f.name));
+    });
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(egui::vec2(label_w, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| ui.label(tr!("Scan range")));
+        let current = f.range();
+        let shown = match current {
+            Some(r) => range_text(r),
+            None if f.probes.is_empty() => String::new(),
+            None => tr!("mixed").to_owned(),
+        };
+        combo(ui, "probe_range", 110.0, shown, |ui| {
+            for au in RANGES_AU {
+                if ui.menu_label(current.is_some_and(|r| (r - au * AU).abs() < 1.0), range_text(au * AU)).clicked() {
+                    f.set_range(au * AU);
+                }
+            }
+        })
+            .on_hover_text(tr!("One range for every probe of the formation"));
     });
     ui.add_space(4.0);
     let (decimals, speed) = match mode {
@@ -325,47 +381,49 @@ fn table(ui: &mut egui::Ui, st: &mut State, f: &mut Formation, mode: Mode, own_s
         Mode::Scan => tr!("Offsets from the centre in AU. Y is up."),
         Mode::Perch => tr!("Offsets from the centre in km. Y is up."),
     };
-    clipped(ui, egui::RichText::new(head).weak(), head);
+    ui.add(egui::Label::new(egui::RichText::new(head).weak()).wrap());
     spai_fit_ui::rows::row(ui, "probe_head", "head", ROW_H - 4.0, false, |ui| {
         spai_fit_ui::rows::head_cell(ui, NUM_W, "#", false);
         for h in ["X", "Y", "Z"] {
             spai_fit_ui::rows::head_cell(ui, AXIS_W, h, false);
         }
-        spai_fit_ui::rows::head_cell(ui, RANGE_W, tr!("Range"), false);
     });
     let mut picked = None;
-    let room = if own_scroll { (ui.available_height() - 76.0).max(ROW_H * 3.0) } else { f32::INFINITY };
-    let out = egui::ScrollArea::vertical().id_salt("probe_rows").max_height(room).auto_shrink([false, true]).show(ui, |ui| {
+    let mut rows = |ui: &mut egui::Ui| {
         for (i, p) in f.probes.iter_mut().enumerate() {
-            let resp = spai_fit_ui::rows::row(ui, "probe_rows", i, ROW_H - 4.0, st.probe == Some(i), |ui| {
+            let resp = spai_fit_ui::rows::row(ui, "probe_rows", i, PROBE_ROW_H, st.probe == Some(i), |ui| {
                 spai_fit_ui::rows::cell(ui, NUM_W, egui::RichText::new((i + 1).to_string()), "");
                 for axis in 0..3 {
                     let mut v = p.pos[axis] / unit;
                     let drag = egui::DragValue::new(&mut v).speed(speed).fixed_decimals(decimals);
-                    if ui.add_sized([AXIS_W, 22.0], drag).changed() {
+                    // At the height the widget takes anyway: sized any lower it grows downwards
+                    // from where it was put and ends up off the row's middle.
+                    let h = ui.spacing().interact_size.y;
+                    if ui.add_sized([AXIS_W, h], drag).changed() {
                         p.pos[axis] = v * unit;
                         picked = Some(i);
                     }
                 }
-                egui::ComboBox::from_id_salt(("probe_range", i)).width(RANGE_W - 8.0).selected_text(range_text(p.range)).show_ui(ui, |ui| {
-                    for au in RANGES_AU {
-                        if ui.menu_label((p.range - au * AU).abs() < 1.0, range_text(au * AU)).clicked() {
-                            p.range = au * AU;
-                        }
-                    }
-                });
             });
             if resp.clicked() {
                 picked = Some(i);
             }
         }
-    });
-    spai_fit_ui::rows::note_scrolled(ui.ctx(), &out);
+    };
+    if own_scroll {
+        let room = (ui.available_height() - 110.0).max(PROBE_ROW_H * 3.0);
+        let out = egui::ScrollArea::vertical().id_salt("probe_rows").max_height(room).auto_shrink([false, true]).show(ui, &mut rows);
+        spai_fit_ui::rows::note_scrolled(ui.ctx(), &out);
+    } else {
+        // Already inside a scroll area: a second one would take a fixed height there and hide
+        // rows behind what follows it.
+        rows(ui);
+    }
     if picked.is_some() {
         st.probe = picked;
     }
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         let full = f.probes.len() >= MAX_PROBES;
         let add = ui.add_enabled(!full, egui::Button::new(trf!("{icon}  Probe", icon = icon::PLUS)));
         if add.on_hover_text(tr!("Add a probe at the centre")).on_disabled_hover_text(trf!("A launcher holds {n} probes.", n = MAX_PROBES)).clicked() {
@@ -379,10 +437,10 @@ fn table(ui: &mut egui::Ui, st: &mut State, f: &mut Formation, mode: Mode, own_s
                 f.probes.remove(i);
             }
         }
-        let far = distance_text(f.extent(), mode);
-        let text = trf!("Probes: {n}, farthest {far}", n = f.probes.len(), far = far);
-        clipped(ui, egui::RichText::new(&text).weak(), &text);
     });
+    let far = distance_text(f.extent(), mode);
+    let text = trf!("Probes: {n}, farthest {far}", n = f.probes.len(), far = far);
+    ui.add(egui::Label::new(egui::RichText::new(text).weak()).wrap());
     ui.add_space(4.0);
     if st.radius <= 0.0 {
         st.radius = match mode {
@@ -390,8 +448,8 @@ fn table(ui: &mut egui::Ui, st: &mut State, f: &mut Formation, mode: Mode, own_s
             Mode::Perch => 5_000.0,
         };
     }
-    ui.horizontal(|ui| {
-        egui::ComboBox::from_id_salt("probe_shape").width(84.0).selected_text(spai_ui::i18n::t(st.shape.label())).show_ui(ui, |ui| {
+    ui.horizontal_wrapped(|ui| {
+        combo(ui, "probe_shape", 110.0, spai_ui::i18n::t(st.shape.label()), |ui| {
             for shape in Shape::ALL {
                 ui.menu_value(&mut st.shape, shape, spai_ui::i18n::t(shape.label()));
             }
@@ -400,8 +458,8 @@ fn table(ui: &mut egui::Ui, st: &mut State, f: &mut Formation, mode: Mode, own_s
         let suffix = if mode == Mode::Scan { " AU" } else { " km" };
         ui.add(egui::DragValue::new(&mut st.radius).speed(speed).range(0.0..=f64::MAX).fixed_decimals(decimals).suffix(suffix))
             .on_hover_text(tr!("How far out the shape reaches"));
-        if ui.button(tr!("Arrange")).on_hover_text(tr!("Replace the probes with this shape, keeping the first probe's range")).clicked() {
-            let range = f.probes.first().map_or(4.0 * AU, |p| p.range);
+        if ui.button(tr!("Arrange")).on_hover_text(tr!("Replace the probes with this shape")).clicked() {
+            let range = f.range().or(f.probes.first().map(|p| p.range)).unwrap_or(4.0 * AU);
             f.probes = probes::generate(st.shape, st.count, st.radius * unit, range);
             st.probe = None;
         }
@@ -424,6 +482,8 @@ fn scene(ui: &mut egui::Ui, st: &mut State, f: &mut Formation, mode: Mode, rect:
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
         if scroll != 0.0 {
             st.zoom = (st.zoom * (scroll * 0.003).exp()).clamp(0.15, 30.0);
+            // Used up here, so a scroll area this view sits in does not scroll as well.
+            ui.input_mut(|i| i.smooth_scroll_delta.y = 0.0);
         }
     }
     let pointer = resp.interact_pointer_pos().or_else(|| resp.hover_pos());
@@ -443,7 +503,10 @@ fn scene(ui: &mut egui::Ui, st: &mut State, f: &mut Formation, mode: Mode, rect:
         match st.dragging.and_then(|i| f.probes.get_mut(i)) {
             Some(p) => {
                 let free = !st.snap || ui.input(|i| i.modifiers.alt);
-                let step = mode.snap();
+                let step = match mode {
+                    Mode::Scan => st.snap_au * AU,
+                    Mode::Perch => st.snap_km * KM,
+                };
                 if ui.input(|i| i.modifiers.shift) {
                     p.pos[1] += cam.lift(resp.drag_delta().y);
                 } else if let Some(to) = pointer.and_then(|at| cam.on_plane(at, p.pos[1])) {
@@ -495,7 +558,8 @@ fn scene(ui: &mut egui::Ui, st: &mut State, f: &mut Formation, mode: Mode, rect:
         p.text(at + egui::vec2(4.0, 2.0), egui::Align2::LEFT_TOP, distance_text(r, mode), font.clone(), weak);
         r += step;
     }
-    if mode == Mode::Perch && radius >= GRID_KM * KM * 0.6 {
+    // The edge of the grid, while the view is close enough for it to be more than a dot.
+    if mode == Mode::Perch && radius >= GRID_KM * KM * 0.6 && GRID_KM * KM * cam.scale >= 10.0 {
         ring(GRID_KM * KM, 0.0, egui::Stroke::new(1.5, standing::WARNING.gamma_multiply(0.7)), [0.0; 3]);
     }
     for axis in [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]] {
@@ -606,21 +670,30 @@ mod tests {
     }
 
     #[test]
-    fn the_mode_is_guessed_from_how_far_out_the_probes_are() {
+    fn any_probe_under_an_au_out_makes_it_a_perch_formation() {
         let f = |radius: f64| Formation { id: 0, name: String::new(), probes: probes::generate(Shape::Ring, 8, radius, AU) };
         assert_eq!(Mode::guess(&f(5_000.0 * KM)), Mode::Perch);
-        assert_eq!(Mode::guess(&f(30_000.0 * KM)), Mode::Perch);
+        assert_eq!(Mode::guess(&f(0.9 * AU)), Mode::Perch);
+        // A probe on the centre is in every pinpoint and does not count.
         assert_eq!(Mode::guess(&f(4.0 * AU)), Mode::Scan);
+        assert_eq!(Mode::guess(&f(1.5 * AU)), Mode::Scan);
+        let mut mixed = f(4.0 * AU);
+        mixed.probes[3].pos = [300_000.0 * KM, 0.0, 0.0];
+        assert_eq!(Mode::guess(&mixed), Mode::Perch, "one near probe is enough");
         assert_eq!(Mode::guess(&Formation { id: 0, name: String::new(), probes: vec![] }), Mode::Scan);
+        let drifter = Formation { id: 0, name: String::new(), probes: probes::drifter() };
+        assert_eq!(Mode::guess(&drifter), Mode::Perch, "its ranges are 32 AU, its offsets are not");
     }
 
     #[test]
     fn new_formations_fit_their_mode() {
         let all = probes::Formations::default();
-        let scan = new_formation(&all, Mode::Scan);
+        let scan = new_formation(&all, Preset::Pinpoint);
         assert_eq!((scan.probes.len(), Mode::guess(&scan)), (7, Mode::Scan));
-        let perch = new_formation(&all, Mode::Perch);
+        let perch = new_formation(&all, Preset::Perches);
         assert_eq!((perch.probes.len(), Mode::guess(&perch)), (8, Mode::Perch));
         assert!(perch.extent() <= GRID_KM * KM);
+        let drifter = new_formation(&all, Preset::Drifter);
+        assert_eq!((drifter.name.as_str(), drifter.probes.len(), Mode::guess(&drifter)), ("Drifter", 8, Mode::Perch));
     }
 }

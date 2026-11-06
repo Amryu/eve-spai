@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use super::sidebar_tab::{row, scroll};
 use super::*;
-use crate::evesettings::watchlist::{Watchlist, MAX_MEMBERS, PALETTE};
+use crate::evesettings::watchlist::{Watchlist, MAX_MEMBERS};
 
 type Lookup = Arc<Mutex<Option<Result<(i64, String), String>>>>;
 
@@ -16,7 +16,6 @@ pub(crate) struct State {
     fleet_id: String,
     lookup: Lookup,
     busy: bool,
-    note: String,
 }
 
 enum Op {
@@ -26,17 +25,12 @@ enum Op {
     Color(i64, Option<[f32; 3]>),
 }
 
-fn color32(c: [f32; 3]) -> egui::Color32 {
-    egui::Color32::from_rgb((c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8)
-}
-
 fn find_pilot(st: &mut State, ctx: &egui::Context) {
     let name = st.add_name.trim().to_owned();
     if name.is_empty() || st.busy {
         return;
     }
     st.busy = true;
-    st.note.clear();
     let (slot, ctx) = (st.lookup.clone(), ctx.clone());
     std::thread::spawn(move || {
         let found = crate::http::client(15)
@@ -51,7 +45,9 @@ fn find_pilot(st: &mut State, ctx: &egui::Context) {
     });
 }
 
-pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session, names: &HashMap<i64, String>, mine: &[Row]) {
+/// Returns a note for the status line when adding a pilot did not work.
+pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session, names: &HashMap<i64, String>, mine: &[Row]) -> Option<String> {
+    let mut note = None;
     let own: HashMap<i64, String> = mine.iter().filter_map(|r| Some((r.id, r.name.clone()?))).collect();
     let name_of = |id: i64| names.get(&id).or_else(|| own.get(&id)).cloned().unwrap_or_else(|| trf!("Character {id}", id = id));
     let now = crate::clock::utc().timestamp();
@@ -63,13 +59,13 @@ pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session, names: &Has
     if let Some(done) = done {
         st.busy = false;
         match (done, st.selected.and_then(|id| w.lists.iter_mut().find(|l| l.fleet_id == id))) {
-            (Ok((id, _)), Some(list)) if list.contains(id) => st.note = tr!("Already on the list.").to_owned(),
-            (Ok(_), Some(list)) if list.len() >= MAX_MEMBERS => st.note = tr!("The list is full.").to_owned(),
+            (Ok((id, _)), Some(list)) if list.contains(id) => note = Some(tr!("Already on the list.").to_owned()),
+            (Ok(_), Some(list)) if list.len() >= MAX_MEMBERS => note = Some(tr!("The list is full.").to_owned()),
             (Ok((id, _)), Some(list)) => {
                 list.left.push(id);
                 st.add_name.clear();
             }
-            (Err(e), _) => st.note = e,
+            (Err(e), _) => note = Some(e),
             (Ok(_), None) => {}
         }
     }
@@ -125,7 +121,7 @@ pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session, names: &Has
     } else {
         ui.horizontal_wrapped(|ui| {
             let current = st.selected.and_then(|id| w.lists.iter().find(|l| l.fleet_id == id)).map_or_else(|| tr!("No watch lists saved.").to_owned(), label_of);
-            egui::ComboBox::from_id_salt("watch_pick").width(190.0).truncate().selected_text(current).show_ui(ui, |ui| {
+            combo(ui, "watch_pick", 190.0, current, |ui| {
                 for l in &w.lists {
                     if ui.menu_label(st.selected == Some(l.fleet_id), label_of(l)).clicked() {
                         st.selected = Some(l.fleet_id);
@@ -138,7 +134,7 @@ pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session, names: &Has
     }
 
     let Some(at) = st.selected.and_then(|id| w.lists.iter().position(|l| l.fleet_id == id)) else {
-        return;
+        return note;
     };
     let mut ops = Vec::new();
     let mut delete = false;
@@ -160,9 +156,6 @@ pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session, names: &Has
         }
         if st.busy {
             ui.spinner();
-        }
-        if !st.note.is_empty() {
-            ui.label(egui::RichText::new(&st.note).color(standing::WARNING));
         }
     });
     ui.add_space(4.0);
@@ -191,24 +184,9 @@ pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session, names: &Has
                 if up.on_hover_text(tr!("Move up")).clicked() {
                     ops.push(Op::Swap(left, i, i - 1));
                 }
-                let current = colors.get(&id).copied();
-                let swatch = egui::RichText::new(icon::CIRCLE).color(current.map_or(ui.visuals().weak_text_color(), color32));
-                ui.menu_button(swatch, |ui| {
-                    ui.horizontal(|ui| {
-                        for c in PALETTE {
-                            if ui.button(egui::RichText::new(icon::CIRCLE).color(color32(*c))).clicked() {
-                                ops.push(Op::Color(id, Some(*c)));
-                                ui.close();
-                            }
-                        }
-                        if ui.button(tr!("None")).clicked() {
-                            ops.push(Op::Color(id, None));
-                            ui.close();
-                        }
-                    });
-                })
-                .response
-                .on_hover_text(tr!("Colour on the watch list"));
+                if let Some(pick) = color_menu(ui, colors.get(&id).copied(), tr!("None"), true, tr!("Colour on the watch list")) {
+                    ops.push(Op::Color(id, pick));
+                }
             });
         }
     };
@@ -253,4 +231,5 @@ pub(crate) fn ui(ui: &mut egui::Ui, st: &mut State, s: &mut Session, names: &Has
         w.lists.remove(at);
         st.selected = None;
     }
+    note
 }
