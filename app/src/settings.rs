@@ -166,6 +166,8 @@ pub struct Settings {
     pub severity: SeverityRules,
     #[serde(default = "default_alerts")]
     pub alerts: AlertSettings,
+    #[serde(default)]
+    pub game_alerts: crate::gamealerts::GameAlertSettings,
     #[serde(default = "default_web")]
     pub web: WebSettings,
     #[serde(default)]
@@ -1659,6 +1661,7 @@ impl Default for Settings {
             alliances: Vec::new(),
             severity: SeverityRules::default(),
             alerts: AlertSettings::default(),
+            game_alerts: Default::default(),
             web: WebSettings::default(),
             ai: Default::default(),
             sealed_feed: Default::default(),

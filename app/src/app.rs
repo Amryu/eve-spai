@@ -208,6 +208,7 @@ pub(crate) mod dashboard;
 mod lookup_ui;
 mod web_glue;
 mod settings_ui;
+mod game_alerts_ui;
 mod info_windows;
 pub(crate) mod map_panels;
 mod travel_ui;
@@ -564,6 +565,11 @@ pub struct SpaiApp {
     recent_alerts: AlertLog,
     alert_feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
     pub(crate) alert_rules_open: bool,
+    /// The game log alert thread's config, recent alerts and status.
+    pub(crate) game_alerts: std::sync::Arc<crate::gamealerts::Shared>,
+    game_alerts_running: bool,
+    pub(crate) game_alerts_open: bool,
+    pub(crate) game_alert_selected: Option<u64>,
     /// Tracked fleets' pilots, whose kills and losses the zKill feed records.
     pub(crate) fleet_members: crate::zkill::SharedFleetMembers,
     /// Lines the watcher reads as if EVE had logged them, for testing alert rules.
@@ -1604,6 +1610,10 @@ impl SpaiApp {
             recent_alerts,
             alert_feed: Vec::new(),
             alert_rules_open: false,
+            game_alerts: Default::default(),
+            game_alerts_running: false,
+            game_alerts_open: false,
+            game_alert_selected: None,
             intel_inject: Default::default(),
             fleet_members: Default::default(),
             test_intel: None,
@@ -2058,6 +2068,14 @@ impl SpaiApp {
             cfg.intel_count_bridges = self.settings.intel_count_bridges;
             cfg.staging = self.staging_system().map(str::to_owned);
             cfg.notes = self.notes_view.clone();
+            drop(cfg);
+            if let Ok(mut g) = self.game_alerts.config.try_lock() {
+                g.settings = self.settings.game_alerts.clone();
+                g.logs_configured = self.settings.eve_logs_dir.clone();
+                g.ships = self.ship_index.clone();
+                g.push = Some(self.settings.alerts.clone());
+                g.volume = self.settings.alerts.alert_volume;
+            }
         }
         if due(&mut self.ui_facts_at, std::time::Duration::from_millis(500)) && !self.publish_ui_facts() {
             self.ui_facts_at = None;
@@ -2110,6 +2128,10 @@ impl SpaiApp {
     fn alerts_view(&mut self, ui: &mut egui::Ui) {
         if self.alert_rules_open {
             self.alert_rules_editor(ui);
+            return;
+        }
+        if self.game_alerts_open {
+            self.game_alerts_editor(ui);
             return;
         }
         ui.add_space(10.0);
@@ -2182,6 +2204,8 @@ impl SpaiApp {
         ui.separator();
         ui.add_space(6.0);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            self.game_alerts_summary(ui);
+            ui.add_space(10.0);
             ui.label(egui::RichText::new(tr!("Recent alerts")).strong());
             self.alert_history_ui(ui);
         });
@@ -3924,6 +3948,10 @@ impl SpaiApp {
         self.ai_glossary_window(ctx);
         self.ai_feeds_window(ctx);
         self.start_intel_watcher(ctx);
+        if !self.headless && !self.game_alerts_running {
+            self.game_alerts_running = true;
+            crate::gamealerts::spawn(self.game_alerts.clone(), ctx.clone());
+        }
         self.ai_resume_watches(ctx);
         self.ai_push_facts(false);
         self.ai_watch_news();
@@ -4434,6 +4462,10 @@ fn eve_window_rect() -> Option<(i32, i32, i32, i32)> {
         }
     }
     None
+}
+
+pub(crate) fn notify_game(summary: String, body: String) {
+    notify(summary, body);
 }
 
 fn notify(summary: String, body: String) {

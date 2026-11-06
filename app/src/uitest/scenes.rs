@@ -4026,6 +4026,10 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(alert_rules_scene("view_alert_rules", [1280.0, 800.0], None));
     // The rule panel's 180px drag minimum, the least room a rule name ever gets.
     v.push(alert_rules_scene("view_alert_rules_narrow", [1280.0, 800.0], Some(180.0)));
+    v.push(game_alerts_scene("view_game_alerts", [1280.0, 800.0], 2, true));
+    v.push(game_alerts_scene("view_game_alerts_attack", [1280.0, 800.0], 3, true));
+    v.push(game_alerts_scene("view_game_alerts_custom", [1000.0, 700.0], 7, true));
+    v.push(game_alerts_scene("view_alerts_game_feed", [1280.0, 800.0], 0, false));
     v.push(dialog_scene("alert_rules_test_intel", [460.0, 260.0], |a| {
         a.settings.intel_channels = vec!["Fixture.Intel".into(), "Sample.Intel".into()];
         a.test_intel = Some(crate::app::TestIntel {
@@ -7429,6 +7433,44 @@ fn characters_rows_scene(name: &'static str, size: [f32; 2]) -> Scene {
 /// The alert rules editor with three rules, which is the only place the reorder arrows and the
 /// four condition `Edit` buttons draw. The editor auto-selects the first rule, so the right pane
 /// renders without seeding a selection.
+/// The game log rules, on rule `select`, with alerts in the feed; or the Alerts tab showing them.
+fn game_alerts_scene(name: &'static str, size: [f32; 2], select: u64, editor: bool) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Alerts;
+            a.game_alerts_open = editor;
+            let mut custom = crate::gamealerts::GameAlertRule::of(crate::gamealerts::Trigger::Custom);
+            custom.contains = "self-destruct".into();
+            a.settings.game_alerts.rules.push(custom);
+            crate::gamealerts::ensure_ids(&mut a.settings.game_alerts.rules);
+            a.game_alert_selected = Some(select);
+            let at = crate::clock::utc().timestamp();
+            let fired = |dt: i64, rule_id: u64, title: &str, body: &str| crate::gamealerts::Fired {
+                at: at - dt,
+                character: "Fixture Pilot".into(),
+                rule_id,
+                title: title.into(),
+                body: body.into(),
+                sound: String::new(),
+                volume: None,
+                notification: true,
+                push: false,
+            };
+            a.game_alerts.feed.lock().unwrap().extend([
+                fired(600, 1, "Warp scrambled or disrupted", "Fixture Pilot: Sample Hunter [ABCD] in a Sabre scrams you"),
+                fired(300, 2, "Decloaked", "Fixture Pilot: Decloaked by a Manticore"),
+                fired(60, 5, "Fleet invite", "Fixture Pilot: Fixture FC invites you to their fleet"),
+            ]);
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 fn alert_rules_scene(name: &'static str, size: [f32; 2], panel_w: Option<f32>) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;

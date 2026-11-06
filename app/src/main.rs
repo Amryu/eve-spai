@@ -39,6 +39,8 @@ mod eveproc;
 mod kills;
 mod factions;
 mod feedkeys;
+mod gamealerts;
+mod gamelog;
 mod geo;
 mod http;
 mod image_cache;
