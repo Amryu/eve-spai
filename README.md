@@ -35,7 +35,7 @@ Website and screenshots: https://eve-spai.com
 - Read and send Jabber chat and fleet pings without leaving the app, with ping rules and a
   ping window over the game.
 - Keep notes and tags on systems and pilots, organised in folders you can export and share.
-- Arrange EVE's own settings without logging in: the window layout to scale, sidebar
+- Arrange EVE's own settings without logging in: the window layout to scale, Neocom
   buttons, chat channels, watch lists, overview tabs and probe formations in 3D, with
   backups of every change and copies between characters, whole or part by part.
 - Ask the optional AI assistant about the situation, typed or by push to talk. It works
