@@ -67,7 +67,9 @@ const BLACK_OPS: usize = 2;
 
 /// Hulls the fleet rides along with, by bridge or conduit, and their range class. Each shares its
 /// class with hulls that cannot, so the pick is kept apart from the jump planner's.
-pub(crate) const AHEAD_HULLS: [(usize, &str); 4] = [(1, "Titan"), (1, "Supercarrier"), (0, "Carrier"), (BLACK_OPS, "Black Ops")];
+/// Appended to, never reordered: saved routes store the index.
+pub(crate) const AHEAD_HULLS: [(usize, &str); 5] =
+    [(1, "Titan"), (1, "Supercarrier"), (0, "Carrier"), (BLACK_OPS, "Black Ops"), (crate::jumproute::COMMAND_CARRIER, "Command Carrier")];
 
 /// Whether planning a destination should also set it in the game.
 ///
@@ -483,7 +485,7 @@ impl SpaiApp {
 
     pub(crate) fn route_ahead(&self) -> crate::web::route::Ahead {
         let blops = AHEAD_HULLS.get(self.map_ahead_hull).is_some_and(|h| h.0 == BLACK_OPS);
-        let carrier = AHEAD_HULLS.get(self.map_ahead_hull).is_some_and(|h| h.0 == 0);
+        let carrier = AHEAD_HULLS.get(self.map_ahead_hull).is_some_and(|h| h.0 == 0 || h.0 == crate::jumproute::COMMAND_CARRIER);
         use crate::wormholes::ShipSize;
         let pre_holes = if !self.settings.route_via_wormholes {
             Default::default()

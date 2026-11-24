@@ -695,7 +695,7 @@ carries the pairing token.</p></div>
 fn ahead_from_query<'a>(d: &super::DetailState, hull: usize, q: impl Fn(&str) -> Option<&'a str>) -> super::route::Ahead {
     let n = |k: &str| q(k).and_then(|v| v.parse::<u32>().ok());
     let class = crate::app::map_route::AHEAD_HULLS[hull].0;
-    let (blops, carrier) = (class == 2, class == 0);
+    let (blops, carrier) = (class == 2, class == 0 || class == crate::jumproute::COMMAND_CARRIER);
     let beacons = q("beacons").map_or(d.ahead_beacons, |v| v == "1");
     super::route::Ahead {
         pre_gates: n("pre").unwrap_or(0).min(10),

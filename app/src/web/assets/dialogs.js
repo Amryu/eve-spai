@@ -591,7 +591,7 @@ function jumpControls(kind, out) {
 }
 
 /// Only hulls the fleet can ride along with, as `map_route::AHEAD_HULLS` has them.
-const AHEAD_HULLS = ["Titan", "Supercarrier", "Carrier", "Black Ops"];
+const AHEAD_HULLS = ["Titan", "Supercarrier", "Carrier", "Black Ops", "Command Carrier"];
 
 function aheadControls(out) {
   const num = (k, min, max, label, tip) =>

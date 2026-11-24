@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use egui_phosphor::regular as icon;
 use spai_core::geo::Systems;
-use spai_core::jumproute::{max_range_ly, SHIP_CLASSES};
+use spai_core::jumproute::{max_range_ly, COMMAND_CARRIER, SHIP_CLASSES};
 use spai_core::map::MapSystem;
 use spai_core::route::{self, Avoid, LegChoice, Picks, RouteOption};
 use spai_core::wormholes::{HoleKind, Mass, RouteLimits, ShipSize, TimeLeft, Wormhole};
@@ -43,7 +43,8 @@ pub struct PlanPrefs {
 
 /// Hulls the fleet rides along with on a jump-ahead route, by bridge or conduit, and their range
 /// class, as the desktop offers them.
-pub const AHEAD_HULLS: [(usize, &str); 4] = [(1, "Titan"), (1, "Supercarrier"), (0, "Carrier"), (2, "Black Ops")];
+/// Appended to, never reordered: saved routes store the index.
+pub const AHEAD_HULLS: [(usize, &str); 5] = [(1, "Titan"), (1, "Supercarrier"), (0, "Carrier"), (2, "Black Ops"), (COMMAND_CARRIER, "Command Carrier")];
 
 impl Default for PlanPrefs {
     fn default() -> Self {
@@ -545,7 +546,7 @@ impl RoutePlan {
         let now = spai_core::clock::utc().timestamp();
         let pre_holes = match class {
             2 => self.prefs.hole_graph_fitting(input.geo, input.holes, now, |s| s.is_none_or(|s| matches!(s, ShipSize::Large | ShipSize::XLarge))),
-            0 => self.prefs.hole_graph_fitting(input.geo, input.holes, now, |s| s == Some(ShipSize::XLarge)),
+            0 | COMMAND_CARRIER => self.prefs.hole_graph_fitting(input.geo, input.holes, now, |s| s == Some(ShipSize::XLarge)),
             _ => HashMap::new(),
         };
         let beacons = self.prefs.ahead_beacons.then(|| input.network.beacons.iter().filter_map(|n| input.geo.lookup(n)).map(|i| i.id).collect());
@@ -1326,6 +1327,11 @@ mod tests {
         p.prefs.ahead_hull = 1;
         let r = p.ahead_rules(&input);
         assert!(!r.highsec && !r.pre_bridges && r.pre_holes.is_empty());
+        p.prefs.ahead_hull = 4;
+        assert_eq!(p.ahead_hull().1, "Command Carrier");
+        assert_eq!(max_range_ly(&SHIP_CLASSES[p.ahead_hull().0], 5), 7.5);
+        let r = p.ahead_rules(&input);
+        assert!(!r.highsec && !r.pre_bridges);
     }
 
     #[test]

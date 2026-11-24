@@ -38,6 +38,9 @@ pub const SHIP_CLASSES: &[ShipClass] = &[
     ShipClass { name: "Command Carrier", base_ly: 3.75, fuel_per_ly: 3000.0, fuel_role_reduction: 0.0, fatigue_role_reduction: 0.0 },
 ];
 
+/// The Command Carrier entry of [`SHIP_CLASSES`].
+pub const COMMAND_CARRIER: usize = 5;
+
 pub fn max_range_ly(class: &ShipClass, jdc: u32) -> f64 {
     class.base_ly * (1.0 + 0.20 * jdc as f64)
 }
@@ -566,6 +569,7 @@ mod tests {
         assert_eq!(SHIP_CLASSES[2].name, "Black Ops");
         assert_eq!(SHIP_CLASSES[3].name, "Jump Freighter");
         assert_eq!(SHIP_CLASSES[4].name, "Rorqual");
+        assert_eq!(SHIP_CLASSES[COMMAND_CARRIER].name, "Command Carrier");
     }
 
     #[test]

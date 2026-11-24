@@ -2768,6 +2768,9 @@ mod route_extension_tests {
         a.map_ahead_hull = 2;
         a.map_recompute_route();
         assert_eq!(a.jump_ship, 0, "a carrier conduits on the capital class's range");
+        a.map_ahead_hull = 4;
+        a.map_recompute_route();
+        assert_eq!(a.jump_ship, crate::jumproute::COMMAND_CARRIER, "a command carrier plans on its own 3.75 ly class");
         a.map_set_route_mode("gate");
         assert_eq!(a.map_leg_kinds, vec!["gate", "gate"]);
         a.map_route_start("ahead", DQ);
