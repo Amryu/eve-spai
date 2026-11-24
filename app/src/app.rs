@@ -776,6 +776,9 @@ pub struct SpaiApp {
         (crate::map::MapView, egui::Vec2, f32, bool, Option<egui::Rect>),
     >,
     map_window_on_top: bool,
+    /// Which map window had its saved geometry applied (true = the overlay); None re-applies it.
+    map_geom_for: Option<bool>,
+    map_pos_fix: Option<alert_window::PosFix>,
     map_controls_hidden: bool,
     pub(crate) map_overlay_mode: bool,
     /// A route drag in flight: the system it started on.
@@ -818,6 +821,7 @@ pub struct SpaiApp {
     ui_facts_at: Option<std::time::Instant>,
     /// The main window's saved position, sent again once it is up.
     main_pos_fix: Option<alert_window::PosFix>,
+    main_reach_checked: bool,
     /// Frames spent waiting for a restored maximize to take: the window manager ignores it at
     /// creation, so it is asked for once the window is back on its monitor.
     main_maximize: Option<u32>,
@@ -1767,6 +1771,8 @@ impl SpaiApp {
             map_char_popouts: Vec::new(),
             map_char_view: std::collections::HashMap::new(),
             map_window_on_top: false,
+            map_geom_for: None,
+            map_pos_fix: None,
             map_controls_hidden: false,
             map_overlay_mode: false,
             map_link: None,
@@ -1793,6 +1799,7 @@ impl SpaiApp {
             map_ingame_route: None,
             ui_facts_at: None,
             main_pos_fix: main_pos_fix_at,
+            main_reach_checked: false,
             main_maximize: main_maximize_at,
             rescue_geom_applied: false,
             rescue_pos_fix: None,
@@ -3999,6 +4006,8 @@ impl SpaiApp {
         }
         if self.map_popped {
             self.show_map_viewport(ctx);
+        } else {
+            self.map_geom_for = None;
         }
         self.char_popout_windows(ctx);
         if let Some(f) = jframe {
@@ -4312,6 +4321,14 @@ impl eframe::App for SpaiApp {
             let done = ctx.input(|i| i.viewport().maximized == Some(true)) || frames > 120;
             self.main_maximize = (!done).then_some(frames + 1);
             ctx.request_repaint();
+        }
+        // A window restored to where no monitor shows its title bar comes back to the primary one,
+        // before the position is next saved.
+        if !self.main_reach_checked && ctx.cumulative_pass_nr() > 5 {
+            self.main_reach_checked = true;
+            if crate::winplace::title_bar_off_screen("EVE Spai") {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(40.0, 40.0)));
+            }
         }
         // Remember the main window's location + size across restarts. Skip the first passes, where
         // the window can briefly report a pre-restore rect, and the position fix and maximize.

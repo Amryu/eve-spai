@@ -91,6 +91,7 @@ mod update;
 mod watcher;
 mod web;
 mod window_alpha;
+mod winplace;
 mod wormholes;
 mod zkill;
 #[cfg(test)]
@@ -294,14 +295,23 @@ fn main() -> eframe::Result<()> {
     // Restore the main window's last location + size (persisted in settings) at creation, so it
     // opens where the user left it instead of snapping on the first frame.
     let saved = crate::store::Store::open().ok().and_then(|s| s.load_settings());
+    let ui_scale = saved.as_ref().map_or(1.0, |s| settings::clamp_ui_scale(s.ui_scale));
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("EVE Spai")
         .with_icon(app::app_icon())
         .with_min_inner_size([720.0, 460.0])
         .with_inner_size(
-            saved.as_ref().and_then(|s| s.main_window_size).map_or([1100.0, 720.0], |(w, h)| [w, h]),
+            saved.as_ref().and_then(|s| s.main_window_size).map_or([1100.0, 720.0], |(w, h)| {
+                let (w, h) = app::alert_window::at_creation((w, h), ui_scale);
+                [w, h]
+            }),
         );
-    if let Some((x, y)) = saved.as_ref().and_then(|s| s.main_window_pos).filter(|p| !app::alert_window::off_screen_sentinel(*p)) {
+    if let Some((x, y)) = saved
+        .as_ref()
+        .and_then(|s| s.main_window_pos)
+        .filter(|p| !app::alert_window::off_screen_sentinel(*p))
+        .map(|p| app::alert_window::at_creation(p, ui_scale))
+    {
         viewport = viewport.with_position([x, y]);
     }
     // On Linux the window manager ignores it at creation; the app maximizes once the window is up.

@@ -1771,11 +1771,29 @@ impl SpaiApp {
         // turning the popped-out map into an overlay in place would leave it opaque.
         let (id, title) = if overlay { ("map_overlay", tr!("EVE Spai - Map overlay")) } else { ("map_window", tr!("EVE Spai - Map")) };
         let opacity = self.settings.map_overlay_opacity.clamp(0.2, 1.0);
+        let mut builder = egui::ViewportBuilder::default().with_icon(app_icon());
+        // Saved geometry goes to the builder on the window's first frame only, or it would fight
+        // the user moving the window.
+        if self.map_geom_for != Some(overlay) {
+            let (pos, size) = if overlay {
+                (self.settings.map_overlay_pos, self.settings.map_overlay_size)
+            } else {
+                (self.settings.map_window_pos, self.settings.map_window_size)
+            };
+            let (w, h) = size.unwrap_or(if overlay { (520.0, 520.0) } else { (960.0, 720.0) });
+            builder = builder.with_inner_size([w, h]);
+            if let Some((x, y)) = pos {
+                builder = builder.with_position([x, y]);
+            }
+            self.map_pos_fix = super::alert_window::PosFix::new(pos);
+            self.map_geom_for = Some(overlay);
+        }
+        let mut geom: super::alert_window::WinGeom = None;
+        let mut pos_fix = self.map_pos_fix;
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of(id),
-            egui::ViewportBuilder::default().with_icon(app_icon())
+            builder
                 .with_title(title)
-                .with_inner_size(if overlay { [520.0, 520.0] } else { [960.0, 720.0] })
                 .with_decorations(!overlay)
                 .with_transparent(overlay && crate::window_alpha::PER_PIXEL)
                 .with_taskbar(!overlay)
@@ -1788,6 +1806,7 @@ impl SpaiApp {
                     egui::WindowLevel::Normal
                 }),
             |ctx, _class| {
+                super::alert_window::apply_pos_fix(ctx, &mut pos_fix);
                 let frame = if overlay && crate::window_alpha::PER_PIXEL {
                     egui::Frame::new().fill(egui::Color32::from_rgba_unmultiplied(0x0A, 0x0C, 0x10, (opacity * 255.0) as u8))
                 } else if overlay {
@@ -1804,11 +1823,28 @@ impl SpaiApp {
                 if overlay {
                     crate::window_alpha::set(title, opacity);
                 }
+                let sz = ctx.content_rect().size();
+                if sz.x > 100.0 && sz.y > 100.0 {
+                    geom = Some(((sz.x, sz.y), ctx.input(|i| i.viewport().outer_rect.map(|r| (r.min.x, r.min.y)))));
+                }
                 if ctx.input(|i| i.viewport().close_requested()) {
                     keep = false;
                 }
             },
         );
+        self.map_pos_fix = pos_fix;
+        if let Some((sz, pos)) = geom.filter(|_| pos_fix.is_none()) {
+            let s = &mut self.settings;
+            let (spos, ssize) = if overlay { (&mut s.map_overlay_pos, &mut s.map_overlay_size) } else { (&mut s.map_window_pos, &mut s.map_window_size) };
+            if let Some(n) = super::alert_window::geometry_update(*ssize, sz, 2.0) {
+                *ssize = Some(n);
+                self.needs_save = true;
+            }
+            if let Some(p) = pos.and_then(|p| super::alert_window::geometry_update(*spos, p, 1.0)) {
+                *spos = Some(p);
+                self.needs_save = true;
+            }
+        }
         if !keep {
             self.dock_map();
         }

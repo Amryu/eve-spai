@@ -554,6 +554,15 @@ pub struct Settings {
     pub rescue_popout_pos: Option<(f32, f32)>,
     #[serde(default)]
     pub rescue_popout_size: Option<(f32, f32)>,
+    /// Where the popped-out map and the map overlay were left, each its own window.
+    #[serde(default)]
+    pub map_window_pos: Option<(f32, f32)>,
+    #[serde(default)]
+    pub map_window_size: Option<(f32, f32)>,
+    #[serde(default)]
+    pub map_overlay_pos: Option<(f32, f32)>,
+    #[serde(default)]
+    pub map_overlay_size: Option<(f32, f32)>,
 }
 
 fn default_jabber_server() -> String {
@@ -1802,6 +1811,10 @@ impl Default for Settings {
             rescue_popped: false,
             rescue_popout_pos: None,
             rescue_popout_size: None,
+            map_window_pos: None,
+            map_window_size: None,
+            map_overlay_pos: None,
+            map_overlay_size: None,
         }
     }
 }
@@ -2188,6 +2201,8 @@ mod window_geometry_tests {
         s.main_window_maximized = true;
         s.fleet_ping_window_pos = Some((300.0, 50.0));
         s.fleet_ping_window_size = Some((600.0, 400.0));
+        s.map_window_pos = Some((-1920.0, 0.0));
+        s.map_overlay_size = Some((500.0, 450.0));
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(back.main_window_pos, Some((100.0, 200.0)));
@@ -2195,6 +2210,9 @@ mod window_geometry_tests {
         assert!(back.main_window_maximized);
         assert_eq!(back.fleet_ping_window_pos, Some((300.0, 50.0)));
         assert_eq!(back.fleet_ping_window_size, Some((600.0, 400.0)));
+        assert_eq!(back.map_window_pos, Some((-1920.0, 0.0)));
+        assert_eq!(back.map_overlay_size, Some((500.0, 450.0)));
+        assert_eq!(back.map_overlay_pos, None);
     }
 
     #[test]

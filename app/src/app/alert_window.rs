@@ -63,6 +63,14 @@ pub(crate) fn off_screen_sentinel(p: (f32, f32)) -> bool {
     p.0 <= -10_000.0 && p.1 <= -10_000.0
 }
 
+/// Saved main window geometry, in the points the window is created in. It is saved in points at the
+/// user's UI scale, and the window is created before that scale is set, at 1.0: unconverted, any
+/// scale but 100% moved and resized the window by that factor again on every start, off the
+/// screen for a scale under 100%.
+pub(crate) fn at_creation(saved: (f32, f32), ui_scale: f32) -> (f32, f32) {
+    (saved.0 * ui_scale, saved.1 * ui_scale)
+}
+
 /// Puts a reopened window back where it was saved, on Linux. Under KWin on X11 the position a
 /// window reports and the one a move places it at differ by the title bar, in a direction that
 /// depends on the window manager, so neither is trusted: after the window is framed it is measured,
@@ -977,6 +985,22 @@ pub(crate) type SharedAlertWindow = std::sync::Arc<std::sync::Mutex<AlertWindowS
 #[cfg(test)]
 mod pos_fix_tests {
     use super::PosFix;
+
+    /// A window saved at a UI scale other than 100% comes back at the same pixels, start after
+    /// start, instead of moving by the scale each time.
+    #[test]
+    fn saved_geometry_survives_restarts_at_any_ui_scale() {
+        for (ui_scale, native) in [(0.8_f32, 1.0_f32), (1.0, 1.25), (1.5, 1.5), (2.5, 1.0)] {
+            let mut px = (1500.0_f32, 300.0_f32);
+            for _ in 0..5 {
+                // Saved in points at the running scale, created at a zoom of 1.
+                let saved = (px.0 / (ui_scale * native), px.1 / (ui_scale * native));
+                let made = super::at_creation(saved, ui_scale);
+                px = (made.0 * native, made.1 * native);
+            }
+            assert!((px.0 - 1500.0).abs() < 0.5 && (px.1 - 300.0).abs() < 0.5, "scale {ui_scale}: {px:?}");
+        }
+    }
 
     /// A window that lands a title bar below where it was saved, and where every move lands a title
     /// bar lower than asked, is moved by the miss until it is where it was saved.
